@@ -1,0 +1,22 @@
+# Research Matrix
+
+| Source | Primary question | Hedge frequency | Transaction-cost treatment | No-trade band | Volatility signal | Best use in Gamma Scalper |
+|---|---|---|---|---|---|---|
+| Andersen et al. | How should high-frequency returns be converted into daily/horizon volatility forecasts? | Not a hedge-frequency paper; uses 30-minute sampling for RV measurement and daily forecasts | Microstructure frictions motivate coarser sampling and cleaning | None | Long-memory forecast of physical realized variance/covariance | RV Forecast module and horizon-aligned physical variance state |
+| Ling Chen | How can cost-aware theory be made implementable on real option data? | Discrete evaluation; actual trades only on boundary exit | Asymmetric proportional buy/sell costs | Delta-centered buy/sell bounds, optionally rolling-data tuned | Delta and model/empirical residual behavior; jump-suspension rule is dataset-specific | Production baseline band and rolling calibration workflow |
+| Hodges & Clewlow | What is the utility-optimal hedge under transaction costs? | Endogenous through control boundaries; daily minimum grid in simulations | General cost function; proportional main case; fixed cost changes jump target | Exact dynamic-programming control region | Assumed diffusion volatility; gamma affects geometry indirectly | Benchmark/oracle for validating simpler policies and portfolio payoffs |
+| Arzel & Lehdili | Can stochastic-control structure improve deep hedging? | Event-driven band evaluated on discrete simulation dates | Symmetric proportional rate in HJB and neural P&L | HJB-QVI band; WW cubic-root prior; learned asymmetric residuals | BS volatility in structural prior; model-agnostic NTBN alternative | WW baseline, band network architecture and entropic-risk benchmark |
+| Mastinsek abstract | Can discrete-time delta account for the rebalancing interval and costs? | Explicit interval-dependent adjusted delta | Transaction-cost application | Not established from accessible abstract | Black-Scholes volatility and delta time sensitivity | Replace with open Sepp/Broden-Tankov sources for implementation |
+| Carr & Wu | How is risk-neutral expected variance extracted and compared with realized variance? | Dynamic futures term in replication; signal horizon set by option maturity | Replication paper largely abstracts from execution costs; finite strikes create approximation error | None | Model-free option-strip implied variance and variance risk premium | Implied-variance module and gamma-entry signal |
+| Francois et al. | Can full IV-surface states and multiple instruments improve global hedging? | Daily in experiments; network learns smaller/gradual adjustments; optional threshold | Separate proportional costs for underlying and option hedge | Learned no-trade threshold; policy itself internalizes costs | Five IV factors, their variances, conditional return variance and VRP exposure | Advanced RL policy after deterministic simulator and controls are stable |
+
+## Objective matrix
+
+| Source | Objective or loss | Core state variables | Main limitation |
+|---|---|---|---|
+| Andersen et al. | Forecast loss/calibration for realized volatility and return density | Intraday returns, realized covariance, fractional log-vol states, VAR lags | Does not decide option entry or hedge actions; jump separation absent in base model |
+| Ling Chen | Expected utility; or `E[theta R + C]`; empirical RMS tracking error | `t, S, y, x`, delta and boundary offsets | Black-Scholes benchmark delta can fail in unstable regimes; simple band is suboptimal by construction |
+| Hodges & Clewlow | Maximize expected utility of terminal wealth/replication result | `t, S, shares, cash` | Grid solution does not scale easily to IV surface, multiple options and execution states |
+| Arzel & Lehdili | CARA utility / entropic risk of terminal P&L | `t, S, y, X`; neural features log-moneyness, tau, sigma | WW prior is asymptotic and model-dependent; neural results depend on simulator fidelity |
+| Carr & Wu | Replicate and estimate `E_Q[RV]`; measure `RV-SW` | option strip, forward, discount, maturity, realized variance | Exact replication assumes continuous paths and a continuum of strikes; live `E_P[RV]` must come from another model |
+| Francois et al. | MSE, SMSE or CVaR of terminal shortfall plus soft constraint | full JIVR and portfolio state | High data/simulation burden; learned policy can contain speculative components without constraints |

@@ -1,0 +1,64 @@
+import { styled, tabsClasses, Toolbar as MuiToolbar, AppBar, Stack, Typography } from '@mui/material';
+import React from 'react';
+import CustomIcon from '../CustomIcon';
+
+const Toolbar = styled(MuiToolbar)({
+  width: '100%',
+  padding: '12px',
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'start',
+  justifyContent: 'center',
+  gap: '12px',
+  flexShrink: 0,
+  [`& ${tabsClasses.list}`]: {
+    gap: '8px',
+    p: '8px',
+    pb: 0,
+  },
+});
+
+const Navbar: React.FC = (): React.ReactElement => {
+  return (
+    <>
+      <AppBar
+        position={'fixed'}
+        sx={{
+          display: { xs: 'auto', md: 'none' },
+          boxShadow: 0,
+          bgcolor: 'background.paper',
+          backgroundImage: 'none',
+          borderBottom: '1px solid',
+          borderColor: 'divider',
+          top: 'var(--template-frame-height, 0px)',
+        }}
+      >
+        <Toolbar variant="regular">
+          <Stack
+            direction={'row'}
+            sx={{
+              alignItems: 'center',
+              flexGrow: 1,
+              width: '100%',
+              gap: 1,
+            }}
+          >
+            <Stack
+              direction={'row'}
+              spacing={1}
+              sx={{ justifyContent: 'center', mr: 'auto' }}
+            >
+              <CustomIcon />
+              <Typography variant={'h4'} component={'h1'} sx={{ color: 'text.primary' }}>
+                Dashboard
+              </Typography>
+            </Stack>
+            
+          </Stack>
+        </Toolbar>
+      </AppBar>
+    </>
+  )
+}
+
+export default Navbar;
