@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 
 
 @dataclass(frozen=True)
@@ -17,10 +17,14 @@ class MarketState:
     implied_volatility: float
     time_to_expiry_years: float
     step_year_fraction: float
+    session_date: date | None = None
+    local_timestamp: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.timestamp.tzinfo is None:
             raise ValueError("market-state timestamp must be timezone-aware")
+        if self.local_timestamp is not None and self.local_timestamp.tzinfo is None:
+            raise ValueError("market-state local timestamp must be timezone-aware")
         if self.session_index < 0 or self.step_index < 0:
             raise ValueError("market-state indexes must be non-negative")
         finite = (

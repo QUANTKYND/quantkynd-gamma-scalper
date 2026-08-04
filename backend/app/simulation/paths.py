@@ -4,12 +4,13 @@ import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
 import numpy as np
 
 from app.simulation.market import MarketState, carry_futures_price
+from app.simulation.clock import SimulationExpiry, SimulationSession, remaining_time_to_expiry
 
 
 @dataclass(frozen=True)
@@ -61,7 +62,11 @@ class GeneratedPath:
     path_hash: str
 
 
-def generate_gbm_path(config: GBMPathConfig) -> GeneratedPath:
+def generate_gbm_path(
+    config: GBMPathConfig,
+    sessions: tuple[SimulationSession, ...] | None = None,
+    option_expiry: SimulationExpiry | None = None,
+) -> GeneratedPath:
     _validate_common(config)
     if config.realized_volatility < 0:
         raise ValueError("realized volatility must be non-negative")
@@ -71,10 +76,14 @@ def generate_gbm_path(config: GBMPathConfig) -> GeneratedPath:
         config.step_year_fraction,
         config.seed,
     )
-    return _build_path("gbm", config, returns)
+    return _build_path("gbm", config, returns, sessions, option_expiry)
 
 
-def generate_piecewise_path(config: PiecewisePathConfig) -> GeneratedPath:
+def generate_piecewise_path(
+    config: PiecewisePathConfig,
+    sessions: tuple[SimulationSession, ...] | None = None,
+    option_expiry: SimulationExpiry | None = None,
+) -> GeneratedPath:
     _validate_common(config)
     volatilities = [math.nan] * config.number_of_steps
     for regime in config.volatility_regimes:
@@ -87,7 +96,7 @@ def generate_piecewise_path(config: PiecewisePathConfig) -> GeneratedPath:
     if any(math.isnan(volatility) for volatility in volatilities):
         raise ValueError("volatility regimes must cover every generated step")
     returns = _normal_returns(config.drift, tuple(volatilities), config.step_year_fraction, config.seed)
-    return _build_path("piecewise_volatility", config, returns)
+    return _build_path("piecewise_volatility", config, returns, sessions, option_expiry)
 
 
 def load_user_path(states: list[MarketState] | tuple[MarketState, ...]) -> GeneratedPath:
@@ -110,29 +119,58 @@ def _normal_returns(drift: float, volatilities: tuple[float, ...], dt: float, se
     return (drift - 0.5 * volatility_array**2) * dt + volatility_array * math.sqrt(dt) * shocks
 
 
-def _build_path(generator_id: Literal["gbm", "piecewise_volatility"], config, returns: np.ndarray) -> GeneratedPath:
+def _build_path(
+    generator_id: Literal["gbm", "piecewise_volatility"],
+    config,
+    returns: np.ndarray,
+    sessions: tuple[SimulationSession, ...] | None,
+    option_expiry: SimulationExpiry | None,
+) -> GeneratedPath:
     parameters = _json_parameters(asdict(config), exclude={"seed"})
     spots = [config.initial_spot]
     for path_return in returns:
         spots.append(spots[-1] * math.exp(float(path_return)))
-    states = tuple(_state(config, step, spot) for step, spot in enumerate(spots))
+    if sessions is not None and len(sessions) != len(spots):
+        raise ValueError("simulation clock state count must match generated path")
+    states = tuple(
+        _state(config, step, spot, sessions[step] if sessions else None, option_expiry)
+        for step, spot in enumerate(spots)
+    )
     return GeneratedPath(generator_id, 1, config.seed, parameters, states, _path_hash(generator_id, parameters, states, config.seed))
 
 
-def _state(config, step: int, spot: float) -> MarketState:
-    elapsed = step * config.step_year_fraction
+def _state(
+    config,
+    step: int,
+    spot: float,
+    session: SimulationSession | None,
+    option_expiry: SimulationExpiry | None,
+) -> MarketState:
+    elapsed = step * config.step_year_fraction if session is None else step * session.year_fraction_from_previous
     futures_maturity = max(config.futures_maturity_years - elapsed, 0.0)
+    timestamp = session.decision_at if session else config.start_at.astimezone(UTC) + timedelta(days=step)
+    time_to_expiry = (
+        remaining_time_to_expiry(option_expiry, elapsed)
+        if option_expiry
+        else max(config.option_expiry_years - elapsed, 0.0)
+    )
     return MarketState(
-        timestamp=config.start_at.astimezone(UTC) + timedelta(days=step),
-        session_index=step,
+        timestamp=timestamp,
+        session_index=session.session_index if session else step,
         step_index=step,
         spot=spot,
         futures_price=carry_futures_price(spot, config.risk_free_rate, config.dividend_yield, futures_maturity),
         risk_free_rate=config.risk_free_rate,
         dividend_yield=config.dividend_yield,
         implied_volatility=config.implied_volatility,
-        time_to_expiry_years=max(config.option_expiry_years - elapsed, 0.0),
-        step_year_fraction=0.0 if step == 0 else config.step_year_fraction,
+        time_to_expiry_years=time_to_expiry,
+        step_year_fraction=(
+            session.year_fraction_from_previous
+            if session
+            else 0.0 if step == 0 else config.step_year_fraction
+        ),
+        session_date=session.session_date if session else timestamp.date(),
+        local_timestamp=session.local_decision_at if session else timestamp,
     )
 
 
@@ -152,6 +190,8 @@ def _json_parameters(payload: dict[str, object], exclude: set[str]) -> dict[str,
 def _json_value(value):
     if isinstance(value, datetime):
         return value.astimezone(UTC).isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
     if isinstance(value, tuple):
         return [_json_value(item) for item in value]
     if isinstance(value, dict):
