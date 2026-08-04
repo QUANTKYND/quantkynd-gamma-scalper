@@ -1,0 +1,14 @@
+# Strategy Configuration Reference
+
+The configured instance is `config/strategies/nifty-long-gamma-v1.yaml`. Pydantic models under `backend/app/strategy/` define its strict schema. Unknown and missing fields fail validation.
+
+Identity fields are `strategy_id`, `strategy_version`, `schema_version`, and `created_at`. The content hash excludes `created_at` and includes every behavioral field. Canonical JSON uses sorted UTF-8 keys, no insignificant whitespace, and normalized decimal text for floating-point configuration values before SHA-256 hashing.
+
+`underlying`, `signal`, `entry`, `expiry`, `strike`, and `position` freeze instrument and construction semantics. `hedging` includes the complete benchmark set and typed parameters for every policy. `exit.precedence` is complete and ordered. `risk` requires every lockout and limit explicitly.
+
+Validate from `backend`:
+
+```bash
+UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.validate_strategy_config \
+  --config ../config/strategies/nifty-long-gamma-v1.yaml
+```

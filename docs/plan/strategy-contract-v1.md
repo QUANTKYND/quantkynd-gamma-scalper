@@ -1,6 +1,6 @@
 # Strategy Contract v1
 
-Status: proposed; must be explicitly frozen before historical strategy research.
+Status: frozen for deterministic offline research.
 
 ## Research question
 
@@ -15,8 +15,8 @@ Can a narrowly selected long-gamma NIFTY position produce a positive and robust 
 | Concurrent structures | One. |
 | Forecast horizon | Five trading sessions. |
 | Maximum holding horizon | Five trading sessions, subject to expiry and risk exits. |
-| Expiry rule | One liquid expiry bucket with enough remaining life to cover the holding horizon. Exact DTE band must be frozen after data inspection. |
-| Strike rule | Nearest eligible ATM strike using point-in-time forward or spot convention. Exact convention must be frozen. |
+| Expiry rule | Earliest eligible expiry with 7–15 remaining sessions, covering five holding sessions and a two-session safety buffer. |
+| Strike rule | Nearest continuous-carry forward strike with deterministic spread, volume, open-interest, and lower-strike tie-breaks. |
 | Hedge instrument | NIFTY futures in simulation and paper state. |
 | Entry | Net expected edge above threshold after option costs, expected hedge costs, theta, and model-risk buffer. |
 | Hedge policies compared | Fixed interval, delta threshold, constant band, and Whalley–Wilmott band. |
@@ -33,25 +33,25 @@ position_template: long_atm_straddle
 forecast_horizon_sessions: 5
 maximum_holding_sessions: 5
 expiry_rule:
-  minimum_dte_sessions: pending
-  maximum_dte_sessions: pending
+  minimum_dte_sessions: 7
+  maximum_dte_sessions: 15
 strike_rule:
-  reference: pending
+  reference: continuous_carry_forward
   selection: nearest_eligible_atm
 entry:
-  minimum_net_expected_edge: pending
-  minimum_quote_coverage: pending
-  maximum_option_spread_bps: pending
-  maximum_quote_age_ms: pending
+  minimum_net_expected_edge: 0.0005
+  minimum_quote_coverage: 1.0
+  maximum_option_spread_bps: 1000
+  maximum_quote_age_ms: 5000
 hedging:
   instrument: nifty_future
-  policy: pending
-  maximum_hedges_per_session: pending
+  policy: constant_band
+  maximum_hedges_per_session: 12
 exit:
   close_at_horizon: true
   edge_invalidation: true
   liquidity_lockout: true
-risk_policy_id: pending
+risk_policy_id: embedded-v1
 execution_policy_id: paper-v1
 ```
 
