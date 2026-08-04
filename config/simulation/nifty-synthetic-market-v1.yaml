@@ -1,0 +1,30 @@
+schema_version: 1
+market_id: nifty-synthetic-market-v1
+underlying: NIFTY
+clock:
+  timezone: Asia/Kolkata
+  trading_periods_per_year: 252
+  calendar_mode: weekdays
+  decision_times_local:
+    - "09:30:00"
+    - "12:30:00"
+    - "15:15:00"
+options:
+  multiplier: 50
+  strike_interval: 50
+  strikes_below: 4
+  strikes_above: 4
+  eligible_expiry_sessions:
+    - 7
+    - 10
+    - 15
+  relative_spread: 0.02
+  synthetic_volume_base: 1000
+  synthetic_open_interest_base: 5000
+futures:
+  instrument_id: NIFTY-FUTURE-SIM
+  multiplier: 50
+  delta_per_contract: 50
+  expiry_rule: holding_horizon_plus_buffer
+  expiry_buffer_sessions: 5
+  half_spread_per_unit: 0.25
