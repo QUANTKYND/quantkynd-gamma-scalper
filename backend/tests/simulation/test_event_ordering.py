@@ -83,8 +83,6 @@ def test_daily_loss_precedes_position_loss_without_opening_hedge() -> None:
                 point,
                 spot=path.points[0].spot,
                 implied_volatility=0.0,
-                session_index=0,
-                session_date=path.points[0].session_date,
             )
             for point in path.points[1:]
         ),

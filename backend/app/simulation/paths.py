@@ -217,6 +217,11 @@ def _validate_common(
         raise ValueError("implied volatility must be non-negative")
     if len(sessions) != config.number_of_steps + 1:
         raise ValueError("simulation clock point count must match generated path")
+    if any(
+        session.year_fraction_from_previous != config.step_year_fraction
+        for session in sessions[1:]
+    ):
+        raise ValueError("path year fraction must match simulation clock")
 
 
 def _validate_points(points: tuple[UnderlyingPathPoint, ...]) -> None:

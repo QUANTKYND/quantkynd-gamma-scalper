@@ -57,8 +57,6 @@ def test_maximum_hedge_count_triggers_exit() -> None:
         replace(
             point,
             spot=point.spot * 1.5,
-            session_index=0,
-            session_date=path.points[0].session_date,
         )
         for point in path.points[1:]
     )
@@ -158,12 +156,6 @@ def test_loss_limits_exit_deterministically(
             point,
             spot=path.points[0].spot,
             implied_volatility=0.0,
-            session_index=0 if expected_reason == "daily_loss_limit" else point.session_index,
-            session_date=(
-                path.points[0].session_date
-                if expected_reason == "daily_loss_limit"
-                else point.session_date
-            ),
         )
         for point in path.points[1:]
     )
