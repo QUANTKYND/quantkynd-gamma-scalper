@@ -28,7 +28,7 @@ def calculate_greek_attribution(
     valuations: tuple[OptionValuationRecord, ...],
     call_contract: OptionContract,
     put_contract: OptionContract,
-    units: int,
+    _units: int,
 ) -> tuple[GreekAttributionRecord, ...]:
     by_timestamp = {
         (record.timestamp, record.contract_id): record
@@ -47,11 +47,11 @@ def calculate_greek_attribution(
         for contract in contracts:
             previous = by_timestamp[(previous_state.timestamp, contract.contract_id)]
             current = by_timestamp[(current_state.timestamp, contract.contract_id)]
-            delta_contribution += previous.delta * spot_change * units
-            gamma_contribution += 0.5 * previous.gamma * spot_change**2 * units
-            theta_contribution += previous.theta_per_year * current_state.step_year_fraction * units
-            vega_contribution += previous.vega_per_unit_volatility * volatility_change * units
-            exact_change += (current.price - previous.price) * contract.multiplier * units
+            delta_contribution += previous.portfolio_delta * spot_change
+            gamma_contribution += 0.5 * previous.portfolio_gamma * spot_change**2
+            theta_contribution += previous.portfolio_theta_per_year * current_state.step_year_fraction
+            vega_contribution += previous.portfolio_vega_per_volatility_unit * volatility_change
+            exact_change += (current.unit_price - previous.unit_price) * previous.quantity * previous.multiplier
         approximation = delta_contribution + gamma_contribution + theta_contribution + vega_contribution
         records.append(
             GreekAttributionRecord(

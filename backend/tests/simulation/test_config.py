@@ -25,8 +25,8 @@ HASH = "sha256:" + "a" * 64
 
 def test_market_config_is_strict_and_hashable() -> None:
     config = load_simulation_market_config(CONFIG)
-    assert config.options.multiplier == 50
-    assert config.futures.delta_per_contract == 50
+    assert config.options.multiplier == 1
+    assert config.futures.delta_per_contract == 1
     assert simulation_market_config_hash(config) == simulation_market_config_hash(config)
     payload = config.model_dump(mode="python")
     payload["hidden"] = True

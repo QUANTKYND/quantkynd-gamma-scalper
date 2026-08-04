@@ -32,6 +32,20 @@ def test_engine_uses_market_contract_for_options_expiry_and_strike() -> None:
     assert result.call_contract.strike % market.options.strike_interval == 0
 
 
+def test_option_valuation_units_scale_to_position_economics() -> None:
+    strategy, market, path = inputs()
+    result = run_simulation(strategy, market, path, "no_hedge", ZERO, ZERO)
+    valuation = result.option_valuations[0]
+    scale = valuation.quantity * valuation.multiplier
+    assert valuation.market_value == Decimal(str(round(valuation.unit_price * scale, 2)))
+    assert valuation.portfolio_delta == pytest.approx(valuation.unit_delta * scale)
+    assert valuation.portfolio_gamma == pytest.approx(valuation.unit_gamma * scale)
+    assert valuation.portfolio_theta_per_year == pytest.approx(valuation.unit_theta_per_year * scale)
+    assert valuation.portfolio_vega_per_volatility_unit == pytest.approx(
+        valuation.unit_vega_per_volatility_unit * scale
+    )
+
+
 def test_engine_uses_futures_multiplier_and_delta_per_contract() -> None:
     strategy, market, path = inputs()
     shocked = replace(
@@ -58,6 +72,42 @@ def test_market_behavior_changes_run_identity() -> None:
     alternate = run_simulation(strategy, changed, path, "no_hedge", ZERO, ZERO)
     assert alternate.run_id != base.run_id
     assert alternate.market_config_hash != base.market_config_hash
+
+
+def test_option_multiplier_scales_premium_risk_and_blocks_before_ledger_fills(monkeypatch) -> None:
+    strategy, market, path = inputs()
+    baseline = run_simulation(strategy, market, path, "no_hedge", ZERO, ZERO)
+    baseline_premium = next(
+        decision.observed_value
+        for decision in baseline.risk_decisions
+        if decision.rule_id == "maximum_premium_at_risk"
+    )
+    options = market.options.model_copy(update={"multiplier": 100})
+    changed = market.model_copy(update={"options": options})
+
+    def reject_persisted_fill(*args, **kwargs):
+        pytest.fail("entry fill was persisted before premium risk approval")
+
+    monkeypatch.setattr("app.simulation.engine.PortfolioLedger.record_fill", reject_persisted_fill)
+    with pytest.raises(ValueError, match="premium_at_risk_breached"):
+        run_simulation(strategy, changed, path, "no_hedge", ZERO, ZERO)
+    assert baseline_premium > Decimal("0")
+
+
+def test_option_entry_costs_are_included_in_premium_risk() -> None:
+    strategy, market, path = inputs()
+    costs = ExecutionCostParameters(Decimal("10"), Decimal("0.001"), Decimal("1"), Decimal("2"))
+    result = run_simulation(strategy, market, path, "no_hedge", costs, ZERO)
+    premium = next(
+        decision.observed_value
+        for decision in result.risk_decisions
+        if decision.rule_id == "maximum_premium_at_risk"
+    )
+    entry_fills = result.fills[:2]
+    assert premium == sum(
+        (fill.gross_notional + fill.total_cost for fill in entry_fills),
+        start=Decimal("0"),
+    )
 
 
 def test_no_eligible_expiry_fails_explicitly() -> None:

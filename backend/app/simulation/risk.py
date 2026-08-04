@@ -4,6 +4,8 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal
 
+from app.execution.costs import money
+from app.execution.models import SimulatedFill
 from app.strategy.models import RiskPolicyConfig
 
 
@@ -74,10 +76,10 @@ def record_risk_hedge(state: SimulationRiskState) -> SimulationRiskState:
 def entry_risk_decisions(
     timestamp: datetime,
     session_date: date,
-    premium_at_risk: float,
+    premium_at_risk: Decimal,
     policy: RiskPolicyConfig,
 ) -> tuple[SimulationRiskDecision, ...]:
-    limit = policy.starting_nav_inr * policy.maximum_premium_at_risk_fraction
+    limit = money(Decimal(str(policy.starting_nav_inr)) * Decimal(str(policy.maximum_premium_at_risk_fraction)))
     breached = premium_at_risk > limit
     return (
         SimulationRiskDecision(
@@ -90,6 +92,12 @@ def entry_risk_decisions(
             "premium_at_risk_breached" if breached else "premium_at_risk_within_limit",
         ),
     )
+
+
+def option_entry_premium_at_risk(fills: tuple[SimulatedFill, ...]) -> Decimal:
+    if any(fill.side != "buy" for fill in fills):
+        raise ValueError("premium-at-risk fills must be long option entries")
+    return money(sum((fill.gross_notional + fill.total_cost for fill in fills), start=Decimal("0")))
 
 
 def state_risk_decisions(

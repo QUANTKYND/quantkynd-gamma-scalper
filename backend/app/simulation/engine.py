@@ -6,6 +6,7 @@ from decimal import Decimal
 from app.attribution.reconciliation import reconcile
 from app.attribution.greeks import calculate_greek_attribution
 from app.execution.fills import simulate_fill
+from app.execution.costs import money
 from app.execution.models import ExecutionCostParameters, OrderIntent, SimulatedFill
 from app.hedging.models import HedgeDecision, HedgePolicyState
 from app.hedging.policies import build_hedge_policy
@@ -21,6 +22,7 @@ from app.simulation.risk import (
     entry_risk_decisions,
     initialize_risk_state,
     mark_risk_state,
+    option_entry_premium_at_risk,
     record_risk_hedge,
     state_risk_decisions,
 )
@@ -83,19 +85,9 @@ def run_simulation(
     intents: list[OrderIntent] = []
     fills: list[SimulatedFill] = []
     events: list[SimulationEvent] = []
-    entry_values = _value_pair(selected.call, selected.put, initial)
-    premium = sum(record.price for record in entry_values) * strategy.position.units
-    entry_risks = entry_risk_decisions(
-        initial.timestamp,
-        initial.session_date or initial.timestamp.date(),
-        premium,
-        strategy.risk,
-    )
-    risk_records.extend(entry_risks)
-    if any(item.decision == "reject" for item in entry_risks):
-        raise ValueError("premium_at_risk_breached")
-    for contract, valuation in zip((selected.call, selected.put), entry_values, strict=True):
-        intent = OrderIntent(
+    entry_values = _value_pair(selected.call, selected.put, initial, strategy.position.units)
+    entry_intents = tuple(
+        OrderIntent(
             f"{run_id}-entry-{contract.option_type}",
             initial.timestamp,
             contract.contract_id,
@@ -106,7 +98,22 @@ def run_simulation(
             position_id,
             policy_id,
         )
-        fill = simulate_fill(intent, valuation.price, option_costs)
+        for contract in (selected.call, selected.put)
+    )
+    entry_fills = tuple(
+        simulate_fill(intent, valuation.unit_price, option_costs)
+        for intent, valuation in zip(entry_intents, entry_values, strict=True)
+    )
+    entry_risks = entry_risk_decisions(
+        initial.timestamp,
+        initial.session_date or initial.timestamp.date(),
+        option_entry_premium_at_risk(entry_fills),
+        strategy.risk,
+    )
+    risk_records.extend(entry_risks)
+    if any(item.decision == "reject" for item in entry_risks):
+        raise ValueError("premium_at_risk_breached")
+    for intent, fill in zip(entry_intents, entry_fills, strict=True):
         ledger.record_fill(fill, "option_entry", position_id)
         intents.append(intent)
         fills.append(fill)
@@ -118,14 +125,14 @@ def run_simulation(
     processed_states = []
     for state_index, state in enumerate(normalized_states):
         processed_states.append(state)
-        pair_values = _value_pair(selected.call, selected.put, state)
+        pair_values = _value_pair(selected.call, selected.put, state, strategy.position.units)
         valuations.extend(pair_values)
         for record in pair_values:
-            ledger.mark(record.contract_id, record.price)
+            ledger.mark(record.contract_id, record.unit_price)
         if futures_id in ledger.positions:
             ledger.mark(futures_id, state.futures_price)
-        option_delta = sum(record.delta for record in pair_values) * strategy.position.units
-        option_gamma = sum(record.gamma for record in pair_values) * strategy.position.units
+        option_delta = sum(record.portfolio_delta for record in pair_values)
+        option_gamma = sum(record.portfolio_gamma for record in pair_values)
         hedge_position = ledger.positions.get(futures_id)
         hedge_delta = float(hedge_position.quantity * market.futures.delta_per_contract) if hedge_position else 0.0
         net_delta = option_delta + hedge_delta
@@ -213,7 +220,7 @@ def run_simulation(
             )
         )
     final_state = processed_states[-1]
-    final_values = _value_pair(selected.call, selected.put, final_state)
+    final_values = _value_pair(selected.call, selected.put, final_state, strategy.position.units)
     for contract, valuation in zip((selected.call, selected.put), final_values, strict=True):
         position = ledger.positions[contract.contract_id]
         if position.quantity:
@@ -228,7 +235,7 @@ def run_simulation(
                 position_id,
                 policy_id,
             )
-            fill = simulate_fill(intent, valuation.price, option_costs)
+            fill = simulate_fill(intent, valuation.unit_price, option_costs)
             ledger.record_fill(fill, "option_exit", position_id)
             intents.append(intent)
             fills.append(fill)
@@ -297,7 +304,7 @@ def run_simulation(
     )
 
 
-def _value_pair(call, put, state):
+def _value_pair(call, put, state, quantity):
     records = []
     for contract in (call, put):
         valuation = value(
@@ -313,13 +320,20 @@ def _value_pair(call, put, state):
             OptionValuationRecord(
                 contract.contract_id,
                 state.timestamp,
+                quantity,
+                contract.multiplier,
                 valuation.price,
-                valuation.greeks.delta * contract.multiplier,
-                valuation.greeks.gamma * contract.multiplier,
-                valuation.greeks.theta_per_year * contract.multiplier,
-                valuation.greeks.vega_per_unit_volatility * contract.multiplier,
                 valuation.intrinsic_value,
                 valuation.time_value,
+                valuation.greeks.delta,
+                valuation.greeks.gamma,
+                valuation.greeks.theta_per_year,
+                valuation.greeks.vega_per_unit_volatility,
+                money(Decimal(str(valuation.price)) * quantity * contract.multiplier),
+                valuation.greeks.delta * quantity * contract.multiplier,
+                valuation.greeks.gamma * quantity * contract.multiplier,
+                valuation.greeks.theta_per_year * quantity * contract.multiplier,
+                valuation.greeks.vega_per_unit_volatility * quantity * contract.multiplier,
             )
         )
     return tuple(records)

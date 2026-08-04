@@ -1,13 +1,41 @@
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
+from app.execution.fills import simulate_fill
+from app.execution.models import ExecutionCostParameters, OrderIntent
 from app.simulation.risk import (
     initialize_risk_state,
     mark_risk_state,
+    option_entry_premium_at_risk,
     record_risk_hedge,
     state_risk_decisions,
 )
 from app.strategy.config import load_strategy_config
+
+
+ZERO = ExecutionCostParameters(*(Decimal("0"),) * 4)
+
+
+def option_fill(multiplier: int):
+    intent = OrderIntent(
+        f"entry-{multiplier}",
+        datetime(2026, 1, 2, 4, 0, tzinfo=UTC),
+        "NIFTY-CALL",
+        "buy",
+        2,
+        multiplier,
+        "open_long_straddle",
+        "position-1",
+        "no_hedge",
+    )
+    return simulate_fill(intent, Decimal("100"), ZERO)
+
+
+def test_option_multiplier_scales_premium_at_risk() -> None:
+    baseline = option_entry_premium_at_risk((option_fill(1),))
+    scaled = option_entry_premium_at_risk((option_fill(5),))
+    assert baseline == Decimal("200.00")
+    assert scaled == baseline * 5
 
 
 def test_position_pnl_persists_while_daily_pnl_resets() -> None:

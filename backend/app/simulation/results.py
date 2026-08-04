@@ -17,13 +17,20 @@ from app.simulation.risk import SimulationRiskDecision
 class OptionValuationRecord:
     contract_id: str
     timestamp: object
-    price: float
-    delta: float
-    gamma: float
-    theta_per_year: float
-    vega_per_unit_volatility: float
-    intrinsic_value: float
-    time_value: float
+    quantity: int
+    multiplier: int
+    unit_price: float
+    unit_intrinsic_value: float
+    unit_time_value: float
+    unit_delta: float
+    unit_gamma: float
+    unit_theta_per_year: float
+    unit_vega_per_volatility_unit: float
+    market_value: Decimal
+    portfolio_delta: float
+    portfolio_gamma: float
+    portfolio_theta_per_year: float
+    portfolio_vega_per_volatility_unit: float
 
 
 @dataclass(frozen=True)
