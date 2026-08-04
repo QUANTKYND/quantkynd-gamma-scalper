@@ -43,8 +43,19 @@ def synthetic_chain(
     strikes_above: int,
     expiry: date,
     multiplier: int,
+    relative_spread: float = 0.02,
+    volume_base: int = 1000,
+    open_interest_base: int = 5000,
 ) -> tuple[SyntheticOptionPair, ...]:
-    if forward <= 0 or strike_interval <= 0 or strikes_below < 0 or strikes_above < 0:
+    if (
+        forward <= 0
+        or strike_interval <= 0
+        or strikes_below < 0
+        or strikes_above < 0
+        or not 0 <= relative_spread <= 1
+        or volume_base < 0
+        or open_interest_base < 0
+    ):
         raise ValueError("synthetic-chain parameters are invalid")
     center = round(forward / strike_interval) * strike_interval
     strikes = [center + offset * strike_interval for offset in range(-strikes_below, strikes_above + 1)]
@@ -53,9 +64,9 @@ def synthetic_chain(
             strike=strike,
             call=OptionContract(f"{underlying}-{expiry}-C-{strike:g}", underlying, "call", strike, expiry, multiplier),
             put=OptionContract(f"{underlying}-{expiry}-P-{strike:g}", underlying, "put", strike, expiry, multiplier),
-            combined_relative_spread=0.02,
-            combined_volume=1000,
-            combined_open_interest=5000,
+            combined_relative_spread=relative_spread,
+            combined_volume=volume_base,
+            combined_open_interest=open_interest_base,
         )
         for strike in strikes
         if strike > 0

@@ -59,7 +59,7 @@ def summarize(result: SimulationResult) -> SimulationSummary:
     attribution = result.pnl_attribution
     futures_turnover = money(
         sum(
-            (fill.gross_notional for fill in result.fills if fill.instrument_id == "NIFTY-FUTURE-SIM"),
+            (fill.gross_notional for fill in result.fills if fill.instrument_id == result.futures_instrument_id),
             start=Decimal("0"),
         )
     )

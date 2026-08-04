@@ -5,6 +5,7 @@ from app.cli.run_gamma_simulation import main
 
 
 CONFIG = Path(__file__).parents[3] / "config/strategies/nifty-long-gamma-v1.yaml"
+MARKET_CONFIG = Path(__file__).parents[3] / "config/simulation/nifty-synthetic-market-v1.yaml"
 
 
 def test_simulation_cli_writes_completed_run(tmp_path, capsys) -> None:
@@ -12,6 +13,8 @@ def test_simulation_cli_writes_completed_run(tmp_path, capsys) -> None:
         [
             "--strategy-config",
             str(CONFIG),
+            "--market-config",
+            str(MARKET_CONFIG),
             "--path-generator",
             "gbm",
             "--seed",
@@ -30,6 +33,17 @@ def test_simulation_cli_writes_completed_run(tmp_path, capsys) -> None:
 
 
 def test_simulation_cli_rejects_unsupported_policy(tmp_path, capsys) -> None:
-    result = main(["--strategy-config", str(CONFIG), "--policy", "unknown", "--artifact-root", str(tmp_path)])
+    result = main(
+        [
+            "--strategy-config",
+            str(CONFIG),
+            "--market-config",
+            str(MARKET_CONFIG),
+            "--policy",
+            "unknown",
+            "--artifact-root",
+            str(tmp_path),
+        ]
+    )
     assert result == 1
     assert "unsupported policy" in capsys.readouterr().err

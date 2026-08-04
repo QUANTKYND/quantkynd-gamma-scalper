@@ -16,8 +16,18 @@ def reconcile(
     futures_id: str,
     tolerance: Decimal = Decimal("0.01"),
 ) -> SimulationReconciliation:
-    option_pnl = money(sum((position.realized_pnl for position in positions if position.instrument_id in option_ids), start=Decimal("0")))
-    futures_pnl = money(sum((position.realized_pnl for position in positions if position.instrument_id == futures_id), start=Decimal("0")))
+    option_pnl = money(
+        sum(
+            (fill.gross_notional if fill.side == "sell" else -fill.gross_notional for fill in fills if fill.instrument_id in option_ids),
+            start=Decimal("0"),
+        )
+    )
+    futures_pnl = money(
+        sum(
+            (fill.gross_notional if fill.side == "sell" else -fill.gross_notional for fill in fills if fill.instrument_id == futures_id),
+            start=Decimal("0"),
+        )
+    )
     option_costs = money(sum((fill.total_cost for fill in fills if fill.instrument_id in option_ids), start=Decimal("0")))
     futures_costs = money(sum((fill.total_cost for fill in fills if fill.instrument_id == futures_id), start=Decimal("0")))
     financing = Decimal("0.00")

@@ -43,10 +43,14 @@ class SimulationResult:
     run_id: str
     status: str
     strategy_config_hash: str
+    market_config_hash: str
     path_hash: str
     policy_id: str
     call_contract: OptionContract
     put_contract: OptionContract
+    futures_instrument_id: str
+    futures_multiplier: int
+    futures_delta_per_contract: float
     market_states: tuple[MarketState, ...]
     option_valuations: tuple[OptionValuationRecord, ...]
     hedge_decisions: tuple[HedgeDecision, ...]

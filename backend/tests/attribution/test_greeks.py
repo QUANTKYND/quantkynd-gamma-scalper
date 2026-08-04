@@ -5,6 +5,7 @@ import pytest
 
 from app.execution.models import ExecutionCostParameters
 from app.simulation.engine import run_simulation
+from app.simulation.config import load_simulation_market_config
 from app.simulation.metrics import summarize
 from app.simulation.paths import GBMPathConfig, generate_gbm_path
 from app.strategy.config import load_strategy_config
@@ -15,10 +16,11 @@ ZERO = ExecutionCostParameters(*(Decimal("0"),) * 4)
 
 def result():
     strategy = load_strategy_config("../config/strategies/nifty-long-gamma-v1.yaml")
+    market = load_simulation_market_config("../config/simulation/nifty-synthetic-market-v1.yaml")
     path = generate_gbm_path(
         GBMPathConfig(24000, 0.03, 0.2, 5, 1 / 252, 17, datetime(2026, 1, 1, tzinfo=UTC))
     )
-    return run_simulation(strategy, path, "no_hedge", ZERO, ZERO)
+    return run_simulation(strategy, market, path, "no_hedge", ZERO, ZERO)
 
 
 def test_component_sum_plus_residual_matches_exact_option_change() -> None:

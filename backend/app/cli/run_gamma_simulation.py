@@ -11,7 +11,9 @@ from pathlib import Path
 from app.execution.models import ExecutionCostParameters
 from app.services.rv_run_store import current_git_commit
 from app.simulation.artifacts import SimulationManifest, stable_payload_hash, write_simulation_artifacts
-from app.simulation.engine import SIMULATOR_VERSION, run_simulation, simulation_run_id
+from app.simulation.engine import SIMULATOR_VERSION, run_simulation, select_simulation_expiry, simulation_run_id
+from app.simulation.clock import generate_simulation_sessions
+from app.simulation.config import load_simulation_market_config, simulation_market_config_hash
 from app.simulation.metrics import summarize
 from app.simulation.paths import (
     GBMPathConfig,
@@ -35,6 +37,7 @@ FUTURES_COSTS = ExecutionCostParameters(Decimal("5"), Decimal("0.0001"), Decimal
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run an offline deterministic gamma simulation")
     parser.add_argument("--strategy-config", required=True, type=Path)
+    parser.add_argument("--market-config", required=True, type=Path)
     parser.add_argument("--path-generator", choices=("gbm", "piecewise_volatility"), default="gbm")
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--policy")
@@ -46,12 +49,14 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         strategy = load_strategy_config(args.strategy_config)
+        market = load_simulation_market_config(args.market_config)
         policy_id = args.policy or strategy.hedging.default_policy
         if policy_id not in strategy.hedging.benchmark_policies:
             raise ValueError(f"unsupported policy: {policy_id}")
-        path = _path(args.path_generator, args.seed)
+        path = _path(args.path_generator, args.seed, strategy, market)
         config_hash = strategy_config_hash(strategy)
-        run_id = simulation_run_id(config_hash, path.path_hash, policy_id, OPTION_COSTS, FUTURES_COSTS)
+        market_hash = simulation_market_config_hash(market)
+        run_id = simulation_run_id(config_hash, market_hash, path.path_hash, policy_id, OPTION_COSTS, FUTURES_COSTS)
         policy_parameters = strategy.hedging.model_dump(mode="json").get(policy_id, {})
         cost_hash = stable_payload_hash({"options": asdict(OPTION_COSTS), "futures": asdict(FUTURES_COSTS)})
         final_dir = args.artifact_root.resolve() / "runs" / run_id
@@ -78,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         holder = {}
 
         def write(run_dir: Path) -> None:
-            result = run_simulation(strategy, path, policy_id, OPTION_COSTS, FUTURES_COSTS)
+            result = run_simulation(strategy, market, path, policy_id, OPTION_COSTS, FUTURES_COSTS)
             if result.status != "complete":
                 raise RuntimeError(result.exit_reason)
             holder["result"] = result
@@ -93,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
             "run_id": completed.run_id,
             "strategy_id": strategy.strategy_id,
             "strategy_config_hash": strategy_config_hash(strategy),
+            "market_config_hash": market_hash,
             "path_generator": path.generator_id,
             "seed": path.seed,
             "policy": policy_id,
@@ -111,19 +117,53 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
-def _path(generator: str, seed: int):
+def _path(generator: str, seed: int, strategy, market):
+    expiry = select_simulation_expiry(strategy, market, DEFAULT_START.date())
+    decision_count = strategy.expiry.holding_horizon_sessions * len(market.clock.decision_times_local) + 1
+    sessions = generate_simulation_sessions(
+        DEFAULT_START.astimezone().date(),
+        strategy.expiry.holding_horizon_sessions + 1,
+        market.clock,
+        strategy.entry.entry_time_local,
+    )[:decision_count]
+    step_fraction = 1 / (market.clock.trading_periods_per_year * len(market.clock.decision_times_local))
+    futures_years = (
+        strategy.expiry.holding_horizon_sessions + market.futures.expiry_buffer_sessions
+    ) / market.clock.trading_periods_per_year
     if generator == "gbm":
-        return generate_gbm_path(GBMPathConfig(24000, 0.04, 0.20, 5, 1 / 252, seed, DEFAULT_START))
+        return generate_gbm_path(
+            GBMPathConfig(
+                24000,
+                0.04,
+                0.20,
+                decision_count - 1,
+                step_fraction,
+                seed,
+                DEFAULT_START,
+                option_expiry_years=expiry.time_to_expiry_years,
+                futures_maturity_years=futures_years,
+            ),
+            sessions,
+            expiry,
+        )
+    midpoint = (decision_count - 1) // 2
     return generate_piecewise_path(
         PiecewisePathConfig(
             24000,
             0.04,
-            (VolatilityRegime(1, 2, 0.12), VolatilityRegime(3, 5, 0.30)),
-            5,
-            1 / 252,
+            (
+                VolatilityRegime(1, midpoint, 0.12),
+                VolatilityRegime(midpoint + 1, decision_count - 1, 0.30),
+            ),
+            decision_count - 1,
+            step_fraction,
             seed,
             DEFAULT_START,
-        )
+            option_expiry_years=expiry.time_to_expiry_years,
+            futures_maturity_years=futures_years,
+        ),
+        sessions,
+        expiry,
     )
 
 

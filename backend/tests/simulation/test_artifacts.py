@@ -8,6 +8,7 @@ from app.execution.models import ExecutionCostParameters
 from app.services.rv_run_store import current_git_commit
 from app.simulation.artifacts import REQUIRED_SIMULATION_ARTIFACTS, SimulationManifest, stable_payload_hash, write_simulation_artifacts
 from app.simulation.engine import SIMULATOR_VERSION, run_simulation
+from app.simulation.config import load_simulation_market_config
 from app.simulation.paths import GBMPathConfig, generate_gbm_path
 from app.simulation.run_store import SimulationRunStore
 from app.strategy.config import load_strategy_config
@@ -19,8 +20,9 @@ ZERO = ExecutionCostParameters(*(Decimal("0"),) * 4)
 
 def inputs():
     strategy = load_strategy_config("../config/strategies/nifty-long-gamma-v1.yaml")
+    market = load_simulation_market_config("../config/simulation/nifty-synthetic-market-v1.yaml")
     path = generate_gbm_path(GBMPathConfig(24000, 0.03, 0.2, 5, 1 / 252, 17, datetime(2026, 1, 1, tzinfo=UTC)))
-    result = run_simulation(strategy, path, "no_hedge", ZERO, ZERO)
+    result = run_simulation(strategy, market, path, "no_hedge", ZERO, ZERO)
     return strategy, path, result
 
 
