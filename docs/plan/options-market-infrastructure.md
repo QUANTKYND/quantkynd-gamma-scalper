@@ -28,7 +28,7 @@ Provider sequence identity requires an explicit non-empty scope. Semantic identi
 
 ## O1 — Postgres persistence
 
-DATA-1.1 status: REVIEW CORRECTIONS IMPLEMENTED; FINAL ACCEPTANCE EVIDENCE PENDING. Revision `20260804_02` separates semantic IDs from append-only temporal record IDs for catalogue, instrument-version, provider-mapping, and session-version state. Locked single-successor writes, graph-validated single-snapshot reads, final one-transaction units of work, and sentinel/advisory-lock destructive safety are implemented. Quote/trade/quality persistence, provider catalogue ingestion, retention, and production operations remain deferred.
+DATA-1.1 status: ACCEPTED. Revision `20260804_02` separates semantic IDs from append-only temporal record IDs for catalogue, instrument-version, provider-mapping, and session-version state. Locked single-successor writes, graph-validated single-snapshot reads, final one-transaction units of work, and sentinel/advisory-lock destructive safety passed the zero-skip PostgreSQL migration, concurrency, and restore gates recorded in `docs/implementation/DATA-1.1-postgres-migration-foundation.md`. Quote/trade/quality persistence, provider catalogue ingestion, retention, and production operations remain deferred.
 
 Add:
 

@@ -1156,3 +1156,175 @@ DATA-1.1 database acceptance passed. Host-installed PostgreSQL client packages r
 Provider catalogue download/parsing and diff reports remain DATA-1.2. Normalized quote, trade, quality-assessment, chain-snapshot, IV, Greeks, smile/surface, implied-variance, retention, retry, production backup scheduling, and operational database metrics remain deferred to their owning milestones.
 
 No quote persistence, provider ingestion, Redis, IV or surface implementation, frontend or API catalogue path, strategy expansion, paper routing, live-capital route, broker order placement, or change to deterministic simulator behavior or hashes was introduced.
+
+## Review-correction acceptance evidence — 2026-08-04
+
+### Provenance
+
+- Branch: `feature/data-1-postgres-migration-foundation`
+- Reviewed implementation SHA: `4548b66a83fa84b8d50558e2834914fec2263015`
+- Reviewed final SHA: `8f1aa0f0abb4cddc70214a894cc175561d6589de`
+- Review-correction starting SHA: `959148480e53325584f0a3654b004d0c05ce4d0d`
+- Preserved standards-only branch commit before correction commits: `17eb4bf0993ce8a33d7bde32bee6db495b4faa71`
+- Corrected implementation ending SHA: `d16f20f56aacb45008b3f34e5e7fe00ee6547f85`
+- Final evidence-only SHA: reported in the final handoff because a commit cannot contain its own resulting SHA
+- Migration revisions: `20260804_01`, `20260804_02 (head)`
+- Acceptance status: passed with zero skipped DATA-1.1 PostgreSQL tests
+
+### Correction commits
+
+```text
+b936a7d fix(data): enforce append-only temporal persistence
+f4e2551 fix(data): harden destructive database verification
+b29bda8 docs(data): document DATA-1.1 review corrections
+d16f20f test(data): restore migration fixture to head
+```
+
+### Corrected design
+
+- Semantic tables retain catalogue-version, instrument-version, mapping, and session-version identities. Four append-only record tables provide deterministic knowledge-record identity, provenance, scope, knowledge time, and immutable self-table predecessor edges.
+- Partial unique indexes enforce one direct successor. Repository writes lock the predecessor and validate existence, scope, strict time increase, and successor absence in one transaction. Concurrent competing successors yield one commit and one explicit conflict.
+- Repeatable-read units of work provide one transaction snapshot. Resolution validates the visible graph, applies market eligibility, hides a predecessor only for an eligible visible successor, and fails closed for corrupt graphs or multiple leaves.
+- Revision `20260804_02` migrates every legacy semantic row to one deterministic root record and aborts before DDL if any legacy `superseded_at` is non-null. Downgrade refuses append-only history that revision `20260804_01` cannot represent losslessly.
+- Destructive operations require explicit opt-in, exact connected database names, loopback or a second override, a pre-bootstrapped purpose-specific control-schema sentinel, and an advisory lock. The sentinel is never auto-created by verification and survives replacement of `public`.
+- Successful commit, explicit rollback, and commit failure finalize a unit of work. Captured repositories and repeated transaction decisions then raise `UnitOfWorkStateError`; context exit only closes or rolls back an unfinished transaction.
+
+### Files changed by the correction
+
+```text
+backend/.env.example
+backend/alembic/versions/20260804_02_temporal_records.py
+backend/app/cli/bootstrap_disposable_database.py
+backend/app/cli/verify_database_restore.py
+backend/app/core/database_config.py
+backend/app/instruments/ports.py
+backend/app/instruments/temporal_records.py
+backend/app/persistence/postgres/database_safety.py
+backend/app/persistence/postgres/engine.py
+backend/app/persistence/postgres/fixtures.py
+backend/app/persistence/postgres/mappings.py
+backend/app/persistence/postgres/models.py
+backend/app/persistence/postgres/repositories.py
+backend/app/persistence/postgres/unit_of_work.py
+backend/app/persistence/postgres/verification.py
+backend/tests/persistence/conftest.py
+backend/tests/persistence/test_database_safety.py
+backend/tests/persistence/test_mappings.py
+backend/tests/persistence/test_postgres_migrations.py
+backend/tests/persistence/test_postgres_repositories.py
+backend/tests/persistence/test_restore_verification.py
+backend/tests/persistence/test_temporal_records.py
+backend/tests/persistence/test_unit_of_work.py
+docs/conventions.md
+docs/data-models.md
+docs/design.md
+docs/environment.md
+docs/implementation/DATA-1.1-postgres-migration-foundation.md
+docs/observability.md
+docs/plan/acceptance-gates.md
+docs/plan/options-market-infrastructure.md
+docs/security.md
+docs/testing.md
+```
+
+### Offline verification
+
+```text
+Command: cd backend && UV_CACHE_DIR=/tmp/uv-cache uv run python -m compileall -q app tests
+Result: PASS, exit 0, no output
+
+Command: cd backend && env -u DATABASE_URL -u DATABASE_RESTORE_TEST_URL -u DATABASE_ALLOW_DESTRUCTIVE_TEST_OPERATIONS -u DATABASE_EXPECTED_INTEGRATION_TEST_NAME -u DATABASE_EXPECTED_RESTORE_TEST_NAME UV_CACHE_DIR=/tmp/uv-cache uv run pytest tests/persistence/test_database_config.py tests/persistence/test_mappings.py tests/persistence/test_restore_verification.py tests/persistence/test_temporal_records.py tests/persistence/test_unit_of_work.py -q
+Result: PASS — 36 passed in 0.11s
+
+Command: cd backend && UV_CACHE_DIR=/tmp/uv-cache uv lock --check
+Result: PASS — Resolved 63 packages in 0.89ms
+```
+
+No backend formatter, linter, or type checker is configured in `backend/pyproject.toml`; none was claimed as run.
+
+### Real PostgreSQL verification
+
+```text
+Environment: dedicated quantkynd_test and quantkynd_restore databases; destructive opt-in true; exact expected names configured; integration and restore sentinels pre-bootstrapped
+Command: cd backend && UV_CACHE_DIR=/tmp/uv-cache uv run pytest
+Result: PASS — 383 passed in 11.15s, zero skipped
+```
+
+The suite includes concurrent competing successors, strict successor time and scope, missing/self/cross-entity/cyclic/branched graph refusal, current single-snapshot reads, catalogue A/B lifecycle, record collision/idempotency, unit-of-work finality, wrong/missing sentinel refusal, no sentinel auto-creation, sentinel survival, and advisory-lock contention.
+
+### Migration cycle
+
+```text
+Command: cd backend && UV_CACHE_DIR=/tmp/uv-cache uv run pytest tests/persistence/test_postgres_migrations.py -vv
+Result: PASS — 2 passed in 1.76s
+```
+
+The locked test upgraded to `20260804_01`, inserted a complete legacy DATA-1.1 fixture, upgraded to `20260804_02`, verified deterministic durable record IDs, ran `alembic check`, downgraded to `20260804_01`, downgraded to base, re-upgraded to head, and reran drift detection. The second case proved that non-null legacy `superseded_at` aborts migration and then safely restored the disposable database to head.
+
+```text
+Command: cd backend && UV_CACHE_DIR=/tmp/uv-cache uv run alembic upgrade head
+Result: PASS
+Command: cd backend && UV_CACHE_DIR=/tmp/uv-cache uv run alembic current
+Result: PASS — 20260804_02 (head)
+Command: cd backend && UV_CACHE_DIR=/tmp/uv-cache uv run alembic check
+Result: PASS — No new upgrade operations detected.
+```
+
+### Dump and restore equivalence
+
+```text
+pg_dump --version: pg_dump (PostgreSQL) 17.10
+pg_restore --version: pg_restore (PostgreSQL) 17.10
+Server image: postgres:17-alpine
+Source revision: 20260804_02
+Restored revision: 20260804_02
+Canonical digest: sha256:615559d75fefe30350ec3c5f61b904dbd8317e9d05193d848f1a5d3a79ed05ac
+Revision match: true
+Digest match: true
+Semantic and record ID match: true
+Historical/current provider, session, and catalogue A/B query match: true
+Temporary dump removed: true
+Target safety rechecked: true
+```
+
+Row counts matched exactly:
+
+```text
+catalogue_versions=2
+catalogue_version_records=2
+market_instruments=3
+underlying_instruments=1
+futures_contracts=1
+option_contracts=1
+instrument_versions=4
+instrument_version_records=4
+provider_contract_mappings=2
+provider_mapping_records=2
+trading_sessions=1
+trading_session_versions=2
+trading_session_version_records=2
+```
+
+The Linux WSL environment did not have host-installed clients. The acceptance command used temporary launchers for the genuine PostgreSQL 17.10 `pg_dump` and `pg_restore` executables from the official running test-service container. No restore behavior was mocked or weakened.
+
+### Frontend and repository hygiene
+
+```text
+Command: cd frontend && npm run lint
+Result: PASS — eslint .
+Command: cd frontend && npm run build
+Result: PASS — TypeScript and Vite production build completed; 12,316 modules transformed in 962ms
+Note: the existing non-failing warning for a minified chunk larger than 500 kB remains.
+
+Command: git diff --check
+Result: PASS
+Command: tracked generated-artifact scan
+Result: PASS — no tracked cache, build, dump, or backup artifact matched
+Command: private-key, AWS-key, and GitHub-token pattern scan
+Result: PASS — no match
+Secret scanner discovery: no gitleaks, detect-secrets, git-secrets, or repository-owned scanner is installed or configured
+```
+
+### Remaining deferred scope
+
+Provider catalogue ingestion, normalized quote/trade/quality persistence, Redis, IV/Greeks/smiles/surfaces, strategy and backtest changes, paper routing, production backup scheduling, broker order placement, and live-capital paths remain outside DATA-1.1. Host installation of PostgreSQL client packages remains an environment task; the accepted Docker-backed client path uses the server-compatible official binaries.
