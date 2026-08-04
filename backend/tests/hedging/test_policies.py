@@ -22,7 +22,7 @@ def state(net_delta: float, step: int = 1, contract_delta: float = 0.1) -> Hedge
 def test_no_hedge_never_trades() -> None:
     decision = NoHedgePolicy().decide(state(100))
     assert decision.action == "hold"
-    assert decision.requested_quantity == 0
+    assert decision.rounded_requested_futures_quantity == 0
 
 
 def test_fixed_interval_only_trades_on_schedule() -> None:
@@ -35,8 +35,8 @@ def test_threshold_holds_then_trades_to_zero() -> None:
     policy = DeltaThresholdPolicy(0.1, 0)
     assert policy.decide(state(0.1)).action == "hold"
     decision = policy.decide(state(0.31))
-    assert decision.requested_quantity == -3
-    assert abs(decision.post_trade_residual_delta) < 0.011
+    assert decision.rounded_requested_futures_quantity == -3
+    assert abs(decision.net_delta_after_fill) < 0.011
 
 
 def test_constant_band_trades_to_nearest_boundary() -> None:
@@ -52,9 +52,10 @@ def test_constant_band_trades_to_nearest_boundary() -> None:
 
 def test_futures_rounding_is_half_even_and_residual_is_recorded() -> None:
     decision = DeltaThresholdPolicy(0, 0).decide(state(0.25, contract_delta=0.1))
-    assert decision.continuous_target_quantity == -2.5
-    assert decision.requested_quantity == -2
-    assert decision.post_trade_residual_delta == 0.04999999999999999
+    assert decision.continuous_target_futures_quantity == -2.5
+    assert decision.rounded_requested_futures_quantity == -2
+    assert decision.net_delta_after_fill == 0.04999999999999999
+    assert decision.quantity_rounding_residual_delta == 0.04999999999999999
 
 
 def test_wider_band_produces_no_more_trades_on_same_states() -> None:

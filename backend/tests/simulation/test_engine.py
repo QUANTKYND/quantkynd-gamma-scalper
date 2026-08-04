@@ -86,9 +86,47 @@ def test_frictionless_hedging_reduces_delta_error_on_controlled_path() -> None:
         for state in path.states[1:]
     )
     shocked = replace(path, states=shocked_states, path_hash="sha256:" + "d" * 64)
-    unhedged = summarize(run_simulation(strategy, market, shocked, "no_hedge", ZERO, ZERO))
-    hedged = summarize(run_simulation(strategy, market, shocked, "fixed_interval", ZERO, ZERO))
-    assert hedged.net_delta_rmse < unhedged.net_delta_rmse
+    unhedged_result = run_simulation(strategy, market, shocked, "no_hedge", ZERO, ZERO)
+    hedged_result = run_simulation(strategy, market, shocked, "fixed_interval", ZERO, ZERO)
+    unhedged = summarize(unhedged_result)
+    hedged = summarize(hedged_result)
+    assert hedged.post_hedge_residual_delta_rmse < unhedged.post_hedge_residual_delta_rmse
+    traded = [decision for decision in hedged_result.hedge_decisions if decision.executed_futures_quantity]
+    assert traded
+    assert all(abs(decision.net_delta_after_fill) < abs(decision.net_delta_before_decision) for decision in traded)
+
+
+def test_hold_decisions_preserve_timed_delta_and_summary_uses_each_timing() -> None:
+    strategy, market, path = inputs()
+    result = run_simulation(strategy, market, path, "no_hedge", ZERO, ZERO)
+    assert result.hedge_decisions
+    assert all(
+        decision.net_delta_before_decision == decision.net_delta_after_fill
+        and decision.rounded_requested_futures_quantity == 0
+        and decision.executed_futures_quantity == 0
+        for decision in result.hedge_decisions
+    )
+    summary = summarize(result)
+    assert summary.maximum_absolute_pre_hedge_net_delta == max(
+        abs(decision.net_delta_before_decision) for decision in result.hedge_decisions
+    )
+    assert summary.maximum_absolute_post_hedge_residual_delta == max(
+        abs(decision.net_delta_after_fill) for decision in result.hedge_decisions
+    )
+
+
+def test_decision_event_records_aligned_before_and_after_state() -> None:
+    strategy, market, path = inputs()
+    costs = ExecutionCostParameters(Decimal("5"), Decimal("0"), Decimal("0.25"), Decimal("0"))
+    result = run_simulation(strategy, market, path, "fixed_interval", ZERO, costs)
+    events = [event for event in result.events if event.event_type == "decision_completed"]
+    assert len(events) == len(result.hedge_decisions)
+    for event, decision in zip(events, result.hedge_decisions, strict=True):
+        assert event.timestamp == decision.timestamp
+        assert event.details["net_delta_before_decision"] == decision.net_delta_before_decision
+        assert event.details["net_delta_after_fill"] == decision.net_delta_after_fill
+        assert event.details["portfolio_value_before_fill"] == str(decision.portfolio_value_before_fill)
+        assert event.details["portfolio_value_after_fill"] == str(decision.portfolio_value_after_fill)
 
 
 def test_more_trading_increases_modeled_costs() -> None:

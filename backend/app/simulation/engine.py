@@ -187,15 +187,16 @@ def run_simulation(
                 state.risk_free_rate,
             )
         )
-        decisions.append(decision)
-        if decision.requested_quantity:
-            side = "buy" if decision.requested_quantity > 0 else "sell"
+        portfolio_value_before_fill = ledger.portfolio_value()
+        executed_quantity = 0
+        if decision.rounded_requested_futures_quantity:
+            side = "buy" if decision.rounded_requested_futures_quantity > 0 else "sell"
             intent = OrderIntent(
                 f"{run_id}-hedge-{state.step_index}-{risk_state.total_hedges}",
                 state.timestamp,
                 futures_id,
                 side,
-                abs(decision.requested_quantity),
+                abs(decision.rounded_requested_futures_quantity),
                 market.futures.multiplier,
                 decision.reason_code,
                 position_id,
@@ -206,6 +207,23 @@ def run_simulation(
             intents.append(intent)
             fills.append(fill)
             risk_state = record_risk_hedge(risk_state)
+            executed_quantity = decision.rounded_requested_futures_quantity
+        hedge_delta_after_fill = hedge_delta + executed_quantity * market.futures.delta_per_contract
+        net_delta_after_fill = option_delta + hedge_delta_after_fill
+        portfolio_value_after_fill = ledger.portfolio_value()
+        decision = replace(
+            decision,
+            executed_futures_quantity=executed_quantity,
+            option_delta_after_fill=option_delta,
+            hedge_delta_after_fill=hedge_delta_after_fill,
+            net_delta_after_fill=net_delta_after_fill,
+            quantity_rounding_residual_delta=net_delta_after_fill - decision.target_net_delta,
+            portfolio_value_before_fill=portfolio_value_before_fill,
+            portfolio_value_after_fill=portfolio_value_after_fill,
+            session_hedge_count=risk_state.hedges_in_current_session,
+            total_hedge_count=risk_state.total_hedges,
+        )
+        decisions.append(decision)
         events.append(
             SimulationEvent(
                 len(events) + 1,
@@ -213,9 +231,18 @@ def run_simulation(
                 "decision_completed",
                 position_id,
                 {
-                    "net_delta": net_delta,
+                    "option_delta_before_decision": option_delta,
+                    "hedge_delta_before_decision": hedge_delta,
+                    "net_delta_before_decision": net_delta,
+                    "continuous_target_futures_quantity": decision.continuous_target_futures_quantity,
+                    "rounded_requested_futures_quantity": decision.rounded_requested_futures_quantity,
+                    "executed_futures_quantity": decision.executed_futures_quantity,
+                    "option_delta_after_fill": decision.option_delta_after_fill,
+                    "hedge_delta_after_fill": decision.hedge_delta_after_fill,
+                    "net_delta_after_fill": decision.net_delta_after_fill,
+                    "portfolio_value_before_fill": str(portfolio_value_before_fill),
+                    "portfolio_value_after_fill": str(portfolio_value_after_fill),
                     "action": decision.action,
-                    "portfolio_value": str(ledger.portfolio_value()),
                 },
             )
         )

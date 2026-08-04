@@ -106,7 +106,8 @@ def main(argv: list[str] | None = None) -> int:
             "terminal_pnl": str(summary.terminal_net_pnl),
             "total_costs": str(summary.total_transaction_costs),
             "hedge_count": summary.hedge_count,
-            "maximum_absolute_delta": summary.maximum_absolute_net_delta,
+            "maximum_absolute_pre_hedge_delta": summary.maximum_absolute_pre_hedge_net_delta,
+            "maximum_absolute_post_hedge_delta": summary.maximum_absolute_post_hedge_residual_delta,
             "reconciliation_residual": str(summary.ledger_reconciliation_residual),
             "artifact_directory": completed.artifact_directory,
         }

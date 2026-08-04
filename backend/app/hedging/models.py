@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal, Protocol
 
 
@@ -33,16 +34,24 @@ class HedgePolicyState:
 class HedgeDecision:
     timestamp: datetime
     policy_id: str
-    current_option_delta: float
-    current_hedge_delta: float
-    current_net_delta: float
+    option_delta_before_decision: float
+    hedge_delta_before_decision: float
+    net_delta_before_decision: float
     target_net_delta: float
     lower_boundary: float | None
     upper_boundary: float | None
     action: HedgeAction
-    continuous_target_quantity: float
-    requested_quantity: int
-    post_trade_residual_delta: float
+    continuous_target_futures_quantity: float
+    rounded_requested_futures_quantity: int
+    executed_futures_quantity: int
+    option_delta_after_fill: float
+    hedge_delta_after_fill: float
+    net_delta_after_fill: float
+    quantity_rounding_residual_delta: float
+    portfolio_value_before_fill: Decimal | None
+    portfolio_value_after_fill: Decimal | None
+    session_hedge_count: int
+    total_hedge_count: int
     reason_code: str
 
 

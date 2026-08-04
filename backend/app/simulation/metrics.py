@@ -24,9 +24,12 @@ class SimulationSummary:
     total_transaction_costs: Decimal
     hedge_count: int
     turnover: Decimal
-    maximum_absolute_net_delta: float | None
-    mean_absolute_net_delta: float | None
-    net_delta_rmse: float | None
+    maximum_absolute_pre_hedge_net_delta: float | None
+    mean_absolute_pre_hedge_net_delta: float | None
+    pre_hedge_net_delta_rmse: float | None
+    maximum_absolute_post_hedge_residual_delta: float | None
+    mean_absolute_post_hedge_residual_delta: float | None
+    post_hedge_residual_delta_rmse: float | None
     maximum_drawdown: Decimal | None
     position_holding_duration_seconds: float
     delta_contribution: float
@@ -43,12 +46,14 @@ class SimulationSummary:
 
 
 def summarize(result: SimulationResult) -> SimulationSummary:
-    net_deltas = [float(event.details["net_delta"]) for event in result.events if "net_delta" in event.details]
+    pre_hedge_deltas = [decision.net_delta_before_decision for decision in result.hedge_decisions]
+    post_hedge_deltas = [decision.net_delta_after_fill for decision in result.hedge_decisions]
     values = [result.starting_nav]
     values.extend(
-        Decimal(str(event.details["portfolio_value"]))
-        for event in result.events
-        if "portfolio_value" in event.details
+        value
+        for decision in result.hedge_decisions
+        for value in (decision.portfolio_value_before_fill, decision.portfolio_value_after_fill)
+        if value is not None
     )
     values.append(result.terminal_portfolio_value)
     peak = values[0]
@@ -78,9 +83,12 @@ def summarize(result: SimulationResult) -> SimulationSummary:
         result.reconciliation.option_costs + result.reconciliation.futures_costs,
         result.hedge_count,
         futures_turnover,
-        max((abs(value) for value in net_deltas), default=None),
-        sum(abs(value) for value in net_deltas) / len(net_deltas) if net_deltas else None,
-        math.sqrt(sum(value * value for value in net_deltas) / len(net_deltas)) if net_deltas else None,
+        max((abs(value) for value in pre_hedge_deltas), default=None),
+        sum(abs(value) for value in pre_hedge_deltas) / len(pre_hedge_deltas) if pre_hedge_deltas else None,
+        math.sqrt(sum(value * value for value in pre_hedge_deltas) / len(pre_hedge_deltas)) if pre_hedge_deltas else None,
+        max((abs(value) for value in post_hedge_deltas), default=None),
+        sum(abs(value) for value in post_hedge_deltas) / len(post_hedge_deltas) if post_hedge_deltas else None,
+        math.sqrt(sum(value * value for value in post_hedge_deltas) / len(post_hedge_deltas)) if post_hedge_deltas else None,
         money(max_drawdown),
         (result.market_states[-1].timestamp - result.market_states[0].timestamp).total_seconds(),
         sum(item.delta_contribution for item in attribution),
