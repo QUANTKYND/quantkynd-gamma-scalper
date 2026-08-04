@@ -3,17 +3,29 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import asdict
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
 from app.execution.models import ExecutionCostParameters
 from app.services.rv_run_store import current_git_commit
-from app.simulation.artifacts import SimulationManifest, stable_payload_hash, write_simulation_artifacts
-from app.simulation.engine import SIMULATOR_VERSION, run_simulation, select_simulation_expiry, simulation_run_id
+from app.simulation.artifacts import SimulationManifest, write_simulation_artifacts
 from app.simulation.clock import generate_simulation_sessions
-from app.simulation.config import load_simulation_market_config, simulation_market_config_hash
+from app.simulation.config import (
+    load_simulation_market_config,
+    policy_config_hash,
+    simulation_market_config_hash,
+    simulation_run_config_hash,
+    stable_hash,
+)
+from app.simulation.engine import (
+    SIMULATOR_VERSION,
+    build_simulation_run_config,
+    run_simulation,
+    select_simulation_contracts,
+    select_simulation_expiry,
+    simulation_run_id,
+)
 from app.simulation.metrics import summarize
 from app.simulation.paths import (
     GBMPathConfig,
@@ -56,9 +68,16 @@ def main(argv: list[str] | None = None) -> int:
         path = _path(args.path_generator, args.seed, strategy, market)
         config_hash = strategy_config_hash(strategy)
         market_hash = simulation_market_config_hash(market)
-        run_id = simulation_run_id(config_hash, market_hash, path.path_hash, policy_id, OPTION_COSTS, FUTURES_COSTS)
-        policy_parameters = strategy.hedging.model_dump(mode="json").get(policy_id, {})
-        cost_hash = stable_payload_hash({"options": asdict(OPTION_COSTS), "futures": asdict(FUTURES_COSTS)})
+        run_config = build_simulation_run_config(
+            strategy,
+            market,
+            path,
+            policy_id,
+            OPTION_COSTS,
+            FUTURES_COSTS,
+        )
+        run_id = simulation_run_id(run_config)
+        selected_expiry, selected = select_simulation_contracts(strategy, market, path)
         final_dir = args.artifact_root.resolve() / "runs" / run_id
         manifest = SimulationManifest(
             run_id=run_id,
@@ -69,13 +88,25 @@ def main(argv: list[str] | None = None) -> int:
             strategy_version=strategy.strategy_version,
             strategy_config_hash=config_hash,
             simulator_version=SIMULATOR_VERSION,
+            market_config_hash=market_hash,
             path_generator=path.generator_id,
-            path_config_hash=stable_payload_hash(path.canonical_parameters),
+            path_config_hash=run_config.path_config_hash,
+            path_hash=path.path_hash,
             seed=path.seed,
-            market_scenario_hash=path.path_hash,
             policy_id=policy_id,
-            policy_parameters=policy_parameters,
-            cost_model_hash=cost_hash,
+            policy_config_hash=policy_config_hash(policy_id, run_config.policy_parameters),
+            option_cost_model_hash=stable_hash(run_config.option_cost_model),
+            futures_cost_model_hash=stable_hash(run_config.futures_cost_model),
+            runtime_risk_hash=stable_hash(run_config.runtime_risk_inputs),
+            run_config_hash=simulation_run_config_hash(run_config),
+            simulation_clock_config=market.clock.model_dump(mode="json"),
+            selected_expiry=selected_expiry.expiry_session_date,
+            selected_strike=selected.call.strike,
+            option_multiplier=market.options.multiplier,
+            futures_multiplier=market.futures.multiplier,
+            futures_delta_per_contract=market.futures.delta_per_contract,
+            accounting_tolerance=run_config.accounting_tolerance,
+            quantity_rounding=run_config.quantity_rounding,
             git_commit=current_git_commit(REPO_ROOT),
             artifact_directory=str(final_dir),
             failure_reason=None,
@@ -87,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             if result.status != "complete":
                 raise RuntimeError(result.exit_reason)
             holder["result"] = result
-            write_simulation_artifacts(run_dir, manifest, strategy, path, result)
+            write_simulation_artifacts(run_dir, manifest, strategy, market, path, result)
 
         completed = SimulationRunStore(args.artifact_root).create_run(manifest, write)
         if completed.status == "failed":

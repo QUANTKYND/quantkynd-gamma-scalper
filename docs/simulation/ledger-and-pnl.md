@@ -11,3 +11,7 @@ terminal P&L = gross option P&L + gross futures P&L
 ```
 
 The default reconciliation tolerance is INR 0.01. A larger residual fails the run. Greek attribution never changes ledger cash, positions, or exact P&L.
+
+Entry premium at risk is the absolute reference notional of both long option fills plus their configured entry transaction costs. Each reference notional is `unit price × quantity × option multiplier`. Risk approval occurs before either entry fill is journaled as an open position.
+
+Position P&L is measured from the post-entry portfolio value and persists across sessions. Session P&L is measured from the first mark of each session and resets at the session boundary. The per-session hedge count resets with session P&L; total hedge count remains cumulative.

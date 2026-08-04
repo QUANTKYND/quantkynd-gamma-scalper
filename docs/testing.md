@@ -75,7 +75,7 @@ Use generated cases for invariants:
 
 LIVE-RV-1.1 deterministically tests multi-instrument accepted-quote sequencing, invalid quote rejection, shared concurrent subscription readiness, failure cleanup and retry, in-flight capacity, WebSocket denial and close behavior, initial event ordering, disconnect cleanup, quote coalescing, unchanged-status silence, segment-specific status, India exchange dates, and finalized-history rollover.
 
-STRAT-1 tests strict parsing, missing/unknown fields, cross-field constraints, timezone/time parsing, semantic hashing, behavioral hash changes, and CLI status. SIM-1 tests reference pricing, parity, finite-difference Greeks, IV boundaries and round trips, deterministic selection and paths, separated fill costs, ledger identities, five policies, Whalley–Wilmott qualitative behavior, risk exits, no-look-ahead decisions, attribution, immutable artifacts, and CLI runs.
+STRAT-1 tests strict parsing, missing/unknown fields, cross-field constraints, timezone/time parsing, semantic hashing, behavioral hash changes, and CLI status. SIM-1 tests contract-driven expiry, strikes, multipliers and futures delta; shared session/expiry time; exit-before-hedge ordering; position/session risk state; the exact Whalley–Wilmott formula; complete run identity; multiplier-aware premium risk; pre/post hedge metrics; explicit valuation units; non-finite numerical rejection and IV reason codes; deterministic paths; ledger identities; immutable full-spec artifacts; and CLI runs.
 
 ## Frontend tests
 

@@ -8,4 +8,6 @@ Every policy receives only current timestamp, step/session indexes, option delta
 - `constant_band` holds inside inclusive fixed boundaries and trades to the nearest breached boundary.
 - `whalley_wilmott` computes the documented state-dependent half-width and trades to its nearest boundary.
 
-Continuous futures quantity is `(target net delta - current net delta) / futures delta per contract`. It rounds to the nearest integer contract with half-even ties. Zero-rounded requests hold, and every decision records continuous quantity and post-trade residual delta.
+Continuous futures quantity is `(target net delta - pre-hedge net delta) / futures delta per contract`. It rounds to the nearest integer contract with half-even ties. Zero-rounded requests hold.
+
+Every decision separately records option, hedge, and net delta before the decision; continuous target, rounded request, and executed futures quantity; option, hedge, and net delta after the fill; the rounding residual; before/after portfolio value; per-session hedge count; and total hedge count. Summary statistics never mix policy-trigger delta with post-fill residual delta.

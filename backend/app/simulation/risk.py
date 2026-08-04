@@ -18,6 +18,10 @@ class SimulationRiskDecision:
     configured_limit: float | Decimal | bool
     decision: str
     reason_code: str
+    position_pnl_from_entry: Decimal
+    session_pnl: Decimal
+    session_hedge_count: int
+    total_hedge_count: int
 
 
 @dataclass(frozen=True)
@@ -90,6 +94,10 @@ def entry_risk_decisions(
             limit,
             "reject" if breached else "approve",
             "premium_at_risk_breached" if breached else "premium_at_risk_within_limit",
+            Decimal("0.00"),
+            Decimal("0.00"),
+            0,
+            0,
         ),
     )
 
@@ -155,6 +163,10 @@ def state_risk_decisions(
             limit,
             "exit" if breached and rule_id != "maximum_absolute_delta" else "record" if breached else "pass",
             reason if breached else f"{rule_id}_within_limit",
+            risk_state.position_pnl_from_entry,
+            risk_state.session_pnl,
+            risk_state.hedges_in_current_session,
+            risk_state.total_hedges,
         )
         for rule_id, observed, limit, breached, reason in rules
     )

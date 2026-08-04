@@ -124,7 +124,8 @@ Run any benchmark policy on the same seeded path with:
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.run_gamma_simulation \
   --strategy-config ../config/strategies/nifty-long-gamma-v1.yaml \
+  --market-config ../config/simulation/nifty-synthetic-market-v1.yaml \
   --path-generator gbm --seed 17 --policy constant_band
 ```
 
-Runs write immutable artifacts below `backend/artifacts/simulation/runs`. This offline simulator has no broker order path, live option data, paper routing, or intraday realized variance.
+The strategy contract defines trading behavior while the simulation-market contract defines the deterministic session clock, synthetic chain, expiries, strike grid, multipliers, and futures convention. Runs write immutable full-spec artifacts below `backend/artifacts/simulation/runs`. The current clock is weekday-only. This offline simulator has no broker order path, live option data, paper routing, or intraday realized variance.

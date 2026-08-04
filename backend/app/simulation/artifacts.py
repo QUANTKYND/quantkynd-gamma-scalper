@@ -3,14 +3,16 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict
 
+from app.simulation.config import SimulationMarketConfig
 from app.simulation.metrics import summarize
 from app.simulation.paths import GeneratedPath
 from app.simulation.results import SimulationResult
@@ -20,6 +22,8 @@ from app.strategy.models import StrategyContractV1
 REQUIRED_SIMULATION_ARTIFACTS = (
     "manifest.json",
     "strategy-config.json",
+    "market-config.json",
+    "run-config.json",
     "path-config.json",
     "path.csv",
     "market-states.csv",
@@ -46,13 +50,25 @@ class SimulationManifest(BaseModel):
     strategy_version: int
     strategy_config_hash: str
     simulator_version: str
+    market_config_hash: str
     path_generator: str
     path_config_hash: str
+    path_hash: str
     seed: int | None
-    market_scenario_hash: str
     policy_id: str
-    policy_parameters: dict[str, object]
-    cost_model_hash: str
+    policy_config_hash: str
+    option_cost_model_hash: str
+    futures_cost_model_hash: str
+    runtime_risk_hash: str
+    run_config_hash: str
+    simulation_clock_config: dict[str, object]
+    selected_expiry: date
+    selected_strike: float
+    option_multiplier: int
+    futures_multiplier: int
+    futures_delta_per_contract: float
+    accounting_tolerance: Decimal
+    quantity_rounding: Literal["nearest_integer_half_even"]
     git_commit: str | None
     artifact_directory: str
     failure_reason: str | None
@@ -67,10 +83,13 @@ def write_simulation_artifacts(
     run_dir: Path,
     manifest: SimulationManifest,
     strategy: StrategyContractV1,
+    market: SimulationMarketConfig,
     path: GeneratedPath,
     result: SimulationResult,
 ) -> None:
     _write_json(run_dir / "strategy-config.json", strategy.model_dump(mode="json"))
+    _write_json(run_dir / "market-config.json", market.model_dump(mode="json"))
+    _write_json(run_dir / "run-config.json", result.run_config.model_dump(mode="json"))
     _write_json(
         run_dir / "path-config.json",
         {
@@ -82,10 +101,45 @@ def write_simulation_artifacts(
         },
     )
     _write_csv(run_dir / "path.csv", [{"timestamp": state.timestamp, "spot": state.spot} for state in path.states])
-    _write_csv(run_dir / "market-states.csv", [asdict(item) for item in result.market_states])
+    exchange_timezone = ZoneInfo(market.clock.timezone)
+    local_times = {
+        item.timestamp: item.local_timestamp or item.timestamp.astimezone(exchange_timezone)
+        for item in result.market_states
+    }
+    _write_csv(
+        run_dir / "market-states.csv",
+        [
+            {
+                **asdict(item),
+                "utc_timestamp": item.timestamp,
+            }
+            for item in result.market_states
+        ],
+    )
     _write_csv(run_dir / "option-valuations.csv", [asdict(item) for item in result.option_valuations])
-    _write_csv(run_dir / "hedge-decisions.csv", [asdict(item) for item in result.hedge_decisions])
-    _write_csv(run_dir / "risk-decisions.csv", [asdict(item) for item in result.risk_decisions])
+    _write_csv(
+        run_dir / "hedge-decisions.csv",
+        [
+            {
+                **asdict(item),
+                "session_date": item.timestamp.astimezone(exchange_timezone).date(),
+                "local_timestamp": local_times[item.timestamp],
+                "utc_timestamp": item.timestamp,
+            }
+            for item in result.hedge_decisions
+        ],
+    )
+    _write_csv(
+        run_dir / "risk-decisions.csv",
+        [
+            {
+                **asdict(item),
+                "local_timestamp": local_times.get(item.timestamp),
+                "utc_timestamp": item.timestamp,
+            }
+            for item in result.risk_decisions
+        ],
+    )
     _write_csv(run_dir / "order-intents.csv", [asdict(item) for item in result.order_intents])
     _write_csv(run_dir / "fills.csv", [asdict(item) for item in result.fills])
     _write_csv(run_dir / "ledger.csv", [asdict(item) for item in result.ledger_entries])
@@ -95,7 +149,10 @@ def write_simulation_artifacts(
             quantities[entry.instrument_id] = quantities.get(entry.instrument_id, 0) + entry.quantity_change
     _write_csv(
         run_dir / "positions.csv",
-        [{"instrument_id": instrument_id, "terminal_quantity": quantity} for instrument_id, quantity in sorted(quantities.items())],
+        [
+            {"instrument_id": instrument_id, "terminal_quantity": quantity}
+            for instrument_id, quantity in sorted(quantities.items())
+        ],
     )
     _write_csv(run_dir / "pnl-attribution.csv", [asdict(item) for item in result.pnl_attribution])
     _write_json(run_dir / "summary.json", summarize(result).as_dict())

@@ -9,6 +9,8 @@
 
 ## Deterministic option engine gate
 
+- Strategy, simulation-market, path, policy, cost, runtime-risk, and accounting inputs are explicit and hashed.
+- Expiry dates and year fractions derive from one session clock.
 - Reference pricing tests pass.
 - Put-call parity passes.
 - IV round trips pass over the approved domain.
@@ -19,6 +21,10 @@
 ## Hedge simulator gate
 
 - Deterministic replay by seed.
+- Exit and risk evaluation precede any same-timestamp routine hedge.
+- Premium risk includes contract multipliers and configured entry costs before fills are journaled.
+- Position P&L, session P&L, session hedge count, and total hedge count retain distinct semantics.
+- Pre-hedge trigger delta and post-hedge residual delta are separately recorded and summarized.
 - Ledger reconciles to machine or accounting tolerance.
 - Frictionless higher-frequency hedging reduces hedge error in controlled cases.
 - More trading increases modeled costs.

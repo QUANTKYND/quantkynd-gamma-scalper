@@ -381,13 +381,25 @@ decision_id
 strategy_run_id
 as_of
 position_id
-current_delta
+option_delta_before_decision
+hedge_delta_before_decision
+net_delta_before_decision
 target_delta
 lower_boundary
 upper_boundary
 policy_id
 action
-requested_quantity
+continuous_target_futures_quantity
+rounded_requested_futures_quantity
+executed_futures_quantity
+option_delta_after_fill
+hedge_delta_after_fill
+net_delta_after_fill
+quantity_rounding_residual_delta
+portfolio_value_before_fill
+portfolio_value_after_fill
+session_hedge_count
+total_hedge_count
 reason_codes
 state_snapshot_id
 ```
@@ -574,4 +586,4 @@ resolution_status
 
 ## Offline simulation models
 
-SIM-1 uses immutable option contracts, explicit market states, option valuations, order intents, simulated fills, hedge and risk decisions, ledger entries, Greek-attribution intervals, reconciliation, summary, and run manifest values. Market states carry explicit step year fractions. Fills retain reference price, executable price, notional, spread, slippage, fixed, and proportional costs. The run manifest records every configuration and provenance hash needed to reproduce a run.
+SIM-1 uses immutable option contracts, explicit market states, unit-and-position option valuations, order intents, simulated fills, timed hedge and risk decisions, ledger entries, Greek-attribution intervals, reconciliation, summary, and run manifest values. Market states carry session date, local and UTC timestamps, and explicit step year fractions. Fills retain reference price, executable price, notional, multiplier, spread, slippage, fixed, and proportional costs. Risk decisions retain position and session P&L plus session and total hedge counts. The run manifest and persisted strategy, market, path, and run configurations record every behavioral input and provenance hash needed to reproduce a run.

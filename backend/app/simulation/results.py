@@ -10,6 +10,7 @@ from app.options.contracts import OptionContract
 from app.portfolio.ledger import LedgerEntry
 from app.simulation.events import SimulationEvent
 from app.simulation.market import MarketState
+from app.simulation.config import SimulationRunConfig
 from app.simulation.risk import SimulationRiskDecision
 
 
@@ -48,6 +49,7 @@ class SimulationReconciliation:
 @dataclass(frozen=True)
 class SimulationResult:
     run_id: str
+    run_config: SimulationRunConfig
     status: str
     strategy_config_hash: str
     market_config_hash: str

@@ -112,7 +112,7 @@ Every strategy decision records:
 
 The journal is immutable and queryable.
 
-SIM-1 persists this journal as deterministic market-state, valuation, hedge-decision, risk-decision, intent, fill, ledger, attribution, and summary artifacts. CLI success output is structured JSON with run, strategy hash, path, policy, exit, cost, delta, reconciliation, and artifact location. No metrics backend is introduced for offline runs.
+SIM-1 persists this journal as deterministic market-state, unit/position valuation, timed hedge-decision, session-aware risk-decision, intent, fill, ledger, attribution, and summary artifacts. Pre-hedge trigger delta and post-hedge residual delta are separate metrics. CLI success output is structured JSON with run, strategy and market hashes, path, policy, exit, cost, both delta timings, reconciliation, and artifact location. No metrics backend is introduced for offline runs.
 
 ## Alerts
 

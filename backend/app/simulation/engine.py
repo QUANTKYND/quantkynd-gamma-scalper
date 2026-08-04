@@ -3,19 +3,27 @@ from __future__ import annotations
 from dataclasses import replace
 from decimal import Decimal
 
-from app.attribution.reconciliation import reconcile
 from app.attribution.greeks import calculate_greek_attribution
-from app.execution.fills import simulate_fill
+from app.attribution.reconciliation import reconcile
 from app.execution.costs import money
+from app.execution.fills import simulate_fill
 from app.execution.models import ExecutionCostParameters, OrderIntent, SimulatedFill
 from app.hedging.models import HedgeDecision, HedgePolicyState
 from app.hedging.policies import build_hedge_policy
 from app.options.black_scholes import value
 from app.options.selection import continuous_forward, select_expiry, select_straddle, synthetic_chain
 from app.portfolio.ledger import PortfolioLedger
-from app.simulation.events import SimulationEvent
 from app.simulation.clock import SimulationExpiry, expiry_for_remaining_sessions
-from app.simulation.config import SimulationMarketConfig, simulation_market_config_hash
+from app.simulation.config import (
+    CostModelConfig,
+    RuntimeRiskInputs,
+    SimulationMarketConfig,
+    SimulationRunConfig,
+    simulation_market_config_hash,
+    simulation_run_config_hash,
+    stable_hash,
+)
+from app.simulation.events import SimulationEvent
 from app.simulation.paths import GeneratedPath
 from app.simulation.results import OptionValuationRecord, SimulationResult
 from app.simulation.risk import (
@@ -49,33 +57,20 @@ def run_simulation(
     policy = build_hedge_policy(policy_id, strategy.hedging)
     config_hash = strategy_config_hash(strategy)
     market_hash = simulation_market_config_hash(market)
-    run_id = simulation_run_id(config_hash, market_hash, path.path_hash, policy_id, option_costs, futures_costs)
-    initial = path.states[0]
-    expiry = select_simulation_expiry(strategy, market, initial.session_date or initial.timestamp.date())
+    run_config = build_simulation_run_config(
+        strategy,
+        market,
+        path,
+        policy_id,
+        option_costs,
+        futures_costs,
+        manual_kill_switch_engaged,
+        accounting_tolerance,
+    )
+    run_id = simulation_run_id(run_config)
+    expiry, selected = select_simulation_contracts(strategy, market, path)
     normalized_states = _states_with_expiry(path, expiry)
     initial = normalized_states[0]
-    forward = continuous_forward(
-        initial.spot,
-        initial.risk_free_rate,
-        initial.dividend_yield,
-        initial.time_to_expiry_years,
-    )
-    options = market.options
-    selected = select_straddle(
-        synthetic_chain(
-            market.underlying,
-            forward,
-            options.strike_interval,
-            options.strikes_below,
-            options.strikes_above,
-            expiry.expiry_session_date,
-            options.multiplier,
-            options.relative_spread,
-            options.synthetic_volume_base,
-            options.synthetic_open_interest_base,
-        ),
-        forward,
-    )
     futures_id = market.futures.instrument_id
     position_id = f"position-{run_id}"
     ledger = PortfolioLedger(Decimal(str(strategy.risk.starting_nav_inr)), initial.timestamp, position_id)
@@ -304,6 +299,7 @@ def run_simulation(
     status = "complete" if reconciliation.reconciled else "failed"
     return SimulationResult(
         run_id,
+        run_config,
         status,
         config_hash,
         market_hash,
@@ -394,6 +390,38 @@ def select_simulation_expiry(
     return expiry_for_remaining_sessions(entry_session_date, selected_sessions, market.clock)
 
 
+def select_simulation_contracts(
+    strategy: StrategyContractV1,
+    market: SimulationMarketConfig,
+    path: GeneratedPath,
+):
+    initial = path.states[0]
+    expiry = select_simulation_expiry(strategy, market, initial.session_date or initial.timestamp.date())
+    forward = continuous_forward(
+        initial.spot,
+        initial.risk_free_rate,
+        initial.dividend_yield,
+        expiry.time_to_expiry_years,
+    )
+    options = market.options
+    selected = select_straddle(
+        synthetic_chain(
+            market.underlying,
+            forward,
+            options.strike_interval,
+            options.strikes_below,
+            options.strikes_above,
+            expiry.expiry_session_date,
+            options.multiplier,
+            options.relative_spread,
+            options.synthetic_volume_base,
+            options.synthetic_open_interest_base,
+        ),
+        forward,
+    )
+    return expiry, selected
+
+
 def _states_with_expiry(path: GeneratedPath, expiry: SimulationExpiry):
     elapsed = 0.0
     states = []
@@ -410,22 +438,35 @@ def _validate_contract_alignment(strategy: StrategyContractV1, market: Simulatio
         raise ValueError("strategy entry time must be available in the simulation clock")
 
 
-def simulation_run_id(config_hash, market_hash, path_hash, policy_id, option_costs, futures_costs):
-    from app.simulation.config import CostModelConfig, RuntimeRiskInputs, SimulationRunConfig, simulation_run_config_hash, stable_hash
-
-    run_config = SimulationRunConfig(
+def build_simulation_run_config(
+    strategy: StrategyContractV1,
+    market: SimulationMarketConfig,
+    path: GeneratedPath,
+    policy_id: str,
+    option_costs: ExecutionCostParameters,
+    futures_costs: ExecutionCostParameters,
+    manual_kill_switch_engaged: bool = False,
+    accounting_tolerance: Decimal = Decimal("0.01"),
+) -> SimulationRunConfig:
+    policy_parameters = strategy.hedging.model_dump(mode="json").get(policy_id, {})
+    if not isinstance(policy_parameters, dict):
+        policy_parameters = {}
+    return SimulationRunConfig(
         schema_version=1,
         simulator_version=SIMULATOR_VERSION,
-        strategy_config_hash=config_hash,
-        market_config_hash=market_hash,
-        path_config_hash=stable_hash({"legacy_path_hash": path_hash}),
-        path_hash=path_hash,
+        strategy_config_hash=strategy_config_hash(strategy),
+        market_config_hash=simulation_market_config_hash(market),
+        path_config_hash=stable_hash(path.canonical_parameters),
+        path_hash=path.path_hash,
         policy_id=policy_id,
-        policy_parameters={},
+        policy_parameters=policy_parameters,
         option_cost_model=CostModelConfig.from_parameters(option_costs),
         futures_cost_model=CostModelConfig.from_parameters(futures_costs),
-        runtime_risk_inputs=RuntimeRiskInputs(manual_kill_switch_engaged=False),
-        accounting_tolerance=Decimal("0.01"),
+        runtime_risk_inputs=RuntimeRiskInputs(manual_kill_switch_engaged=manual_kill_switch_engaged),
+        accounting_tolerance=accounting_tolerance,
         quantity_rounding="nearest_integer_half_even",
     )
+
+
+def simulation_run_id(run_config: SimulationRunConfig) -> str:
     return f"sim-{simulation_run_config_hash(run_config).removeprefix('sha256:')[:20]}"
