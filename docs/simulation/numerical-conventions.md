@@ -1,0 +1,11 @@
+# Simulation Numerical Conventions
+
+Pricing, Greeks, forward carry, generated paths, policy inputs, and attribution use Python `float`/NumPy `float64`. Black–Scholes uses continuously compounded rates and continuous dividend yield. Time is an explicit year fraction on every state, with 252 default trading periods per year.
+
+Theta is price change per calendar year as calendar time advances. Vega is price change per unit volatility, so a move from 0.18 to 0.19 is multiplied by `0.01`. Delta is underlying-equivalent units and gamma is delta units per INR move. Contract multipliers are applied before portfolio aggregation.
+
+Cash, notional, costs, realized P&L, and terminal accounting use `Decimal`. The single quantitative-to-accounting boundary is fill creation through `Decimal(str(value))`. INR values round to `0.01` with `ROUND_HALF_EVEN`.
+
+Long option and futures quantities are positive. Buys reduce cash, sells increase cash, and positive costs reduce cash. Net portfolio delta is option-book delta plus futures delta. Timestamps are UTC and timezone-aware; exchange configuration remains Asia/Kolkata.
+
+Futures prices are either explicit market-state values or derived as `spot × exp((r-q) × remaining maturity)`. SIM-1 generated paths use the derived convention.

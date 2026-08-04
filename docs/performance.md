@@ -161,3 +161,7 @@ Initial paper-MVP targets:
 - Research jobs are isolated from live-state latency through process separation and resource limits.
 
 Performance budgets are operational targets, not trading latency claims.
+
+## Offline simulation
+
+SIM-1 accumulates typed records during a run and creates DataFrames only while writing artifacts. Policy decisions and pricing are linear in path length, and one path remains single-threaded to preserve straightforward determinism. Redis and parallel path execution remain unnecessary.

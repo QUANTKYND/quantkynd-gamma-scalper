@@ -100,6 +100,8 @@ frontend/src/
 
 The existing RV implementation may remain under `quant/` during migration. New domain work should use the target boundaries rather than expanding a generic `quant` package indefinitely.
 
+STRAT-1 and SIM-1 implement the target `strategy`, `options`, `simulation`, `portfolio`, `hedging`, `execution`, and `attribution` boundaries as an offline deterministic research slice. These modules have no FastAPI, broker, Redis, or database dependencies. The simulation CLI coordinates pure analytics and publishes immutable local artifacts.
+
 ## Dependency direction
 
 ```text

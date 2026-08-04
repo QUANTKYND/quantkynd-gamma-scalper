@@ -109,3 +109,22 @@ UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.verify_upstox_market_data \
   --instrument-key "NSE_INDEX|Nifty 50" \
   --listen-seconds 30
 ```
+
+## Deterministic option and hedge simulation
+
+The frozen simulation-only strategy validates from `backend` with:
+
+```bash
+UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.validate_strategy_config \
+  --config ../config/strategies/nifty-long-gamma-v1.yaml
+```
+
+Run any benchmark policy on the same seeded path with:
+
+```bash
+UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.run_gamma_simulation \
+  --strategy-config ../config/strategies/nifty-long-gamma-v1.yaml \
+  --path-generator gbm --seed 17 --policy constant_band
+```
+
+Runs write immutable artifacts below `backend/artifacts/simulation/runs`. This offline simulator has no broker order path, live option data, paper routing, or intraday realized variance.

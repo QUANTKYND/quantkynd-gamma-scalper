@@ -27,6 +27,8 @@
 
 ## Planned routers
 
+STRAT-1 and SIM-1 expose no HTTP or WebSocket procedures. Their validated configuration and deterministic simulation are invoked only through offline CLIs; the simulation router remains planned for a later application-service milestone.
+
 The procedures below are the target contract map. A router is added only when its milestone begins and its schemas, authorization, failure behavior, and tests are ready.
 
 | Router | Procedures of each router |

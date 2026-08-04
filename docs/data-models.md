@@ -320,6 +320,8 @@ quality_flags
 
 ## Strategy models
 
+STRAT-1 materializes a strict immutable `StrategyContractV1` with identity, creation timestamp, simulation-only mode, underlying, signal, entry, expiry, strike, position, hedging, exit, and risk blocks. Its behavioral content excludes `created_at` from a canonical SHA-256 configuration hash.
+
 ### `StrategyDefinition`
 
 ```text
@@ -569,3 +571,7 @@ resolution_status
 - Durable prices, fees, cash, and ledger balances use decimal values or integer minor units.
 - Quantities use integers where instruments trade in indivisible lots; fractional support must be explicit.
 - Never infer units from field names without a documented contract.
+
+## Offline simulation models
+
+SIM-1 uses immutable option contracts, explicit market states, option valuations, order intents, simulated fills, hedge and risk decisions, ledger entries, Greek-attribution intervals, reconciliation, summary, and run manifest values. Market states carry explicit step year fractions. Fills retain reference price, executable price, notional, spread, slippage, fixed, and proportional costs. The run manifest records every configuration and provenance hash needed to reproduce a run.

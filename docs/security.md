@@ -7,6 +7,7 @@
 - No live-capital order procedure exists in the MVP API.
 - The kill switch defaults to engaged when required state is missing.
 - Risk evaluation precedes every paper order path.
+- STRAT-1 accepts simulation mode only; SIM-1 is offline and has no broker or order-placement adapter.
 
 ## Secrets
 
@@ -35,6 +36,7 @@ WebSocket denials and closes use stable internal codes and generic safe text. Th
 - Live broker and market data are retained according to provider licensing.
 - Personally identifiable or account-specific broker data is minimized.
 - Backups are encrypted and restore-tested.
+- Simulation artifact roots validate deterministic run IDs and publish only beneath the configured run-store root; configuration uses safe YAML loading and rejects extra fields.
 
 ## Execution safety
 

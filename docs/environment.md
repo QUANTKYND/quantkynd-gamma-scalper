@@ -141,6 +141,19 @@ UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.run_rv_research \
   --horizon-sessions 5
 ```
 
+Strategy validation and offline simulation:
+
+```bash
+cd backend
+UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.validate_strategy_config \
+  --config ../config/strategies/nifty-long-gamma-v1.yaml
+UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.run_gamma_simulation \
+  --strategy-config ../config/strategies/nifty-long-gamma-v1.yaml \
+  --path-generator gbm --seed 17 --policy constant_band
+```
+
+SIM-1 uses no environment secrets, provider token, database, Redis, or execution-mode variable. Its default artifact root is `backend/artifacts/simulation`.
+
 ## Deployment target
 
 The first stable deployment is one VPS or one controlled host using Docker Compose:

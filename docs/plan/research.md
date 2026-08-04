@@ -26,6 +26,8 @@ This is a daily-close fallback, not the final intraday realized-volatility estim
 
 ## R0 — Strategy contract
 
+Status: COMPLETE for the frozen STRAT-1 offline research contract.
+
 Freeze:
 
 - Underlying.
@@ -41,6 +43,8 @@ Freeze:
 No historical test begins until the strategy is fully executable from configuration.
 
 ## R1 — Deterministic option engine
+
+Status: COMPLETE for SIM-1 European Black–Scholes analytics and bounded IV inversion.
 
 Build explicit European option formulas before consuming live option prices.
 
@@ -62,6 +66,8 @@ Acceptance:
 - Boundary behavior near expiry, low volatility, and extreme moneyness.
 
 ## R2 — Cost and fill model
+
+Status: COMPLETE for deterministic option/futures reference-mid fills with explicit fixed, proportional, half-spread, and slippage components. Delayed quote fills remain part of historical replay.
 
 Model option and hedge execution separately.
 
@@ -87,6 +93,8 @@ Initial fill policies:
 No research result may use an unstated midpoint fill.
 
 ## R3 — Hedge simulator
+
+Status: COMPLETE for deterministic synthetic paths, the five baseline policies, exact ledger reconciliation, Greek attribution, and immutable local artifacts.
 
 Policies:
 

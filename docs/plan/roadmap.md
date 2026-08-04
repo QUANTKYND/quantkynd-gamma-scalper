@@ -17,10 +17,10 @@
 | RV-1.1 | COMPLETE | Evaluation, run persistence, labels, and documentation hardening. |
 | LIVE-RV-1 | COMPLETE | Selectable Upstox index/equity history and a clearly provisional LTPC close-to-close overlay; read-only precursor, not the full LIVE-1 gate. |
 | LIVE-RV-1.1 | COMPLETE | Accepted quote sequences, concurrent subscriptions, WebSocket lifecycle, segment status, and finalized rollover are hardened with deterministic evidence. |
-| Strategy Contract v1 | ACTIVE | Freeze one underlying, position template, horizon, selection rule, hedge instrument, exits, and hard risk limits. |
-| SIM-1 deterministic option engine | READY | Black–Scholes, IV solver, Greeks, and explicit conventions. |
-| SIM-2 hedge simulator | BLOCKED by SIM-1 | Ledger, costs, fills, P&L attribution, and policy comparison. |
-| DATA-1 point-in-time options model | READY after strategy contract | Instruments, sessions, contracts, quotes, chains, storage, and quality. |
+| Strategy Contract v1 | COMPLETE | Frozen NIFTY long-straddle contract, typed risk limits, and stable behavioral hash. |
+| SIM-1 deterministic option engine | COMPLETE | Black–Scholes, IV solver, Greeks, boundaries, and explicit units. |
+| SIM-2 hedge simulator | COMPLETE | Deterministic paths, five policies, fills, costs, exact ledger, attribution, risk, and immutable runs. |
+| DATA-1 point-in-time options model | READY | Instruments, sessions, contracts, quotes, chains, storage, and quality. |
 | OPTIONS-1 IV surface | BLOCKED by DATA-1 | Market-derived IV, Greeks, surface, and diagnostics. |
 | EDGE-1 gamma opportunity engine | BLOCKED by OPTIONS-1 | Physical versus implied variance and net edge decomposition. |
 | BACKTEST-1 event replay | BLOCKED by DATA-1, SIM-2, EDGE-1 | Point-in-time entries, hedges, fills, ledger, and journal. |

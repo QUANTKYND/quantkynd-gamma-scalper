@@ -30,13 +30,11 @@ Completed:
 - RV-1 and RV-1.1 acceptance and hardening.
 - LIVE-RV-1 selectable Upstox historical closes and provisional live close-to-close overlay.
 - LIVE-RV-1.1 accepted-quote sequencing, subscription concurrency, WebSocket lifecycle, segment status, and rollover hardening.
+- Frozen STRAT-1 NIFTY long-straddle strategy and risk contract.
+- Deterministic European option pricing, IV inversion, Greeks, paths, fills, ledger, five hedge policies, risk gates, attribution, and immutable SIM-1 runs.
 
 Not yet implemented:
 
-- Frozen strategy contract and risk policy.
-- Deterministic option-pricing and Greek engine.
-- Transaction-cost and fill models.
-- Hedge-policy simulator and no-transaction bands.
 - Point-in-time option contracts and quote history.
 - IV smile, surface, and implied variance.
 - Gamma opportunity engine.

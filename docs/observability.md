@@ -112,6 +112,8 @@ Every strategy decision records:
 
 The journal is immutable and queryable.
 
+SIM-1 persists this journal as deterministic market-state, valuation, hedge-decision, risk-decision, intent, fill, ledger, attribution, and summary artifacts. CLI success output is structured JSON with run, strategy hash, path, policy, exit, cost, delta, reconciliation, and artifact location. No metrics backend is introduced for offline runs.
+
 ## Alerts
 
 Critical:
