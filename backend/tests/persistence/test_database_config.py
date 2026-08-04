@@ -14,7 +14,8 @@ from app.persistence.postgres.engine import create_database_engine, dispose_data
 URL = "postgresql+asyncpg://user:secret@localhost:5432/quantkynd_test"
 
 
-def test_database_url_is_optional_until_requested() -> None:
+def test_database_url_is_optional_until_requested(monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     settings = DatabaseSettings(_env_file=None)
     with pytest.raises(DatabaseConfigurationError, match="DATABASE_URL is required"):
         settings.require_database_url()
