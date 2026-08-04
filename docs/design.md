@@ -172,3 +172,9 @@ flowchart TD
 ## Safety boundary
 
 The MVP ends at paper execution. Broker authentication and market-data access do not imply permission to place live-capital orders. A live order adapter must remain absent or disabled by construction until a separate approval and acceptance process exists.
+
+## LIVE-RV-1 read-only slice
+
+LIVE-RV-1 uses one lazy `MarketDataStreamerV3` per backend process. Browser WebSockets terminate at FastAPI, and the in-memory coordinator reference-counts browser interest before changing upstream LTPC subscriptions. SDK callbacks cross into the FastAPI event loop with `call_soon_threadsafe`.
+
+Finalized Upstox daily-close snapshots are immutable, bounded to 50 instruments, and cached for 15 minutes. The live quote store retains only the latest normalized state. It is an acceleration layer, not durable truth. An LTP may extend a finalized price series temporarily for the latest feature display, but never changes the finalized snapshot, forecast evaluation, persisted runs, or dataset identity.

@@ -48,7 +48,7 @@ ESTIMATOR_ID = "close_to_close_squared_log_returns_v1"
 @dataclass(frozen=True)
 class LoadedPriceDataset:
     prices: pd.Series
-    source: Literal["csv", "synthetic"]
+    source: Literal["csv", "synthetic", "upstox_historical"]
     synthetic_parameters: RVSyntheticDatasetParameters | None
 
 
@@ -174,7 +174,7 @@ def dataset_id_for_prices(
     *,
     symbol: str,
     prices: pd.Series,
-    source: Literal["csv", "synthetic"],
+    source: Literal["csv", "synthetic", "upstox_historical"],
     synthetic_parameters: RVSyntheticDatasetParameters | None,
 ) -> str:
     """Calculate a stable SHA-256 dataset identifier from normalized prices."""
@@ -260,6 +260,43 @@ def build_research_snapshot(
     )
 
 
+def build_research_snapshot_from_prices(
+    *,
+    symbol: str,
+    prices: pd.Series,
+    source: Literal["upstox_historical"],
+    dataset_key: str | None = None,
+    horizon_sessions: int = 5,
+) -> RVResearchSnapshot:
+    normalized_prices = prices.copy().sort_index()
+    features = build_rv_feature_frame(normalized_prices)
+    backtest = backtest_rv_forecast(normalized_prices, horizon_sessions=horizon_sessions)
+    computed_at = datetime.now(UTC)
+    dataset = RVDatasetMetadata(
+        dataset_id=dataset_id_for_prices(
+            symbol=dataset_key or symbol,
+            prices=normalized_prices,
+            source=source,
+            synthetic_parameters=None,
+        ),
+        source=source,
+        symbol=symbol,
+        observations=len(normalized_prices),
+        start_date=_as_date(normalized_prices.index[0]),
+        end_date=_as_date(normalized_prices.index[-1]),
+        computed_at=computed_at,
+        synthetic_parameters=None,
+    )
+    return RVResearchSnapshot(
+        symbol=symbol,
+        prices=normalized_prices,
+        features=features,
+        backtest=backtest,
+        estimator_metadata=estimator_metadata(),
+        dataset_metadata=dataset,
+    )
+
+
 class RVService:
     """Serve one immutable RV research snapshot plus persisted run manifests."""
 
@@ -268,11 +305,12 @@ class RVService:
         symbol: str = "NIFTY",
         csv_path: Path = DEFAULT_CSV_PATH,
         artifact_root: Path = DEFAULT_ARTIFACT_ROOT,
+        snapshot: RVResearchSnapshot | None = None,
     ):
         self.symbol = symbol
         self.csv_path = csv_path
         self.run_store = RVRunStore(artifact_root)
-        self._snapshot = build_research_snapshot(symbol=symbol, csv_path=csv_path)
+        self._snapshot = snapshot or build_research_snapshot(symbol=symbol, csv_path=csv_path)
 
     @property
     def snapshot(self) -> RVResearchSnapshot:

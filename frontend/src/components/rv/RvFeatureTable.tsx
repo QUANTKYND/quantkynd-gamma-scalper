@@ -12,7 +12,7 @@ const RvFeatureTable = ({ rows }: Props): React.ReactElement => {
     <TableContainer sx={{ maxHeight: 480 }}>
       <Table stickyHeader size="small" aria-label="Latest close-to-close volatility features">
         <TableHead><TableRow>
-          {['Date', 'Price', '1D Ann. Vol.', '5D Ann. Vol.', '21D Ann. Vol.', '63D Ann. Vol.', '5D / 21D Variance Ratio', '21D Vol. Z-score', 'Regime'].map((label) => <TableCell key={label} align={label === 'Date' || label === 'Regime' ? 'left' : 'right'}>{label}</TableCell>)}
+          {['Date', 'Status', 'Price', '1D Ann. Vol.', '5D Ann. Vol.', '21D Ann. Vol.', '63D Ann. Vol.', '5D / 21D Variance Ratio', '21D Vol. Z-score', 'Regime'].map((label) => <TableCell key={label} align={label === 'Date' || label === 'Status' || label === 'Regime' ? 'left' : 'right'}>{label}</TableCell>)}
         </TableRow></TableHead>
         <TableBody>
           {rows.map((row) => {
@@ -23,6 +23,7 @@ const RvFeatureTable = ({ rows }: Props): React.ReactElement => {
             return (
               <TableRow hover key={row.date}>
                 <TableCell sx={{ whiteSpace: 'nowrap' }}>{row.date}</TableCell>
+                <TableCell><Chip size="small" color={row.is_provisional ? 'info' : 'default'} variant="outlined" label={row.is_provisional ? 'Provisional' : 'Final'} /></TableCell>
                 <TableCell align="right">{row.price.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</TableCell>
                 <TableCell align="right">{pct(oneSession?.annualized_volatility)}</TableCell>
                 <TableCell align="right">{pct(fiveSession?.annualized_volatility)}</TableCell>

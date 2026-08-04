@@ -56,7 +56,20 @@ UPSTOX_TOKEN_URL
 UPSTOX_API_VERSION
 UPSTOX_ACCESS_TOKEN_FILE
 UPSTOX_STATE_SIGNING_SECRET
+UPSTOX_API_BASE_URL
+UPSTOX_DEFAULT_INSTRUMENT_KEY
+UPSTOX_HISTORY_LOOKBACK_YEARS
+UPSTOX_MARKET_DATA_MODE
+UPSTOX_STREAM_RECONNECT_INTERVAL_SECONDS
+UPSTOX_STREAM_MAX_RECONNECT_ATTEMPTS
+UPSTOX_MAX_ACTIVE_INSTRUMENTS
+MARKET_DATA_STALE_AFTER_SECONDS
+MARKET_DATA_UI_PUBLISH_INTERVAL_MS
+RV_LIVE_RECOMPUTE_INTERVAL_MS
+RV_FINALIZED_SNAPSHOT_CACHE_SECONDS
 ```
+
+`UPSTOX_MARKET_DATA_MODE` is restricted to `ltpc`. Counts and durations must be positive, the UI publish interval cannot exceed the RV recompute interval, and the active-instrument limit is capped below the provider limit. The token is loaded lazily when a provider request or first live subscription occurs.
 
 ### RV synthetic fallback
 

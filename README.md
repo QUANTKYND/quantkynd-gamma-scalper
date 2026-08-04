@@ -97,3 +97,13 @@ npm run lint
 npm run build
 npm run dev
 ```
+
+The realized-volatility workspace can select NSE/BSE indices and equities from Upstox. Historical RV and all forecast evaluation use finalized daily candles only. During a later exchange session, an LTPC quote may create one visibly provisional feature point and update the latest cards; it never changes the finalized dataset hash or persisted research runs.
+
+Copy `backend/.env.example`, configure Upstox OAuth, authenticate through the existing login control, and run the read-only provider check from `backend`:
+
+```bash
+UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.verify_upstox_market_data \
+  --instrument-key "NSE_INDEX|Nifty 50" \
+  --listen-seconds 30
+```

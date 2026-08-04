@@ -15,6 +15,7 @@
 | Research synthesis | COMPLETE | Paper extraction, research matrix, and architecture direction. |
 | RV-1 | COMPLETE | Correct daily close-to-close variance and volatility estimators. |
 | RV-1.1 | COMPLETE | Evaluation, run persistence, labels, and documentation hardening. |
+| LIVE-RV-1 | ACTIVE | Selectable Upstox index/equity history and a clearly provisional LTPC close-to-close overlay; read-only precursor, not the full LIVE-1 gate. |
 | Strategy Contract v1 | ACTIVE | Freeze one underlying, position template, horizon, selection rule, hedge instrument, exits, and hard risk limits. |
 | SIM-1 deterministic option engine | READY | Black–Scholes, IV solver, Greeks, and explicit conventions. |
 | SIM-2 hedge simulator | BLOCKED by SIM-1 | Ledger, costs, fills, P&L attribution, and policy comparison. |

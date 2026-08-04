@@ -30,6 +30,9 @@ type ChartDatum = {
   target_end?: string
   forecast_annualized_volatility?: number
   actual_annualized_volatility?: number
+  provisional?: boolean
+  provisionalPrice?: number
+  provisionalVolatility?: number
 }
 
 type TooltipEntry = {
@@ -50,13 +53,19 @@ const compactDate = (value: string): string => new Intl.DateTimeFormat('en', { m
 const percent = (value: number): string => `${(value * 100).toFixed(1)}%`
 const priceText = (value: number): string => value.toLocaleString('en-IN', { maximumFractionDigits: 0 })
 
-const overviewData = (points: RVFeatureRow[]): ChartDatum[] => points.map((point) => ({
-  date: point.date,
-  price: point.price,
-  annualized_volatility_5d: estimateFor(point.estimates, 5)?.annualized_volatility,
-  annualized_volatility_21d: estimateFor(point.estimates, 21)?.annualized_volatility,
-  annualized_volatility_63d: estimateFor(point.estimates, 63)?.annualized_volatility,
-}))
+const overviewData = (points: RVFeatureRow[]): ChartDatum[] => points.map((point) => {
+  const twentyOne = estimateFor(point.estimates, 21)?.annualized_volatility
+  return {
+    date: point.date,
+    price: point.price,
+    annualized_volatility_5d: estimateFor(point.estimates, 5)?.annualized_volatility,
+    annualized_volatility_21d: twentyOne,
+    annualized_volatility_63d: estimateFor(point.estimates, 63)?.annualized_volatility,
+    provisional: point.is_provisional,
+    provisionalPrice: point.is_provisional ? point.price : undefined,
+    provisionalVolatility: point.is_provisional ? twentyOne : undefined,
+  }
+})
 
 const forecastData = (points: RVForecastHistoryPoint[]): ChartDatum[] => points.map((point) => ({
   date: point.origin_date,
@@ -93,6 +102,7 @@ const ChartTooltip = ({ active, label, payload, mode }: ChartTooltipProps): Reac
         <Stack spacing={0.5}>
           <Typography variant="caption" color="text.secondary">Date</Typography>
           <Typography variant="body2">{String(label)}</Typography>
+          {datum?.provisional && <Typography variant="caption" color="info.main">Provisional unfinished-session point</Typography>}
           {payload.map((entry) => {
             if (entry.value == null || entry.name == null) return null
             const value = entry.name === 'Price' ? priceText(Number(entry.value)) : percent(Number(entry.value))
@@ -126,10 +136,12 @@ const RvLineChart = (props: Props): React.ReactElement => {
             <Legend iconType="plainline" wrapperStyle={{ fontSize: 12, paddingTop: 12 }} />
             {props.mode === 'overview' ? (
               <>
-                <Line yAxisId="price" type="monotone" dataKey="price" name="Price" stroke={theme.palette.text.secondary} strokeWidth={1.5} dot={false} />
+                <Line yAxisId="price" type="monotone" dataKey="price" name="Price" stroke={theme.palette.text.secondary} strokeWidth={1.5} dot={false} isAnimationActive={false} />
                 <Line yAxisId="rv" type="monotone" dataKey="annualized_volatility_5d" name="5-session annualized volatility" stroke={theme.palette.warning.main} strokeWidth={2} dot={false} />
-                <Line yAxisId="rv" type="monotone" dataKey="annualized_volatility_21d" name="21-session annualized volatility" stroke={theme.palette.primary.main} strokeWidth={2.25} dot={false} />
+                <Line yAxisId="rv" type="monotone" dataKey="annualized_volatility_21d" name="21-session annualized volatility" stroke={theme.palette.primary.main} strokeWidth={2.25} dot={false} isAnimationActive={false} />
                 <Line yAxisId="rv" type="monotone" dataKey="annualized_volatility_63d" name="63-session annualized volatility" stroke={theme.palette.success.main} strokeWidth={1.75} dot={false} />
+                <Line yAxisId="price" dataKey="provisionalPrice" name="Provisional price" stroke="none" dot={{ r: 5, fill: theme.palette.info.main, stroke: theme.palette.info.contrastText }} isAnimationActive={false} legendType="none" />
+                <Line yAxisId="rv" dataKey="provisionalVolatility" name="Provisional 21-session volatility" stroke="none" dot={{ r: 5, fill: theme.palette.info.main, stroke: theme.palette.info.contrastText }} isAnimationActive={false} legendType="none" />
               </>
             ) : (
               <>

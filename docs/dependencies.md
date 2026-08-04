@@ -13,6 +13,8 @@ Dependencies are added only when a milestone requires them. Each dependency must
 | `numpy` | Numerical arrays and quantitative calculations. |
 | `pandas` | Time-series research, feature frames, and artifact generation. |
 | `pydantic-settings` | Typed environment configuration. |
+| `httpx` | LIVE-RV-1 owner; explicit asynchronous Upstox search and historical-candle reads with mock-transport testability. Remove only if the provider adapter is replaced by an equally testable owned HTTP boundary. |
+| `upstox-python-sdk` | LIVE-RV-1 owner; official V3 protobuf market-feed decoding, subscription management, and bounded reconnect support. Remove when Upstox connectivity is retired or an approved provider-neutral feed adapter replaces it. |
 
 ### Backend development
 
@@ -60,7 +62,6 @@ Dependencies are added only when a milestone requires them. Each dependency must
 | `alembic` | Data-1 | Database migrations. |
 | `asyncpg` | Data-1 | Async Postgres driver. |
 | `psycopg` | Data-1 optional | Synchronous CLI, migrations, and recovery utilities if needed. |
-| `httpx` | Data-1 | Explicit HTTP client behavior and testable provider adapters. |
 | `tenacity` | Data-1 | Bounded retries with explicit policies. |
 | `orjson` | Data-1 | Fast event serialization where profiling justifies it. |
 | `exchange-calendars` | Data-1 | Exchange-session and holiday logic after NIFTY calendar requirements are validated. |

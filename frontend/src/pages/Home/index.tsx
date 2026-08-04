@@ -1,8 +1,8 @@
 import React from 'react';
-import RvDashboard from '../RvDashboard';
+import { Navigate } from 'react-router';
 
 const Home: React.FC = (): React.ReactElement => {
-  return <RvDashboard />
+  return <Navigate to="/realised-volatility" replace />
 }
 
 export default Home;

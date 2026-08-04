@@ -1,11 +1,17 @@
 from fastapi import APIRouter
 from app.api.auth import router as auth_router
 from app.api.rv import router as rv_router
+from app.api.instruments import router as instruments_router
+from app.api.market_data import router as market_data_router
+from app.api.market_streams import router as market_streams_router
 from app.schemas.health import HealthResponse
 
 router = APIRouter()
 router.include_router(auth_router)
 router.include_router(rv_router)
+router.include_router(instruments_router)
+router.include_router(market_data_router)
+router.include_router(market_streams_router)
 
 @router.get('/health', response_model=HealthResponse)
 def health():

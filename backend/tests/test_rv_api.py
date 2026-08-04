@@ -12,6 +12,7 @@ from app.api.rv import (
 from app.main import app
 from app.schemas.rv import RVLatestResponse
 from app.services.rv_service import RVService, build_research_snapshot
+from app.services.rv_service import rv_service
 
 
 OLD_KEYS = {
@@ -36,7 +37,7 @@ def _route_paths() -> set[str]:
     paths: set[str] = set()
 
     def visit(route) -> None:
-        path = getattr(route, "path", None)
+        path = getattr(route, "path", None) or getattr(getattr(route, "starlette_route", None), "path", None)
         if path:
             paths.add(path)
         candidates = getattr(route, "effective_candidates", None)
@@ -72,16 +73,21 @@ def test_rv_routes_are_registered() -> None:
         "/api/v1/rv/backtest/runs",
         "/api/v1/rv/history",
         "/api/v1/rv/health",
+        "/api/v1/instruments/search",
+        "/api/v1/instruments/resolve",
+        "/api/v1/market-data/status",
+        "/api/v1/market-data/quotes/{instrument_key:path}",
+        "/api/v1/streams/market-state",
     }.issubset(paths)
 
 
 def test_rv_contracts_are_populated_and_serializable() -> None:
-    latest = latest_rv()
-    features = rv_features(limit=40)
-    backtest = latest_backtest()
+    latest = rv_service.latest()
+    features = rv_service.feature_series(limit=40)
+    backtest = rv_service.backtest_summary()
     runs = backtest_runs()
-    history = rv_history(limit=40)
-    health = rv_health()
+    history = rv_service.history(limit=40)
+    health = rv_service.health()
 
     assert latest.symbol == "NIFTY"
     assert latest.price > 0
@@ -114,7 +120,7 @@ def test_rv_contracts_are_populated_and_serializable() -> None:
 
 
 def test_backtest_response_has_no_train_test_fields() -> None:
-    payload = latest_backtest().model_dump(mode="json")
+    payload = rv_service.backtest_summary().model_dump(mode="json")
 
     assert "train_start" not in payload
     assert "test_start" not in payload
@@ -129,7 +135,7 @@ def test_empty_run_store_returns_empty_list(tmp_path) -> None:
 
 
 def test_latest_response_rejects_undeclared_fields() -> None:
-    payload = latest_rv().model_dump(mode="json")
+    payload = rv_service.latest().model_dump(mode="json")
     payload["rv_5d"] = 0.1
 
     with pytest.raises(ValidationError):

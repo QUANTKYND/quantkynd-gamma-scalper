@@ -23,6 +23,9 @@
 - CORS uses explicit origins outside local development.
 - WebSocket connections authenticate and authorize scopes.
 - Admin procedures such as catalogue import, surface rebuild, run start, kill-switch release, and reconciliation require operator authorization.
+- Browser clients connect only to the FastAPI market-state gateway. Upstox tokens, SDK configuration, and provider WebSocket authorization remain server-side.
+
+LIVE-RV-1 is read-only. Its provider protocols expose instrument search, instrument resolution, historical closes, and live subscription lifecycle only. No order client, order procedure, portfolio write, or execution route exists.
 
 ## Data safety
 

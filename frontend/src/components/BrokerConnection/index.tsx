@@ -1,6 +1,5 @@
 import { AccountBalanceRounded, LinkOffRounded, LoginRounded, RefreshRounded } from '@mui/icons-material'
 import { Alert, Box, Button, Chip, IconButton, Paper, Stack, Tooltip, Typography } from '@mui/material'
-import { useEffect } from 'react'
 import { useSearchParams } from 'react-router'
 import { getUpstoxLoginUrl, useDisconnectAuthMutation, useGetAuthStatusQuery } from '../../store/api/authApi'
 
@@ -14,12 +13,6 @@ const BrokerConnection = (): React.ReactElement => {
   const statusQuery = useGetAuthStatusQuery()
   const { refetch: refetchStatus } = statusQuery
   const [disconnectAuth, disconnectMutation] = useDisconnectAuthMutation()
-
-  useEffect(() => {
-    if (authResult) {
-      void refetchStatus()
-    }
-  }, [authResult, refetchStatus])
 
   const status = statusQuery.isError ? 'error' : statusQuery.data?.status ?? 'disconnected'
   const connected = status === 'connected'

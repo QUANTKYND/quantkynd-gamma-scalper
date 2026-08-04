@@ -29,6 +29,24 @@ reconciliation_id
 
 ## Existing RV research models
 
+LIVE-RV-1 extends `RVDatasetMetadata.source` with `upstox_historical`. Dataset identity includes the instrument key, ordered finalized session timestamps and closes, frequency, and provider. Live quotes are excluded.
+
+### `RVLiveOverlayMetadata`
+
+```text
+provider
+instrument_key
+price_source
+is_provisional
+freshness
+market_status
+previous_close
+last_trade_at
+received_at
+```
+
+`price_source=live_ltp` is provisional and never denotes a completed daily close.
+
 ### `RVEstimatorMetadata`
 
 Identifies estimator formula, input frequency, return convention, annualization, observation timing, and whether the estimator is intraday realized variance.
@@ -160,6 +178,8 @@ sequence
 source
 quality_flags
 ```
+
+LIVE-RV-1 keeps a bounded non-durable `LiveQuoteState` with LTP, previous close, last-trade quantity, provider message time, last-trade time, receipt time, processing time, market status, and process-local sequence. Provider time and receipt time remain distinct.
 
 ### `OptionQuote`
 

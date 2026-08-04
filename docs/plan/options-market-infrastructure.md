@@ -162,6 +162,10 @@ Introduce Redis for latest state and fan-out:
 
 Postgres remains the durable truth for replay and audit.
 
+### LIVE-RV-1 precursor
+
+The selectable close-to-close RV workspace establishes the provider-neutral read protocols, one-process Upstox LTPC multiplexer, freshness state, browser gateway, and provisional daily-close overlay without options, Postgres, or Redis. This precursor does not satisfy O9 or the full live read-only acceptance gate because it has no durable quote truth, chain, Greeks, IV surface, or restart rebuild.
+
 ## O10 — Operator workspaces
 
 Dashboard panels:

@@ -12,6 +12,7 @@ __pycache__/
 htmlcov/
 
 backend/artifacts/
+backend/data/upstox_token.json
 artifacts/
 
 # Logs

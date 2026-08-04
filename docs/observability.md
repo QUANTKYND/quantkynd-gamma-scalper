@@ -54,6 +54,8 @@ Logs never include credentials or complete sensitive broker payloads.
 - Latest eligible quote age.
 - Chain coverage by expiry and strike.
 
+LIVE-RV-1 exposes authentication, transport, subscription, freshness, market status, active keys, connection time, last message time, last safe error code, and reconnect attempt through `/api/v1/market-data/status`. Provider logs may carry instrument key, timestamps, processing lag, active counts, and safe error codes, but never access tokens, authorized feed URLs, OAuth codes, secrets, or raw token files.
+
 ### Analytics
 
 - IV solve success and failure counts.

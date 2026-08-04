@@ -6,6 +6,8 @@ Performance work follows measurements. The system must remain correct without Re
 
 Redis is introduced at Live-1 or earlier only when a measured cross-process need exists.
 
+LIVE-RV-1 remains one backend process and intentionally uses bounded in-memory latest quote and finalized-snapshot stores. It supports at most 50 active instrument keys, caches at most 50 finalized snapshots for 15 minutes, coalesces browser quote delivery to 250 ms, and recomputes the provisional RV view no faster than 1000 ms. Redis remains deferred until a multi-process or recovery requirement exists.
+
 Use Redis for:
 
 - Latest accepted underlying and option quote state.

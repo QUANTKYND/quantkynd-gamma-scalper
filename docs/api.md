@@ -20,7 +20,10 @@
 |---|---|
 | System — `/api/v1` | `GET /health` returns service health. `GET /version` returns API version. |
 | Authentication — canonical `/api/v1/auth`; transitional `/auth` | `GET /upstox/login` redirects to broker authorization. `GET /upstox/callback` validates state, exchanges the code, stores the token, and redirects to the frontend. `GET /status` returns broker authentication status. `POST /disconnect` removes the saved token and clears connection state. |
-| Realized-volatility research — `/api/v1/rv` | `GET /latest` returns latest horizon estimates and provenance. `GET /features?limit=` returns the feature series. `GET /backtest/latest` returns latest sequential evaluation summary. `GET /backtest/runs` lists persisted research runs. `GET /history?limit=` returns forecast and subsequent-realization history. `GET /health` returns RV module health and source state. |
+| Instruments — `/api/v1/instruments` | `GET /search?query=&exchanges=NSE,BSE&kinds=index,equity&limit=20` returns normalized Upstox index/equity matches. `GET /resolve?instrument_key=` resolves one exact provider key. |
+| Market data — `/api/v1/market-data` | `GET /status` separates authentication, transport, subscription, freshness, market state, bounded operational counters, browser-client count, and active-instrument count. `GET /quotes/{instrument_key}` returns the latest normalized LTPC state or an explicit awaiting state. |
+| Market streams — `/api/v1/streams` | `WS /market-state?instrument_key=` returns an initial snapshot and coalesced status, quote, and provisional-RV deltas. |
+| Realized-volatility research — `/api/v1/rv` | `GET /latest?instrument_key=` returns finalized or provisional estimates. `GET /features?instrument_key=&limit=` returns finalized features plus at most one provisional row. `GET /backtest/latest?instrument_key=`, `GET /history?instrument_key=&limit=`, and `GET /health?instrument_key=` use the selected finalized snapshot. `GET /backtest/runs` remains global. Omitted keys select `NSE_INDEX|Nifty 50`. |
 
 ## Planned routers
 
@@ -28,10 +31,10 @@ The procedures below are the target contract map. A router is added only when it
 
 | Router | Procedures of each router |
 |---|---|
-| Instruments — `/api/v1/instruments` | `GET /underlyings` lists supported underlyings. `GET /underlyings/{id}` returns metadata. `GET /futures` filters futures by underlying and expiry. `GET /options` filters option contracts by underlying, expiry, strike, and side. `GET /catalogue/status` returns catalogue provenance and freshness. `POST /catalogue/import` is an operator-only import procedure. |
+| Instrument catalogue expansion | `GET /underlyings`, futures/options filters, catalogue status, and operator import remain planned after the LIVE-RV-1 search/resolve slice. |
 | Sessions — `/api/v1/sessions` | `GET /current` returns current exchange-session state. `GET /calendar` returns sessions and holidays. `GET /{session_date}` returns boundaries and status. |
-| Market data — `/api/v1/market-data` | `GET /status` returns provider, transport, subscription, and feed-quality states. `GET /underlyings/{id}/quote` returns the latest quote. `GET /options/{contract_id}/quote` returns the latest option quote. `GET /chains/{underlying_id}` returns a point-in-time chain snapshot. `GET /quality/events` lists data-quality events. `POST /subscriptions` changes read-only subscriptions through an operator-controlled procedure. |
-| Market streams — `/api/v1/streams` | `WS /market-state` publishes versioned latest-state deltas. `WS /operations` publishes health, alerts, intents, orders, fills, and risk changes. Stream subscriptions are scoped and resumable by sequence. |
+| Market-data expansion | Underlying/option quote resources, point-in-time chains, quality-event history, and controlled subscription writes remain planned. |
+| Stream expansion | `WS /operations` and durable resume remain planned. LIVE-RV-1 sequences are browser-stream local; a gap triggers REST resynchronization. |
 | Option analytics — `/api/v1/options` | `POST /price` evaluates a contract under explicit inputs. `POST /implied-volatility` solves IV from a supplied price. `POST /greeks` returns Greeks from explicit inputs. `GET /{contract_id}/analytics` returns latest validated market-derived analytics. |
 | IV surfaces — `/api/v1/surfaces` | `GET /latest` returns the latest surface for an underlying. `GET /history` returns selected historical snapshots. `GET /{surface_id}` returns a stored surface. `GET /quality` returns fit and arbitrage diagnostics. `POST /rebuild` is an operator-only deterministic rebuild. |
 | Volatility forecasts — `/api/v1/forecasts` | `GET /latest` returns active physical-variance forecasts by horizon. `GET /history` returns origin-aligned forecasts and realizations. `GET /models` lists approved models and versions. `POST /runs` starts an explicit research run, not an implicit live retrain. |
@@ -75,3 +78,5 @@ The procedures below are the target contract map. A router is added only when it
 ```
 
 Clients detect sequence gaps and request a fresh snapshot. WebSocket events are notifications and state deltas; durable history remains in Postgres.
+
+LIVE-RV-1 event types are `market_state_snapshot`, `feed_status_changed`, `market_status_changed`, `quote_updated`, `rv_provisional_updated`, `resync_required`, and `provider_error`. Application close codes are `4401` for missing authentication, `4404` for unknown instrument, `4408` for rejected subscription, and `1011` for provider failure.

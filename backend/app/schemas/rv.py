@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from app.schemas.instruments import InstrumentDefinition
+
 
 RVRegime = Literal["low", "normal", "high", "unknown"]
 RVModelName = Literal["naive", "ewma"]
@@ -35,7 +37,7 @@ class RVSyntheticDatasetParameters(RVModel):
 
 class RVDatasetMetadata(RVModel):
     dataset_id: str
-    source: Literal["csv", "synthetic"]
+    source: Literal["csv", "synthetic", "upstox_historical"]
     symbol: str
     observations: int
     start_date: date
@@ -51,6 +53,18 @@ class RVHorizonEstimate(RVModel):
     annualized_volatility: float
 
 
+class RVLiveOverlayMetadata(RVModel):
+    provider: Literal["upstox"] = "upstox"
+    instrument_key: str
+    price_source: Literal["final_close", "live_ltp"]
+    is_provisional: bool
+    freshness: Literal["awaiting_first_tick", "fresh", "stale", "unknown"]
+    market_status: str | None
+    previous_close: float | None
+    last_trade_at: datetime | None
+    received_at: datetime | None
+
+
 class RVLatestResponse(RVModel):
     symbol: str
     as_of: date
@@ -61,6 +75,9 @@ class RVLatestResponse(RVModel):
     regime: RVRegime
     estimator: RVEstimatorMetadata
     dataset: RVDatasetMetadata
+    instrument: InstrumentDefinition | None = None
+    finalized_as_of: date | None = None
+    live: RVLiveOverlayMetadata | None = None
 
 
 class RVFeaturePoint(RVModel):
@@ -70,6 +87,7 @@ class RVFeaturePoint(RVModel):
     variance_ratio_5_21: float | None
     volatility_zscore_21: float | None
     regime: RVRegime
+    is_provisional: bool = False
 
 
 class RVFeatureResponse(RVModel):
@@ -77,6 +95,9 @@ class RVFeatureResponse(RVModel):
     estimator: RVEstimatorMetadata
     dataset: RVDatasetMetadata
     points: list[RVFeaturePoint]
+    instrument: InstrumentDefinition | None = None
+    finalized_as_of: date | None = None
+    live: RVLiveOverlayMetadata | None = None
 
 
 class RVForecastHistoryPoint(RVModel):
@@ -97,6 +118,7 @@ class RVHistoryResponse(RVModel):
     estimator: RVEstimatorMetadata
     dataset: RVDatasetMetadata
     points: list[RVForecastHistoryPoint]
+    instrument: InstrumentDefinition | None = None
 
 
 class RVBacktestMetrics(RVModel):
@@ -130,6 +152,7 @@ class RVBacktestSummary(RVModel):
     variance_metrics: RVBacktestMetrics
     volatility_metrics: RVBacktestMetrics
     regime_metrics: list[RVRegimeMetric]
+    instrument: InstrumentDefinition | None = None
 
 
 class RVRunManifest(RVModel):
@@ -172,7 +195,10 @@ class RVRunsResponse(RVModel):
 class RVHealthResponse(RVModel):
     status: Literal["ok"]
     service: str
-    source: Literal["csv", "synthetic"]
+    source: Literal["csv", "synthetic", "upstox_historical"]
     observations: int
     estimator: RVEstimatorMetadata
     dataset: RVDatasetMetadata
+    instrument: InstrumentDefinition | None = None
+    finalized_as_of: date | None = None
+    live: RVLiveOverlayMetadata | None = None

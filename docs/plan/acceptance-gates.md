@@ -70,6 +70,8 @@
 
 ## Live read-only gate
 
+LIVE-RV-1 is a precursor and does not pass this gate. It accepts only the selectable underlying history, one-process LTPC multiplexing, visible freshness, and provisional close-to-close overlay. Durable restart recovery, sequence-gap provenance, option state, surfaces, Greeks, and shadow decisions remain required for full LIVE-1 acceptance.
+
 - Feed and subscription state are separate from authentication state.
 - Sequence gaps and freshness are visible.
 - Redis loss does not lose durable truth.

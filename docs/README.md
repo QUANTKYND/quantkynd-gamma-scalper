@@ -28,6 +28,7 @@ Completed:
 - Persisted RV research runs and artifacts.
 - FastAPI research API and React monitoring dashboard.
 - RV-1 and RV-1.1 acceptance and hardening.
+- LIVE-RV-1 selectable Upstox historical closes and provisional live close-to-close overlay.
 
 Not yet implemented:
 
@@ -39,7 +40,7 @@ Not yet implemented:
 - IV smile, surface, and implied variance.
 - Gamma opportunity engine.
 - Event-driven historical replay.
-- Live read-only option state.
+- Full live read-only option state, surfaces, Greeks, and shadow decisions.
 - Paper execution, risk enforcement, and reconciliation.
 
 ## Documents
