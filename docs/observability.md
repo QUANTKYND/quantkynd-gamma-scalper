@@ -56,7 +56,7 @@ Logs never include credentials or complete sensitive broker payloads.
 
 LIVE-RV-1 exposes authentication, transport, subscription, freshness, market status, active keys, connection time, last message time, last safe error code, and reconnect attempt through `/api/v1/market-data/status`. Provider logs may carry instrument key, timestamps, processing lag, active counts, and safe error codes, but never access tokens, authorized feed URLs, OAuth codes, secrets, or raw token files.
 
-LIVE-RV-1.1 exposes all provider segment statuses and derives the selected instrument status separately. Accepted quote sequences are per instrument. Browser caches expose `connecting`, `open`, `failed`, and `closed`, plus the safe close code and UTC close time. A rollover emits `resync_required`; a sequence gap or resync invalidates the selected instrument REST cache.
+LIVE-RV-1.1 exposes all provider segment statuses and derives both market and subscription status for the selected instrument separately. Accepted quote sequences are per instrument. Generic provider errors are recorded while transport remains `reconnecting`; `reconnect_exhausted` is terminal. Browser caches expose `connecting`, `open`, `failed`, and `closed`, plus the safe close code and UTC close time, and preserve `failed` when the error is followed by close. A rollover emits `resync_required`; a sequence gap or resync invalidates the selected instrument REST cache.
 
 ### Analytics
 

@@ -94,7 +94,7 @@ export const marketApi = createApi({
         socket.onclose = (event): void => {
           if (cleanedUp) return
           updateCachedData((draft) => {
-            draft.socketState = 'closed'
+            if (draft.socketState !== 'failed') draft.socketState = 'closed'
             draft.closeCode = event.code
             draft.closedAt = new Date().toISOString()
             if (draft.quote) draft.quote.freshness = 'stale'

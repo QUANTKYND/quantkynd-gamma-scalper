@@ -47,9 +47,9 @@ class UpstoxLiveMarketProvider:
             )
             streamer.on("open", self._handle_open)
             streamer.on("message", self._bridge_message)
-            streamer.on("reconnecting", lambda *args: self._bridge_state("reconnecting", None))
-            streamer.on("autoReconnectStopped", lambda *args: self._bridge_state("failed", "reconnect_exhausted"))
-            streamer.on("error", lambda error: self._bridge_state("failed", "provider_error"))
+            streamer.on("reconnecting", self._handle_reconnecting)
+            streamer.on("autoReconnectStopped", self._handle_reconnect_stopped)
+            streamer.on("error", self._handle_error)
             streamer.on("close", lambda *args: self._bridge_state("disconnected", None))
             self._streamer = streamer
             await asyncio.to_thread(streamer.connect)
@@ -82,6 +82,15 @@ class UpstoxLiveMarketProvider:
         if self._loop is not None and self._connected_event is not None:
             self._loop.call_soon_threadsafe(self._connected_event.set)
         self._bridge_state("connected", None)
+
+    def _handle_reconnecting(self, *args: Any) -> None:
+        self._bridge_state("reconnecting", None)
+
+    def _handle_reconnect_stopped(self, *args: Any) -> None:
+        self._bridge_state("failed", "reconnect_exhausted")
+
+    def _handle_error(self, *args: Any) -> None:
+        self._bridge_state("reconnecting", "provider_error")
 
     def _access_token(self) -> str:
         token = self._tokens.get_token()

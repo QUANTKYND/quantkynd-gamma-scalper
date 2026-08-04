@@ -179,15 +179,11 @@ class MarketDataCoordinator:
     def status(self, instrument_key: str | None = None) -> MarketDataStatus:
         authenticated = self._tokens.is_connected()
         transport = self._transport_state if authenticated else "auth_missing"
-        phases = {entry.phase for entry in self._subscriptions.values()}
-        if "subscribing" in phases:
-            subscription_state = "subscribing"
-        elif "subscribed" in phases:
-            subscription_state = "subscribed"
-        elif "rejected" in phases:
-            subscription_state = "rejected"
+        if instrument_key is not None:
+            entry = self._subscriptions.get(instrument_key)
+            subscription_state = entry.phase if entry is not None else "unsubscribed"
         else:
-            subscription_state = "unsubscribed"
+            subscription_state = self._aggregate_subscription_state()
         return MarketDataStatus(
             authentication_state="authenticated" if authenticated else "missing",
             transport_state=transport,
@@ -201,6 +197,16 @@ class MarketDataCoordinator:
             last_error_at=self._last_error_at,
             reconnect_attempt=self._reconnect_attempt,
         )
+
+    def _aggregate_subscription_state(self) -> str:
+        phases = {entry.phase for entry in self._subscriptions.values()}
+        if "subscribing" in phases:
+            return "subscribing"
+        elif "subscribed" in phases:
+            return "subscribed"
+        elif "rejected" in phases:
+            return "rejected"
+        return "unsubscribed"
 
     def subscriber_counts(self) -> dict[str, int]:
         return {key: len(entry.listeners) for key, entry in self._subscriptions.items()}

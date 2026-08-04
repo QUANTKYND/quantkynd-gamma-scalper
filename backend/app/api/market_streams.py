@@ -100,7 +100,7 @@ async def _stream(websocket: WebSocket, runtime, service, queue) -> None:
             current_exchange_date = runtime.registry.exchange_date()
             if current_exchange_date != exchange_date:
                 exchange_date = current_exchange_date
-                service = await runtime.registry.refresh(instrument_key)
+                service = await runtime.registry.get(instrument_key)
                 sequence += 1
                 await _send(websocket, sequence, "resync_required", instrument_key, _snapshot_payload(runtime, service))
                 last_rv_update = loop.time()

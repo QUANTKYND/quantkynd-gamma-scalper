@@ -741,12 +741,14 @@ Implementation status: complete. Backend tests, frontend lint, frontend producti
 
 - [x] Market status is preserved by segment.
 - [x] Displayed status derives from the selected instrument’s segment.
+- [x] Subscription status derives from the selected instrument when one is requested.
 - [x] Historical refresh uses `Asia/Kolkata`.
 - [x] Date logic is testable and deterministic.
 
 ## Finalized rollover
 
 - [x] Session rollover triggers refresh or resync.
+- [x] Concurrent rollover readers reuse the registry's per-instrument refresh.
 - [x] A finalized current-session candle removes provisional duplication.
 - [x] Dataset ID changes only with finalized data.
 - [x] Backtest remains finalized-only.
@@ -762,6 +764,14 @@ Implementation status: complete. Backend tests, frontend lint, frontend producti
 - [x] No direct `useEffect` exists outside `useMountEffect`.
 - [x] No order-placement code is introduced.
 - [x] Intraday realized variance remains unimplemented.
+
+## Closure corrections
+
+- [x] A rejected or pending subscription does not alter another instrument's selected status.
+- [x] Generic provider errors retain browser and upstream subscriptions during automatic reconnect.
+- [x] Reconnect exhaustion emits terminal `provider_error` and closes with `1011`.
+- [x] Fresh quotes clear reconnect-forced staleness.
+- [x] Frontend socket failure remains distinguishable from normal closure.
 
 ---
 

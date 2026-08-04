@@ -14,6 +14,7 @@ from app.market_data.quote_store import LiveQuoteStore
 from app.market_data.upstox.history import normalize_daily_closes
 from app.market_data.upstox.instruments import normalize_instrument
 from app.market_data.upstox.normalization import market_status_for_segment, normalize_feed_quotes, normalize_segment_statuses
+from app.market_data.upstox.streamer import UpstoxLiveMarketProvider
 from app.api.market_streams import _stream, market_state_stream
 from app.services.rv_live_overlay import RVLiveOverlayBuilder
 from app.services.rv_registry import InstrumentRVServiceRegistry
@@ -93,6 +94,21 @@ class ControlledLiveProvider(FakeLiveProvider):
             raise RuntimeError("provider failure")
 
 
+class SelectiveLiveProvider(FakeLiveProvider):
+    def __init__(self, pending_key):
+        super().__init__()
+        self.pending_key = pending_key
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def subscribe(self, keys):
+        self.subscribes.append(keys)
+        if keys == (self.pending_key,):
+            self.entered.set()
+            await self.release.wait()
+            raise RuntimeError("provider failure")
+
+
 class FakeWebSocket:
     def __init__(self, runtime):
         self.app = SimpleNamespace(state=SimpleNamespace(live_runtime=runtime))
@@ -127,6 +143,22 @@ class EventWebSocket(FakeWebSocket):
         self.sent.append(payload)
         if payload["event_type"] == self.stop_event_type:
             self.disconnect.set()
+
+    async def receive(self):
+        await self.disconnect.wait()
+        return {"type": "websocket.disconnect", "code": 1000}
+
+
+class HoldingWebSocket(FakeWebSocket):
+    def __init__(self, runtime):
+        super().__init__(runtime)
+        self.status_seen = asyncio.Event()
+        self.disconnect = asyncio.Event()
+
+    async def send_json(self, payload):
+        self.sent.append(payload)
+        if payload["event_type"] == "feed_status_changed":
+            self.status_seen.set()
 
     async def receive(self):
         await self.disconnect.wait()
@@ -328,6 +360,32 @@ async def _verify_segment_statuses() -> None:
 
     assert nse_queue.empty()
     assert coordinator.market_status("NSE_EQ|INE002A01018") == "unknown"
+
+
+def test_subscription_status_remains_instrument_specific() -> None:
+    asyncio.run(_verify_subscription_statuses())
+
+
+async def _verify_subscription_statuses() -> None:
+    pending_key = "NSE_EQ|INE002A01018"
+    provider = SelectiveLiveProvider(pending_key)
+    coordinator = MarketDataCoordinator(provider, LiveQuoteStore(5), max_active=2, tokens=TokenState())
+    first_queue = await coordinator.subscribe(INSTRUMENT.instrument_key)
+    pending = asyncio.create_task(coordinator.subscribe(pending_key))
+    await provider.entered.wait()
+
+    assert coordinator.status(INSTRUMENT.instrument_key).subscription_state == "subscribed"
+    assert coordinator.status(pending_key).subscription_state == "subscribing"
+    assert coordinator.status("BSE_INDEX|UNKNOWN").subscription_state == "unsubscribed"
+    assert coordinator.status().subscription_state == "subscribing"
+
+    provider.release.set()
+    failure = await asyncio.gather(pending, return_exceptions=True)
+
+    assert isinstance(failure[0], SubscriptionRejected)
+    assert coordinator.status(INSTRUMENT.instrument_key).subscription_state == "subscribed"
+    assert coordinator.status(pending_key).subscription_state == "unsubscribed"
+    await coordinator.unsubscribe(INSTRUMENT.instrument_key, first_queue)
 
 
 def test_concurrent_subscription_success_shares_readiness() -> None:
@@ -543,6 +601,128 @@ async def _verify_websocket_provider_failure() -> None:
     assert provider.unsubscribes == [(INSTRUMENT.instrument_key,)]
 
 
+def test_reconnect_keeps_subscription_and_fresh_quote_clears_staleness() -> None:
+    asyncio.run(_verify_reconnect_lifecycle())
+
+
+async def _verify_reconnect_lifecycle() -> None:
+    provider = FakeLiveProvider()
+    store = LiveQuoteStore(30)
+    coordinator = MarketDataCoordinator(provider, store, max_active=1, tokens=TokenState())
+    queue = await coordinator.subscribe(INSTRUMENT.instrument_key)
+    coordinator.receive_provider_message(feed_payload([(INSTRUMENT.instrument_key, 20_500)]))
+    coordinator.receive_provider_state("connected", None)
+    coordinator.receive_provider_state("reconnecting", "provider_error")
+
+    assert store.get(INSTRUMENT.instrument_key).ltp == 20_500
+    assert store.freshness(INSTRUMENT.instrument_key) == "stale"
+    assert coordinator.status(INSTRUMENT.instrument_key).subscription_state == "subscribed"
+    assert provider.unsubscribes == []
+    events = [queue.get_nowait()["event_type"] for _ in range(queue.qsize())]
+    assert "provider_error" not in events
+    assert events.count("feed_status_changed") == 2
+
+    coordinator.receive_provider_state("connected", None)
+    coordinator.receive_provider_message(feed_payload([(INSTRUMENT.instrument_key, 20_501)]))
+
+    assert store.freshness(INSTRUMENT.instrument_key) == "fresh"
+    assert store.get(INSTRUMENT.instrument_key).ltp == 20_501
+
+    class RecordingStreamer:
+        def __init__(self):
+            self.subscribes = []
+
+        def subscribe(self, keys, mode):
+            self.subscribes.append((keys, mode))
+
+    streamer = RecordingStreamer()
+    upstox = UpstoxLiveMarketProvider(tokens=TokenState())
+    states = []
+    upstox.bind(lambda payload: None, lambda state, error: states.append((state, error)))
+    upstox._loop = asyncio.get_running_loop()
+    upstox._connected_event = asyncio.Event()
+    upstox._streamer = streamer
+    upstox._active_keys = {INSTRUMENT.instrument_key}
+    upstox._has_connected = True
+    upstox._handle_error(RuntimeError("temporary"))
+    upstox._handle_reconnecting()
+    upstox._handle_open()
+    await asyncio.sleep(0)
+
+    assert states == [
+        ("reconnecting", "provider_error"),
+        ("reconnecting", None),
+        ("connected", None),
+    ]
+    assert len(streamer.subscribes) == 1
+    upstox._handle_reconnect_stopped()
+    await asyncio.sleep(0)
+    assert states[-1] == ("failed", "reconnect_exhausted")
+    await coordinator.unsubscribe(INSTRUMENT.instrument_key, queue)
+
+
+def test_browser_stream_stays_open_during_reconnect() -> None:
+    asyncio.run(_verify_browser_stream_stays_open_during_reconnect())
+
+
+async def _verify_browser_stream_stays_open_during_reconnect() -> None:
+    provider = FakeLiveProvider()
+    coordinator = MarketDataCoordinator(provider, LiveQuoteStore(5), max_active=1, tokens=TokenState())
+    registry = InstrumentRVServiceRegistry(FakeInstruments(), FakeHistory(prices()), lookback_years=3, cache_seconds=900)
+    runtime = SimpleNamespace(
+        coordinator=coordinator,
+        instruments=FakeInstruments(),
+        registry=registry,
+        overlay=RVLiveOverlayBuilder(),
+        metrics=MarketDataMetrics(),
+    )
+    websocket = HoldingWebSocket(runtime)
+    stream = asyncio.create_task(market_state_stream(websocket, INSTRUMENT.instrument_key))
+    while not websocket.sent:
+        await asyncio.sleep(0)
+    coordinator.receive_provider_state("reconnecting", "provider_error")
+    await asyncio.wait_for(websocket.status_seen.wait(), timeout=1)
+
+    assert stream.done() is False
+    assert websocket.closed is None
+    assert coordinator.status(INSTRUMENT.instrument_key).subscription_state == "subscribed"
+    assert provider.unsubscribes == []
+
+    coordinator.receive_provider_state("connected", None)
+    websocket.disconnect.set()
+    await stream
+    assert provider.unsubscribes == [(INSTRUMENT.instrument_key,)]
+
+
+def test_terminal_reconnect_exhaustion_closes_and_cleans_once() -> None:
+    asyncio.run(_verify_terminal_reconnect_exhaustion())
+
+
+async def _verify_terminal_reconnect_exhaustion() -> None:
+    provider = FakeLiveProvider()
+    coordinator = MarketDataCoordinator(provider, LiveQuoteStore(5), max_active=1, tokens=TokenState())
+    registry = InstrumentRVServiceRegistry(FakeInstruments(), FakeHistory(prices()), lookback_years=3, cache_seconds=900)
+    runtime = SimpleNamespace(
+        coordinator=coordinator,
+        instruments=FakeInstruments(),
+        registry=registry,
+        overlay=RVLiveOverlayBuilder(),
+        metrics=MarketDataMetrics(),
+    )
+    websocket = EventWebSocket(runtime, "provider_error")
+    stream = asyncio.create_task(market_state_stream(websocket, INSTRUMENT.instrument_key))
+    while not websocket.sent:
+        await asyncio.sleep(0)
+    coordinator.receive_provider_state("reconnecting", None)
+    coordinator.receive_provider_state("failed", "reconnect_exhausted")
+    await stream
+
+    assert any(item["event_type"] == "provider_error" for item in websocket.sent)
+    assert websocket.closed == (1011, "provider failure")
+    assert provider.unsubscribes == [(INSTRUMENT.instrument_key,)]
+    assert coordinator.subscriber_counts() == {}
+
+
 def test_stream_coalesces_quotes_and_emits_no_unchanged_status() -> None:
     asyncio.run(_verify_stream_coalescing())
     asyncio.run(_verify_unchanged_status_is_silent())
@@ -594,14 +774,14 @@ async def _verify_stream_rollover() -> None:
     class RolloverRegistry:
         def __init__(self):
             self.calls = 0
-            self.refreshes = 0
+            self.gets = 0
 
         def exchange_date(self):
             self.calls += 1
             return date(2026, 8, 4) if self.calls == 1 else date(2026, 8, 5)
 
-        async def refresh(self, instrument_key):
-            self.refreshes += 1
+        async def get(self, instrument_key):
+            self.gets += 1
             return service
 
     rollover = RolloverRegistry()
@@ -610,7 +790,7 @@ async def _verify_stream_rollover() -> None:
 
     await _stream(websocket, runtime, service, asyncio.Queue())
 
-    assert rollover.refreshes == 1
+    assert rollover.gets == 1
     assert [item["event_type"] for item in websocket.sent] == ["market_state_snapshot", "resync_required"]
 
 
