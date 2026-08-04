@@ -94,6 +94,9 @@ async def test_followup_migration_rejects_legacy_superseded_at(
             with pytest.raises(RuntimeError, match="legacy non-null superseded_at"):
                 await asyncio.to_thread(command.upgrade, config, "head")
             assert await _revision(engine) == INITIAL_REVISION
+            await lease.drop_and_recreate_public()
+            await asyncio.to_thread(command.upgrade, config, "head")
+            assert await _revision(engine) == EXPECTED_REVISION
     finally:
         await dispose_database_engine(engine)
 
