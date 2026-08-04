@@ -19,6 +19,7 @@ Dependencies are added only when a milestone requires them. Each dependency must
 | `sqlalchemy[asyncio]` | DATA-1.1 owner; SQLAlchemy 2 async engine, typed relational mappings, statements, repositories, and transaction sessions. Remove only if the Postgres adapter is replaced with an equivalent explicit persistence boundary. |
 | `alembic` | DATA-1.1 owner; reviewed forward and reverse Postgres schema migrations plus metadata drift detection. Remove only with an approved replacement migration system and converted revision history. |
 | `asyncpg` | DATA-1.1 owner; async PostgreSQL driver for application repositories and Alembic online migrations. Remove when Postgres or the SQLAlchemy async adapter is retired. |
+| `ijson` | DATA-1.2 owner; accepted range `>=3.3,<4`, resolved `3.5.1`; maintained streaming JSON parser for the Upstox BOD `NSE.json.gz` top-level array without full in-memory deserialization, with `use_float=False` lexical numeric handling. Runtime footprint is one parser dependency on the provider-catalogue ingestion path only. License/security review: permissive upstream package, no network access, no credential handling, bounded by repository gzip and row-size limits. Remove if the provider catalogue source changes or the standard library gains an equivalent reviewed streaming parser. |
 
 ### Backend development
 
@@ -60,7 +61,7 @@ Dependencies are added only when a milestone requires them. Each dependency must
 
 ## Planned: options-market infrastructure
 
-DATA-1.1 owns SQLAlchemy, Alembic, and asyncpg. It does not add a synchronous driver, retries, calendar packages, or optimized serialization.
+DATA-1.1 owns SQLAlchemy, Alembic, and asyncpg. DATA-1.2 owns `ijson` for streaming provider catalogue parsing. These slices do not add a synchronous driver, retries, calendar packages, or optimized serialization.
 
 | Dependency | Phase | Purpose |
 |---|---|---|
