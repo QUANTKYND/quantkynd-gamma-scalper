@@ -23,8 +23,9 @@ const InstrumentAutocomplete = ({ instrumentKey, onSelect }: Props): React.React
   return (
     <Autocomplete
       sx={{ width: { xs: '100%', sm: 420 } }}
+      disableClearable
       options={options}
-      value={selected}
+      value={selected as InstrumentDefinition}
       loading={search.isFetching || resolved.isFetching}
       filterOptions={(items) => items}
       groupBy={groupLabel}
