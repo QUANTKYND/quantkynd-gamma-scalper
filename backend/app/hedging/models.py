@@ -20,6 +20,7 @@ class HedgePolicyState:
     spot: float
     time_to_expiry_years: float
     futures_delta_per_contract: float
+    risk_free_rate: float = 0.0
 
     def __post_init__(self) -> None:
         if self.timestamp.tzinfo is None or self.step_index < 0 or self.session_index < 0:
