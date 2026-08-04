@@ -17,7 +17,7 @@ from app.strategy.config import load_strategy_config
 
 
 STRATEGY = load_strategy_config("../config/strategies/nifty-long-gamma-v1.yaml")
-MARKET = load_simulation_market_config("../config/simulation/nifty-synthetic-market-v1.yaml")
+MARKET = load_simulation_market_config("../config/simulation/nifty-synthetic-market-v2.yaml")
 
 
 def sessions():

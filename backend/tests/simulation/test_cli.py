@@ -8,7 +8,7 @@ from app.cli.run_gamma_simulation import main
 
 
 CONFIG = Path(__file__).parents[3] / "config/strategies/nifty-long-gamma-v1.yaml"
-MARKET_CONFIG = Path(__file__).parents[3] / "config/simulation/nifty-synthetic-market-v1.yaml"
+MARKET_CONFIG = Path(__file__).parents[3] / "config/simulation/nifty-synthetic-market-v2.yaml"
 
 
 def test_simulation_cli_writes_completed_run(tmp_path, capsys) -> None:

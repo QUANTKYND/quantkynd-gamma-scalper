@@ -16,7 +16,7 @@ ZERO = ExecutionCostParameters(*(Decimal("0"),) * 4)
 
 def result():
     strategy = load_strategy_config("../config/strategies/nifty-long-gamma-v1.yaml")
-    market = load_simulation_market_config("../config/simulation/nifty-synthetic-market-v1.yaml")
+    market = load_simulation_market_config("../config/simulation/nifty-synthetic-market-v2.yaml")
     path = generate_gbm_path(GBMPathConfig(24000, 0.03, 0.2, 15, 1 / (252 * 3), 17), sessions_for_path(strategy, market, 15))
     return run_simulation(strategy, market, path, "no_hedge", ZERO, ZERO)
 

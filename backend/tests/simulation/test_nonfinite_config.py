@@ -19,7 +19,7 @@ from tests.simulation.support import sessions_for_path
 
 
 STRATEGY_CONFIG = Path("../config/strategies/nifty-long-gamma-v1.yaml")
-MARKET_CONFIG = Path("../config/simulation/nifty-synthetic-market-v1.yaml")
+MARKET_CONFIG = Path("../config/simulation/nifty-synthetic-market-v2.yaml")
 ZERO_COSTS = ExecutionCostParameters(*(Decimal("0"),) * 4)
 
 

@@ -21,7 +21,7 @@ from app.simulation.config import (
 )
 
 
-CONFIG = Path(__file__).parents[3] / "config/simulation/nifty-synthetic-market-v1.yaml"
+CONFIG = Path(__file__).parents[3] / "config/simulation/nifty-synthetic-market-v2.yaml"
 HASH = "sha256:" + "a" * 64
 
 

@@ -124,7 +124,7 @@ Run any benchmark policy on the same seeded path with:
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.run_gamma_simulation \
   --strategy-config ../config/strategies/nifty-long-gamma-v1.yaml \
-  --market-config ../config/simulation/nifty-synthetic-market-v1.yaml \
+  --market-config ../config/simulation/nifty-synthetic-market-v2.yaml \
   --path-generator gbm --seed 17 --policy constant_band
 ```
 

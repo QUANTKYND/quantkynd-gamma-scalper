@@ -10,7 +10,7 @@ from app.simulation.state_builder import build_executable_market_states
 from app.strategy.config import load_strategy_config
 
 
-CONFIG = Path(__file__).parents[3] / "config/simulation/nifty-synthetic-market-v1.yaml"
+CONFIG = Path(__file__).parents[3] / "config/simulation/nifty-synthetic-market-v2.yaml"
 
 
 def clock():
