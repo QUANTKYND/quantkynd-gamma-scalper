@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-import hashlib
-import json
-from datetime import date, datetime, time
+from datetime import time
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.core.hashing import canonical_json, stable_hash
 from app.execution.models import ExecutionCostParameters
 
 
@@ -147,28 +146,3 @@ def simulation_run_config_hash(config: SimulationRunConfig) -> str:
 
 def policy_config_hash(policy_id: str, parameters: dict[str, object]) -> str:
     return stable_hash({"policy_id": policy_id, "parameters": parameters})
-
-
-def stable_hash(payload: object) -> str:
-    encoded = canonical_json(payload).encode("utf-8")
-    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
-
-
-def canonical_json(payload: object) -> str:
-    return json.dumps(_normalize(payload), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-
-
-def _normalize(value: Any) -> Any:
-    if isinstance(value, BaseModel):
-        return _normalize(value.model_dump(mode="json"))
-    if isinstance(value, dict):
-        return {key: _normalize(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_normalize(item) for item in value]
-    if isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
-        return format(Decimal(str(value)).normalize(), "f")
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, (date, time)):
-        return value.isoformat()
-    return value

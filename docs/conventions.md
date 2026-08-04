@@ -84,6 +84,8 @@ Avoid introducing large functions that would otherwise need comments. Split them
 - Emit timezone-aware ISO 8601 timestamps.
 - Interpret NSE session rules in `Asia/Kolkata`.
 - Distinguish exchange timestamp, provider timestamp, received timestamp, processed timestamp, and persisted timestamp.
+- Point-in-time market queries distinguish `market_as_of` from `known_as_of`; research replay uses knowledge time when defensible availability exists.
+- Normalize domain and storage timestamps to UTC before canonical serialization. Reject naive timestamps.
 - Trading horizon names use sessions when the definition is session-based. Do not call five sessions five calendar days.
 - Option expiry is an exchange date plus explicit settlement convention.
 
@@ -103,6 +105,7 @@ Avoid introducing large functions that would otherwise need comments. Split them
 
 - Analytics use floating point where numerical libraries require it.
 - Durable cash, fees, balances, premiums, and order prices use decimal values or integer minor units.
+- Durable and domain contract strikes, tick sizes, multipliers, and market prices use `Decimal`; binary floats are rejected at those boundaries.
 - Never derive accounting balances from rounded UI values.
 - Round only at defined exchange, broker, or display boundaries.
 
@@ -113,6 +116,18 @@ Avoid introducing large functions that would otherwise need comments. Split them
 - No future data may enter features, selection, fills, or quality filters.
 - Parameter search and final evaluation use distinct data or nested procedures.
 - Failed runs remain visible and explain why they failed.
+- Backfilled market data without defensible original availability cannot be presented as valid knowledge-time replay without an explicit limitation override.
+
+## Deterministic market identity
+
+- Catalogue identities use SHA-256 over canonical JSON with sorted mapping keys.
+- Decimal-equivalent text forms serialize identically; finite numbers only are accepted.
+- Sets are canonically ordered, timestamps are timezone-aware UTC values, and expiry remains an exchange date.
+- Economic hashes exclude provider keys, display symbols, catalogue runtime timestamps, and ingestion runtime metadata.
+- A provider sequence is identity material only with a non-empty explicit provider sequence scope. The scope may be a connection, feed session, channel, partition, trading date, or provider-declared global scope; QuantKYND never infers a global scope.
+- Content equality is provenance, not event equality. Deduplication requires a guaranteed provider identity, explicitly scoped provider sequence, source-file and row identity, or explicit ingestion event ID.
+- Duplicate semantic version, mapping, or normalized-event IDs are accepted only when their complete immutable records are equal. Conflicting records fail explicitly instead of using iterable order.
+- Normalized bid, ask, and last observations are finite non-negative `Decimal` values or absent. Zero is preserved for quality evaluation and is not itself evidence of eligibility.
 
 ## Strategy and execution
 

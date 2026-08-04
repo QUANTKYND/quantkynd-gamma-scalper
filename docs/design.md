@@ -102,6 +102,8 @@ The existing RV implementation may remain under `quant/` during migration. New d
 
 STRAT-1 and SIM-1 implement the target `strategy`, `options`, `simulation`, `portfolio`, `hedging`, `execution`, and `attribution` boundaries as an offline deterministic research slice. These modules have no FastAPI, broker, Redis, or database dependencies. The simulation CLI coordinates pure analytics and publishes immutable local artifacts.
 
+DATA-1.0 adds persistence-independent domain types under `instruments` and `market_data`. `core.hashing` owns the canonical serializer and SHA-256 helper shared with simulation. The DATA-1.0 slice imports no provider SDK, API schema, database, Redis, or frontend type. Persistence adapters and catalogue ingestion remain later DATA-1 slices.
+
 ## Dependency direction
 
 ```text
@@ -125,6 +127,7 @@ Rules:
 - Pydantic transport schemas are not the durable domain model by default.
 - Research calculations are pure functions wherever practical.
 - Execution and risk decisions are deterministic for a given state and policy version.
+- Economic instrument identity is provider-neutral. Validity-bounded contract versions and provider mappings reference it instead of redefining it.
 
 ## Primary data flow
 
@@ -155,6 +158,22 @@ flowchart TD
 - Redis is an acceleration and coordination layer, never the only copy of durable trading state.
 - The broker is authoritative for broker-acknowledged order and position state once broker integration exists.
 - Internal state is reconciled against the broker; it is never assumed correct merely because an order request succeeded.
+
+## Point-in-time state semantics
+
+DATA-1 uses bitemporal selection rather than one overloaded `as_of` timestamp:
+
+```text
+exchange_timestamp ≤ market_as_of
+available_at ≤ known_as_of
+recorded_at/superseded_at bound system visibility
+```
+
+`market_as_of` represents market effective time. `known_as_of` represents the information QuantKYND could use at a decision. Catalogue versions and provider mappings must pass both their effective-time and system-time intervals. Event corrections and quality re-evaluations append new records, so an earlier knowledge cutoff continues to reproduce the earlier result.
+
+Historical imports without defensible dissemination or receipt timestamps carry an explicit non-defensible availability basis. They may support market-time analysis, but do not silently satisfy a knowledge-time replay claim.
+
+Point-in-time reconstruction fails closed on structurally invalid inputs. Semantic version, provider-mapping, and normalized-event indexes reject conflicting records that share an ID. Correction edges are resolved only after their targets, economic contracts, event types, acyclic structure, and single-successor branches are validated. Representation validity preserves finite zero-price observations; a versioned quality assessment, not normalization, determines chain eligibility.
 
 ## State ownership
 

@@ -4,7 +4,7 @@ This document defines conceptual models and invariants. Transport schemas, datab
 
 ## Identity conventions
 
-All IDs are opaque strings in APIs. The MVP may use UUIDv4 internally.
+All IDs are opaque strings in APIs. Catalogue economic identities, contract-version identities, provider-mapping identities, and normalized event identities use deterministic SHA-256 identities over canonical material. UUIDv4 may identify operational records only where reproducible identity is not required.
 
 Primary identifiers:
 
@@ -81,26 +81,23 @@ actual_annualized_volatility
 
 Captures run identity, status, dataset, estimator, model, parameters, horizon, evaluation method, hashes, source commit, artifacts, and failure reason.
 
-## Instrument and session models
+## Point-in-time instrument and contract models
 
-### `UnderlyingInstrument`
+DATA-1.0 separates economic identity, validity-bounded trading metadata, and provider mapping. Re-ingesting the same canonical catalogue content produces the same IDs. A provider key, display symbol, catalogue row, tick size, or lot size is never the sole economic identity.
+
+### `UnderlyingInstrumentIdentity`
 
 ```text
 instrument_id
 exchange
-segment
-symbol
-name
+canonical_symbol
+instrument_type
 currency
-tick_size
-lot_size
-price_scale
-valid_from
-valid_until
-provider_keys
 ```
 
-### `FuturesContract`
+`canonical_symbol` is a QuantKYND-controlled stable symbol, not provider display text. Its changes require an explicit identity decision rather than an incidental catalogue update.
+
+### `FuturesContractIdentity`
 
 ```text
 contract_id
@@ -108,15 +105,11 @@ underlying_instrument_id
 exchange
 expiry
 multiplier
-lot_size
-tick_size
 settlement_type
-provider_keys
-valid_from
-valid_until
+currency
 ```
 
-### `OptionContract`
+### `OptionContractIdentity`
 
 ```text
 contract_id
@@ -124,25 +117,60 @@ underlying_instrument_id
 exchange
 expiry
 strike
-option_type
+option_side
 exercise_style
 settlement_type
 multiplier
-lot_size
-tick_size
-provider_keys
+currency
+```
+
+The option economic identity hash contains exactly exchange, underlying instrument ID, expiry exchange date, canonical Decimal strike, option side, exercise style, settlement type, economically defining Decimal multiplier, and currency. Futures use the corresponding fields without strike, option side, or exercise style. Provider, provider key, display symbol, catalogue version, validity timestamps, lot size, and tick size are excluded.
+
+### Contract versions
+
+`UnderlyingInstrumentVersion`, `FuturesContractVersion`, and `OptionContractVersion` contain validity-bounded trading metadata:
+
+```text
+instrument_id or contract_id
+version_id
 valid_from
 valid_until
+lot_size
+tick_size
+display_symbol
+trading_status
+catalogue_version_id
+recorded_at
+superseded_at
+```
+
+`valid_from` is inclusive and `valid_until` is exclusive in market effective time. `recorded_at` is the time QuantKYND persisted the version. `superseded_at` is the exclusive knowledge/system-time boundary after which a replacement is authoritative. Runtime timestamps do not participate in the deterministic version ID; validity and trading metadata do.
+
+### `ProviderContractMapping`
+
+```text
+mapping_id
+provider
+provider_contract_key
+contract_version_id
+provider_payload_hash
+source_row_identity
+effective_from
+effective_until
+recorded_at
+superseded_at
 ```
 
 Invariants:
 
-- Strike is positive.
+- Strikes, tick sizes, and multipliers are positive finite `Decimal` values at domain and durable boundaries.
 - Expiry is explicit and timezone-independent as an exchange date.
-- Option type is `call` or `put`.
+- Option side is `call` or `put`.
 - Contract identity never depends on a mutable display symbol alone.
-- Provider identifiers are versioned and time-bounded.
+- Multiple provider mappings can resolve to the same economic contract version.
+- Provider identifiers and mappings are effective-time and knowledge-time bounded.
 - Expired or not-yet-listed contracts cannot enter a point-in-time chain.
+- Replacing validity-bounded trading metadata creates a new version without changing economic identity where the economic terms are unchanged.
 
 ### `TradingSession`
 
@@ -160,7 +188,35 @@ status
 
 All timestamps are timezone-aware. Storage uses UTC; exchange session interpretation uses `Asia/Kolkata` for NSE instruments.
 
+## Point-in-time clocks
+
+### `MarketEventTime`
+
+```text
+exchange_timestamp
+received_at
+available_at
+recorded_at
+availability_basis
+```
+
+- `exchange_timestamp` is the provider-reported market-event time.
+- `received_at` is the physical receipt time when available and remains distinct from provider time.
+- `available_at` is the earliest time the observation was eligible to influence QuantKYND. Live events normally use receipt time. It never precedes a present `received_at`.
+- `recorded_at` is when QuantKYND persisted the normalized immutable record and never precedes `available_at`.
+- `superseded_at`, where used for catalogue versions and mappings, is the exclusive system-time boundary of replacement. Market-event corrections instead remain append-only and identify the prior event with `supersedes_event_id`.
+
+All domain timestamps are timezone-aware and normalized to UTC. NSE sessions are interpreted in `Asia/Kolkata`.
+
+`market_as_of` asks which market events had occurred by exchange time. `known_as_of` additionally asks what QuantKYND could have known by a decision time. Research replay defaults to `known_as_of` whenever defensible availability exists. A historical import without original dissemination or receipt timestamps uses `availability_basis=historical_import`; it is excluded from defensible knowledge-time replay unless the caller explicitly permits that limitation.
+
 ## Market-event models
+
+### Event identities
+
+`RawMarketObservationIdentity` prefers a provider event or trade ID, a provider sequence within its guaranteed scope, or a source-file plus source-row identity. A provider sequence requires a non-empty `provider_sequence_scope_id`; no global scope is inferred. The scope can identify a connection, feed session, channel, partition, trading date, or a provider-guaranteed global sequence. Otherwise the observation requires a unique ingestion-event identity. A content hash records provenance but never proves two transmissions are the same event. Therefore repeated quotes with identical market fields remain distinct when their provider event identities differ.
+
+`NormalizedMarketEventIdentity` deterministically combines raw event identity, event type, subject identity, and normalization schema version. Raw and normalized observations are append-only.
 
 ### `UnderlyingQuote`
 
@@ -188,6 +244,8 @@ The process-local sequence is allocated after validation and increases independe
 ```text
 contract_id
 exchange_timestamp
+available_at
+recorded_at
 received_at
 bid_price
 bid_size
@@ -200,7 +258,10 @@ volume
 sequence
 source
 quality_flags
+supersedes_event_id
 ```
+
+Prices use finite non-negative `Decimal` values. Zero bid, ask, or last values are preserved as observations; negative and non-finite values are invalid representations. `None` means unavailable and remains distinct from zero. Crossed markets, zero prices, and other liquidity or market-quality conditions are classified by versioned quality assessments rather than removed during normalization. Bid, ask, last sizes, volume, and open interest are non-negative integer contracts in DATA-1.0; a provider adapter must explicitly convert and document any provider-specific lot or unit representation.
 
 ### `OptionTrade`
 
@@ -229,6 +290,22 @@ data_quality_summary
 
 A snapshot references constituent quotes; it does not duplicate uncontrolled quote values without provenance.
 
+### `DataQualityAssessment`
+
+```text
+assessment_id
+assessment_run_id
+event_id
+quality_policy_id
+quality_policy_version
+disposition
+reason_codes
+assessed_at
+recorded_at
+```
+
+Dispositions are `accepted`, `accepted_with_flags`, `quarantined`, and `rejected`. Quality codes include stale, crossed, duplicate, out-of-order, missing sequence, invalid price, missing contract, market closed, and provider degradation. A later policy evaluation appends an assessment; it never rewrites the raw or normalized observation or an earlier assessment.
+
 ### `DataQualityEvent`
 
 ```text
@@ -243,7 +320,22 @@ source_event_id
 resolved_at
 ```
 
-Quality codes include stale, crossed, duplicate, out-of-order, missing sequence, invalid price, missing contract, market closed, and provider degradation.
+`DataQualityEvent` remains the operational event model for feed and catalogue degradation. It does not replace the versioned per-observation `DataQualityAssessment` used by point-in-time quote eligibility.
+
+### Point-in-time option-chain reconstruction
+
+For each economic contract, a query applies this order:
+
+1. require a contract version and provider mapping effective at `market_as_of` and visible at `known_as_of` when present;
+2. require `exchange_timestamp <= market_as_of`;
+3. require `available_at <= known_as_of` and defensible availability unless explicitly waived;
+4. select the latest visible assessment for the requested quality policy ID and version and require an eligible disposition;
+5. validate and apply visible `supersedes_event_id` correction relations;
+6. prefer newest exchange timestamp, then provider sequence, event order, receipt time, availability time, and stable event ID.
+
+Correction sources cannot supersede themselves. A target must exist as a visible or historically eligible normalized quote with the same economic contract and normalized event type. Correction graphs must be acyclic and have at most one visible correction per target. Missing targets, cross-contract or cross-type edges, self-edges, cycles, and competing correction branches raise `InvalidCorrectionGraphError`; they never silently remove a quote.
+
+Contract-version, provider-mapping, and normalized-event indexes accept repeated IDs only when the complete immutable records are equal. A shared ID with different record content raises `ConflictingSemanticIdentityError`. The final chain is sorted by expiry, strike, and option side. Successful results and structural errors are therefore invariant to input order.
 
 ## Option analytics models
 

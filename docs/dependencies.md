@@ -57,6 +57,8 @@ Dependencies are added only when a milestone requires them. Each dependency must
 
 ## Planned: options-market infrastructure
 
+DATA-1.0 is a pure domain semantic freeze and adds none of these dependencies. Database drivers, ORM mappings, migrations, retries, calendar packages, and optimized serialization remain deferred until their owning later DATA-1 slice demonstrates the need.
+
 | Dependency | Phase | Purpose |
 |---|---|---|
 | `sqlalchemy` | Data-1 | Persistence mappings and transactional repositories. |
