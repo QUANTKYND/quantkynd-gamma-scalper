@@ -57,7 +57,7 @@ def value(
     dividend_yield: float,
     volatility: float,
 ) -> OptionValuation:
-    _validate(option_type, spot, strike, time_to_expiry_years, volatility)
+    _validate(option_type, spot, strike, time_to_expiry_years, risk_free_rate, dividend_yield, volatility)
     intrinsic = intrinsic_value(option_type, spot, strike)
     if time_to_expiry_years == 0:
         delta = _expiry_delta(option_type, spot, strike)
@@ -113,7 +113,7 @@ def put_price(*args: float) -> float:
 
 
 def intrinsic_value(option_type: OptionType, spot: float, strike: float) -> float:
-    _validate(option_type, spot, strike, 0.0, 0.0)
+    _validate(option_type, spot, strike, 0.0, 0.0, 0.0, 0.0)
     return max(spot - strike, 0.0) if option_type == "call" else max(strike - spot, 0.0)
 
 
@@ -161,6 +161,8 @@ def _validate(
     spot: float,
     strike: float,
     time_to_expiry_years: float,
+    risk_free_rate: float,
+    dividend_yield: float,
     volatility: float,
 ) -> None:
     if option_type not in ("call", "put"):
@@ -171,5 +173,9 @@ def _validate(
         raise ValueError("strike must be positive and finite")
     if not math.isfinite(time_to_expiry_years) or time_to_expiry_years < 0:
         raise ValueError("time to expiry must be non-negative and finite")
+    if not math.isfinite(risk_free_rate):
+        raise ValueError("risk-free rate must be finite")
+    if not math.isfinite(dividend_yield):
+        raise ValueError("dividend yield must be finite")
     if not math.isfinite(volatility) or volatility < 0:
         raise ValueError("volatility must be non-negative and finite")

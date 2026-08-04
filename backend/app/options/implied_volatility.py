@@ -13,6 +13,7 @@ class ImpliedVolatilityResult:
     converged: bool
     iterations: int
     final_price_error: float
+    reason_code: str
 
 
 def solve_implied_volatility(
@@ -28,11 +29,24 @@ def solve_implied_volatility(
     price_tolerance: float = 1e-8,
     maximum_iterations: int = 200,
 ) -> ImpliedVolatilityResult:
-    if not math.isfinite(observed_price) or observed_price < 0:
+    finite_inputs = (
+        observed_price,
+        spot,
+        strike,
+        time_to_expiry_years,
+        risk_free_rate,
+        dividend_yield,
+        lower_volatility,
+        upper_volatility,
+        price_tolerance,
+    )
+    if not all(math.isfinite(item) for item in finite_inputs):
+        raise ValueError("implied-volatility inputs must be finite")
+    if observed_price < 0:
         raise ValueError("observed price must be non-negative and finite")
     if lower_volatility < 0 or upper_volatility <= lower_volatility:
         raise ValueError("volatility bounds are invalid")
-    if price_tolerance <= 0 or maximum_iterations < 0:
+    if price_tolerance <= 0 or maximum_iterations <= 0:
         raise ValueError("solver tolerance and iteration count are invalid")
     lower_price = price(
         option_type, spot, strike, time_to_expiry_years, risk_free_rate, dividend_yield, 0.0
@@ -45,13 +59,19 @@ def solve_implied_volatility(
     if observed_price < lower_price - price_tolerance or observed_price > upper_static + price_tolerance:
         raise ValueError("observed price violates static no-arbitrage bounds")
     if abs(observed_price - lower_price) <= price_tolerance:
-        return ImpliedVolatilityResult(0.0, True, 0, lower_price - observed_price)
+        return ImpliedVolatilityResult(0.0, True, 0, lower_price - observed_price, "intrinsic_boundary")
     low = lower_volatility
     high = upper_volatility
     low_error = price(option_type, spot, strike, time_to_expiry_years, risk_free_rate, dividend_yield, low) - observed_price
     high_error = price(option_type, spot, strike, time_to_expiry_years, risk_free_rate, dividend_yield, high) - observed_price
     if low_error > 0 or high_error < 0:
-        return ImpliedVolatilityResult(None, False, 0, min(abs(low_error), abs(high_error)))
+        return ImpliedVolatilityResult(
+            None,
+            False,
+            0,
+            min(abs(low_error), abs(high_error)),
+            "root_not_bracketed",
+        )
     error = low_error
     midpoint = low
     for iteration in range(1, maximum_iterations + 1):
@@ -60,9 +80,9 @@ def solve_implied_volatility(
             option_type, spot, strike, time_to_expiry_years, risk_free_rate, dividend_yield, midpoint
         ) - observed_price
         if abs(error) <= price_tolerance:
-            return ImpliedVolatilityResult(midpoint, True, iteration, error)
+            return ImpliedVolatilityResult(midpoint, True, iteration, error, "converged")
         if error < 0:
             low = midpoint
         else:
             high = midpoint
-    return ImpliedVolatilityResult(midpoint if maximum_iterations else None, False, maximum_iterations, error)
+    return ImpliedVolatilityResult(midpoint, False, maximum_iterations, error, "maximum_iterations_reached")

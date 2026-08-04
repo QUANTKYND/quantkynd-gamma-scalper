@@ -28,6 +28,16 @@ def test_impossible_price_fails() -> None:
 
 def test_non_convergence_is_explicit() -> None:
     observed = price("call", 100, 100, 1, 0, 0, 0.2)
-    result = solve_implied_volatility("call", observed, 100, 100, 1, 0, 0, maximum_iterations=0)
+    result = solve_implied_volatility(
+        "call",
+        observed,
+        100,
+        100,
+        1,
+        0,
+        0,
+        price_tolerance=1e-16,
+        maximum_iterations=1,
+    )
     assert not result.converged
-    assert result.implied_volatility is None
+    assert result.reason_code == "maximum_iterations_reached"
