@@ -36,6 +36,7 @@ from app.simulation.risk import (
 )
 from app.strategy.hashing import strategy_config_hash
 from app.strategy.models import StrategyContractV1
+from app.simulation.state_builder import build_executable_market_states, executable_market_state_hash
 
 
 SIMULATOR_VERSION = "sim-1.1"
@@ -51,7 +52,7 @@ def run_simulation(
     manual_kill_switch_engaged: bool = False,
     accounting_tolerance: Decimal = Decimal("0.01"),
 ) -> SimulationResult:
-    if not path.states:
+    if not path.points:
         raise ValueError("simulation path cannot be empty")
     _validate_contract_alignment(strategy, market)
     policy = build_hedge_policy(policy_id, strategy.hedging)
@@ -69,8 +70,9 @@ def run_simulation(
     )
     run_id = simulation_run_id(run_config)
     expiry, selected = select_simulation_contracts(strategy, market, path)
-    normalized_states = _states_with_expiry(path, expiry)
-    initial = normalized_states[0]
+    executable_states = build_executable_market_states(strategy, market, path, expiry)
+    market_state_hash = executable_market_state_hash(executable_states)
+    initial = executable_states[0]
     futures_id = market.futures.instrument_id
     position_id = f"position-{run_id}"
     ledger = PortfolioLedger(Decimal(str(strategy.risk.starting_nav_inr)), initial.timestamp, position_id)
@@ -118,7 +120,7 @@ def run_simulation(
     )
     exit_reason = "simulation_end"
     processed_states = []
-    for state_index, state in enumerate(normalized_states):
+    for state_index, state in enumerate(executable_states):
         processed_states.append(state)
         pair_values = _value_pair(selected.call, selected.put, state, strategy.position.units)
         valuations.extend(pair_values)
@@ -149,7 +151,7 @@ def run_simulation(
             strategy,
             market,
             state,
-            state_index == len(normalized_states) - 1,
+            state_index == len(executable_states) - 1,
         )
         if risk_exit:
             exit_reason = risk_exit
@@ -304,6 +306,7 @@ def run_simulation(
         config_hash,
         market_hash,
         path.path_hash,
+        market_state_hash,
         policy_id,
         selected.call,
         selected.put,
@@ -395,8 +398,8 @@ def select_simulation_contracts(
     market: SimulationMarketConfig,
     path: GeneratedPath,
 ):
-    initial = path.states[0]
-    expiry = select_simulation_expiry(strategy, market, initial.session_date or initial.timestamp.date())
+    initial = path.points[0]
+    expiry = select_simulation_expiry(strategy, market, initial.session_date)
     forward = continuous_forward(
         initial.spot,
         initial.risk_free_rate,
@@ -420,15 +423,6 @@ def select_simulation_contracts(
         forward,
     )
     return expiry, selected
-
-
-def _states_with_expiry(path: GeneratedPath, expiry: SimulationExpiry):
-    elapsed = 0.0
-    states = []
-    for state in path.states:
-        elapsed += state.step_year_fraction
-        states.append(replace(state, time_to_expiry_years=max(expiry.time_to_expiry_years - elapsed, 0.0)))
-    return tuple(states)
 
 
 def _validate_contract_alignment(strategy: StrategyContractV1, market: SimulationMarketConfig) -> None:

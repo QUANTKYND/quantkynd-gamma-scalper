@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime, time
+from datetime import date, time
 from pathlib import Path
 
 import pytest
@@ -6,6 +6,8 @@ import pytest
 from app.simulation.clock import expiry_for_remaining_sessions, generate_simulation_sessions, remaining_time_to_expiry
 from app.simulation.config import load_simulation_market_config
 from app.simulation.paths import GBMPathConfig, generate_gbm_path
+from app.simulation.state_builder import build_executable_market_states
+from app.strategy.config import load_strategy_config
 
 
 CONFIG = Path(__file__).parents[3] / "config/simulation/nifty-synthetic-market-v1.yaml"
@@ -43,6 +45,8 @@ def test_expiry_date_and_year_fraction_share_one_source() -> None:
 
 
 def test_generated_path_reaches_expiry_without_negative_maturity() -> None:
+    strategy = load_strategy_config("../config/strategies/nifty-long-gamma-v1.yaml")
+    market = load_simulation_market_config(CONFIG)
     expiry = expiry_for_remaining_sessions(date(2026, 1, 2), 7, clock())
     decisions = generate_simulation_sessions(date(2026, 1, 2), 8, clock(), time(9, 30))[:22]
     config = GBMPathConfig(
@@ -52,10 +56,9 @@ def test_generated_path_reaches_expiry_without_negative_maturity() -> None:
         21,
         1 / (252 * 3),
         17,
-        datetime(2026, 1, 2, 4, 0, tzinfo=UTC),
-        option_expiry_years=7 / 252,
     )
-    path = generate_gbm_path(config, decisions, expiry)
-    assert path.states[-1].session_date == expiry.expiry_session_date
-    assert path.states[-1].time_to_expiry_years == 0
-    assert all(state.time_to_expiry_years >= 0 for state in path.states)
+    path = generate_gbm_path(config, decisions)
+    states = build_executable_market_states(strategy, market, path, expiry)
+    assert states[-1].session_date == expiry.expiry_session_date
+    assert states[-1].time_to_expiry_years == 0
+    assert all(state.time_to_expiry_years >= 0 for state in states)

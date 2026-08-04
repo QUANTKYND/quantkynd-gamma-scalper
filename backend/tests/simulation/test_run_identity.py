@@ -1,4 +1,3 @@
-from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.execution.models import ExecutionCostParameters
@@ -6,6 +5,7 @@ from app.simulation.config import load_simulation_market_config
 from app.simulation.engine import build_simulation_run_config, simulation_run_id
 from app.simulation.paths import GBMPathConfig, generate_gbm_path
 from app.strategy.config import load_strategy_config
+from tests.simulation.support import sessions_for_path
 
 
 ZERO = ExecutionCostParameters(*(Decimal("0"),) * 4)
@@ -14,9 +14,7 @@ ZERO = ExecutionCostParameters(*(Decimal("0"),) * 4)
 def inputs():
     strategy = load_strategy_config("../config/strategies/nifty-long-gamma-v1.yaml")
     market = load_simulation_market_config("../config/simulation/nifty-synthetic-market-v1.yaml")
-    path = generate_gbm_path(
-        GBMPathConfig(24000, 0.03, 0.2, 5, 1 / 252, 17, datetime(2026, 1, 1, tzinfo=UTC))
-    )
+    path = generate_gbm_path(GBMPathConfig(24000, 0.03, 0.2, 15, 1 / (252 * 3), 17), sessions_for_path(strategy, market, 15))
     return strategy, market, path
 
 

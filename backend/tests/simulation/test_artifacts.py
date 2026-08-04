@@ -18,6 +18,7 @@ from app.simulation.paths import GBMPathConfig, generate_gbm_path
 from app.simulation.run_store import SimulationRunStore
 from app.strategy.config import load_strategy_config
 from app.strategy.hashing import strategy_config_hash
+from tests.simulation.support import sessions_for_path
 
 
 ZERO = ExecutionCostParameters(*(Decimal("0"),) * 4)
@@ -26,7 +27,10 @@ ZERO = ExecutionCostParameters(*(Decimal("0"),) * 4)
 def inputs():
     strategy = load_strategy_config("../config/strategies/nifty-long-gamma-v1.yaml")
     market = load_simulation_market_config("../config/simulation/nifty-synthetic-market-v1.yaml")
-    path = generate_gbm_path(GBMPathConfig(24000, 0.03, 0.2, 5, 1 / 252, 17, datetime(2026, 1, 1, tzinfo=UTC)))
+    path = generate_gbm_path(
+        GBMPathConfig(24000, 0.03, 0.2, 15, 1 / (252 * 3), 17),
+        sessions_for_path(strategy, market, 15),
+    )
     result = run_simulation(strategy, market, path, "no_hedge", ZERO, ZERO)
     return strategy, market, path, result
 

@@ -1,5 +1,4 @@
 from dataclasses import replace
-from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -7,8 +6,10 @@ import pytest
 from app.execution.models import ExecutionCostParameters
 from app.simulation.config import load_simulation_market_config, simulation_market_config_hash
 from app.simulation.engine import run_simulation
+from app.simulation.clock import expiry_for_remaining_sessions
 from app.simulation.paths import GBMPathConfig, generate_gbm_path
 from app.strategy.config import load_strategy_config
+from tests.simulation.support import sessions_for_path
 
 
 ZERO = ExecutionCostParameters(*(Decimal("0"),) * 4)
@@ -17,9 +18,7 @@ ZERO = ExecutionCostParameters(*(Decimal("0"),) * 4)
 def inputs():
     strategy = load_strategy_config("../config/strategies/nifty-long-gamma-v1.yaml")
     market = load_simulation_market_config("../config/simulation/nifty-synthetic-market-v1.yaml")
-    path = generate_gbm_path(
-        GBMPathConfig(24000, 0.03, 0.2, 5, 1 / 252, 17, datetime(2026, 1, 1, tzinfo=UTC))
-    )
+    path = generate_gbm_path(GBMPathConfig(24000, 0.03, 0.2, 15, 1 / (252 * 3), 17), sessions_for_path(strategy, market, 15))
     return strategy, market, path
 
 
@@ -28,7 +27,11 @@ def test_engine_uses_market_contract_for_options_expiry_and_strike() -> None:
     result = run_simulation(strategy, market, path, "no_hedge", ZERO, ZERO)
     assert result.call_contract.multiplier == market.options.multiplier
     assert result.put_contract.multiplier == market.options.multiplier
-    assert result.call_contract.expiry == result.market_states[0].session_date.replace(day=12)
+    assert result.call_contract.expiry == expiry_for_remaining_sessions(
+        result.market_states[0].session_date,
+        7,
+        market.clock,
+    ).expiry_session_date
     assert result.call_contract.strike % market.options.strike_interval == 0
 
 
@@ -50,12 +53,11 @@ def test_engine_uses_futures_multiplier_and_delta_per_contract() -> None:
     strategy, market, path = inputs()
     shocked = replace(
         path,
-        states=path.states[:1]
+        points=path.points[:1]
         + tuple(
-            replace(state, spot=state.spot * 1.5, futures_price=state.futures_price * 1.5)
-            for state in path.states[1:]
+            replace(point, spot=point.spot * 1.5)
+            for point in path.points[1:]
         ),
-        path_hash="sha256:" + "9" * 64,
     )
     result = run_simulation(strategy, market, shocked, "fixed_interval", ZERO, ZERO)
     futures_fills = [fill for fill in result.fills if fill.instrument_id == market.futures.instrument_id]

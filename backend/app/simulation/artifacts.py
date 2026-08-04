@@ -100,7 +100,7 @@ def write_simulation_artifacts(
             "path_hash": path.path_hash,
         },
     )
-    _write_csv(run_dir / "path.csv", [{"timestamp": state.timestamp, "spot": state.spot} for state in path.states])
+    _write_csv(run_dir / "path.csv", [asdict(point) for point in path.points])
     exchange_timezone = ZoneInfo(market.clock.timezone)
     local_times = {
         item.timestamp: item.local_timestamp or item.timestamp.astimezone(exchange_timezone)

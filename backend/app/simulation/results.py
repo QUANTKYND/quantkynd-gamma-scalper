@@ -54,6 +54,7 @@ class SimulationResult:
     strategy_config_hash: str
     market_config_hash: str
     path_hash: str
+    executable_market_state_hash: str
     policy_id: str
     call_contract: OptionContract
     put_contract: OptionContract

@@ -6,6 +6,7 @@ import sys
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from app.execution.models import ExecutionCostParameters
 from app.services.rv_run_store import current_git_commit
@@ -23,7 +24,6 @@ from app.simulation.engine import (
     build_simulation_run_config,
     run_simulation,
     select_simulation_contracts,
-    select_simulation_expiry,
     simulation_run_id,
 )
 from app.simulation.metrics import summarize
@@ -150,18 +150,15 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _path(generator: str, seed: int, strategy, market):
-    expiry = select_simulation_expiry(strategy, market, DEFAULT_START.date())
     decision_count = strategy.expiry.holding_horizon_sessions * len(market.clock.decision_times_local) + 1
+    exchange_timezone = ZoneInfo(market.clock.timezone)
     sessions = generate_simulation_sessions(
-        DEFAULT_START.astimezone().date(),
+        DEFAULT_START.astimezone(exchange_timezone).date(),
         strategy.expiry.holding_horizon_sessions + 1,
         market.clock,
         strategy.entry.entry_time_local,
     )[:decision_count]
     step_fraction = 1 / (market.clock.trading_periods_per_year * len(market.clock.decision_times_local))
-    futures_years = (
-        strategy.expiry.holding_horizon_sessions + market.futures.expiry_buffer_sessions
-    ) / market.clock.trading_periods_per_year
     if generator == "gbm":
         return generate_gbm_path(
             GBMPathConfig(
@@ -171,12 +168,8 @@ def _path(generator: str, seed: int, strategy, market):
                 decision_count - 1,
                 step_fraction,
                 seed,
-                DEFAULT_START,
-                option_expiry_years=expiry.time_to_expiry_years,
-                futures_maturity_years=futures_years,
             ),
             sessions,
-            expiry,
         )
     midpoint = (decision_count - 1) // 2
     return generate_piecewise_path(
@@ -190,12 +183,8 @@ def _path(generator: str, seed: int, strategy, market):
             decision_count - 1,
             step_fraction,
             seed,
-            DEFAULT_START,
-            option_expiry_years=expiry.time_to_expiry_years,
-            futures_maturity_years=futures_years,
         ),
         sessions,
-        expiry,
     )
 
 

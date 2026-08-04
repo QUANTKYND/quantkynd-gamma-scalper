@@ -1,5 +1,4 @@
 from dataclasses import replace
-from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -10,6 +9,8 @@ from app.simulation.config import load_simulation_market_config
 from app.simulation.metrics import summarize
 from app.simulation.paths import GBMPathConfig, generate_gbm_path
 from app.strategy.config import load_strategy_config
+from app.simulation.paths import replace_path_points
+from tests.simulation.support import sessions_for_path
 
 
 ZERO = ExecutionCostParameters(*(Decimal("0"),) * 4)
@@ -18,9 +19,7 @@ ZERO = ExecutionCostParameters(*(Decimal("0"),) * 4)
 def inputs():
     strategy = load_strategy_config("../config/strategies/nifty-long-gamma-v1.yaml")
     market = load_simulation_market_config("../config/simulation/nifty-synthetic-market-v1.yaml")
-    path = generate_gbm_path(
-        GBMPathConfig(24000, 0.03, 0.2, 5, 1 / 252, 17, datetime(2026, 1, 1, tzinfo=UTC))
-    )
+    path = generate_gbm_path(GBMPathConfig(24000, 0.03, 0.2, 15, 1 / (252 * 3), 17), sessions_for_path(strategy, market, 15))
     return strategy, market, path
 
 
@@ -54,17 +53,16 @@ def test_maximum_hedge_count_triggers_exit() -> None:
     strategy, market, path = inputs()
     risk = strategy.risk.model_copy(update={"maximum_hedges_per_session": 1})
     constrained = strategy.model_copy(update={"risk": risk})
-    shocked_states = path.states[:1] + tuple(
+    shocked_points = path.points[:1] + tuple(
         replace(
-            state,
-            spot=state.spot * 1.5,
-            futures_price=state.futures_price * 1.5,
+            point,
+            spot=point.spot * 1.5,
             session_index=0,
-            session_date=path.states[0].session_date,
+            session_date=path.points[0].session_date,
         )
-        for state in path.states[1:]
+        for point in path.points[1:]
     )
-    shocked = replace(path, states=shocked_states, path_hash="sha256:" + "e" * 64)
+    shocked = replace_path_points(path, shocked_points)
     result = run_simulation(constrained, market, shocked, "fixed_interval", ZERO, ZERO)
     assert result.hedge_count == 1
     assert result.exit_reason == "maximum_hedge_count"
@@ -72,8 +70,10 @@ def test_maximum_hedge_count_triggers_exit() -> None:
 
 def test_future_path_changes_do_not_change_earlier_decisions() -> None:
     strategy, market, path = inputs()
-    changed_states = path.states[:3] + tuple(replace(state, spot=state.spot * 1.5, futures_price=state.futures_price * 1.5) for state in path.states[3:])
-    changed = replace(path, states=changed_states, path_hash="sha256:" + "f" * 64)
+    changed_points = path.points[:3] + tuple(
+        replace(point, spot=point.spot * 1.5) for point in path.points[3:]
+    )
+    changed = replace_path_points(path, changed_points)
     first = run_simulation(strategy, market, path, "constant_band", ZERO, ZERO)
     second = run_simulation(strategy, market, changed, "constant_band", ZERO, ZERO)
     assert first.hedge_decisions[:3] == second.hedge_decisions[:3]
@@ -81,11 +81,11 @@ def test_future_path_changes_do_not_change_earlier_decisions() -> None:
 
 def test_frictionless_hedging_reduces_delta_error_on_controlled_path() -> None:
     strategy, market, path = inputs()
-    shocked_states = path.states[:1] + tuple(
-        replace(state, spot=state.spot * 1.5, futures_price=state.futures_price * 1.5)
-        for state in path.states[1:]
+    shocked_points = path.points[:1] + tuple(
+        replace(point, spot=point.spot * 1.5)
+        for point in path.points[1:]
     )
-    shocked = replace(path, states=shocked_states, path_hash="sha256:" + "d" * 64)
+    shocked = replace_path_points(path, shocked_points)
     unhedged_result = run_simulation(strategy, market, shocked, "no_hedge", ZERO, ZERO)
     hedged_result = run_simulation(strategy, market, shocked, "fixed_interval", ZERO, ZERO)
     unhedged = summarize(unhedged_result)
@@ -131,11 +131,11 @@ def test_decision_event_records_aligned_before_and_after_state() -> None:
 
 def test_more_trading_increases_modeled_costs() -> None:
     strategy, market, path = inputs()
-    shocked_states = path.states[:1] + tuple(
-        replace(state, spot=state.spot * 1.5, futures_price=state.futures_price * 1.5)
-        for state in path.states[1:]
+    shocked_points = path.points[:1] + tuple(
+        replace(point, spot=point.spot * 1.5)
+        for point in path.points[1:]
     )
-    shocked = replace(path, states=shocked_states, path_hash="sha256:" + "c" * 64)
+    shocked = replace_path_points(path, shocked_points)
     costs = ExecutionCostParameters(Decimal("5"), Decimal("0.001"), Decimal("0.25"), Decimal("0.10"))
     unhedged = summarize(run_simulation(strategy, market, shocked, "no_hedge", ZERO, costs))
     hedged = summarize(run_simulation(strategy, market, shocked, "fixed_interval", ZERO, costs))
@@ -153,22 +153,21 @@ def test_loss_limits_exit_deterministically(
     expected_reason: str,
 ) -> None:
     strategy, market, path = inputs()
-    collapsed_states = path.states[:1] + tuple(
+    collapsed_points = path.points[:1] + tuple(
         replace(
-            state,
-            spot=path.states[0].spot,
-            futures_price=path.states[0].futures_price,
+            point,
+            spot=path.points[0].spot,
             implied_volatility=0.0,
-            session_index=0 if expected_reason == "daily_loss_limit" else state.session_index,
+            session_index=0 if expected_reason == "daily_loss_limit" else point.session_index,
             session_date=(
-                path.states[0].session_date
+                path.points[0].session_date
                 if expected_reason == "daily_loss_limit"
-                else state.session_date
+                else point.session_date
             ),
         )
-        for state in path.states[1:]
+        for point in path.points[1:]
     )
-    collapsed = replace(path, states=collapsed_states, path_hash="sha256:" + "b" * 64)
+    collapsed = replace_path_points(path, collapsed_points)
     risk = strategy.risk.model_copy(
         update={
             "maximum_daily_loss_fraction": daily_fraction,
