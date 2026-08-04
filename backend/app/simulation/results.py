@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from app.execution.models import OrderIntent, SimulatedFill
+from app.attribution.greeks import GreekAttributionRecord
 from app.hedging.models import HedgeDecision
 from app.options.contracts import OptionContract
 from app.portfolio.ledger import LedgerEntry
@@ -54,6 +55,7 @@ class SimulationResult:
     fills: tuple[SimulatedFill, ...]
     ledger_entries: tuple[LedgerEntry, ...]
     events: tuple[SimulationEvent, ...]
+    pnl_attribution: tuple[GreekAttributionRecord, ...]
     starting_nav: Decimal
     terminal_portfolio_value: Decimal
     exit_reason: str

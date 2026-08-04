@@ -7,6 +7,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from app.attribution.reconciliation import reconcile
+from app.attribution.greeks import calculate_greek_attribution
 from app.execution.fills import simulate_fill
 from app.execution.models import ExecutionCostParameters, OrderIntent, SimulatedFill
 from app.hedging.models import HedgeDecision, HedgePolicyState
@@ -149,7 +150,11 @@ def run_simulation(
                 state.timestamp,
                 "decision_completed",
                 position_id,
-                {"net_delta": net_delta, "action": decision.action},
+                {
+                    "net_delta": net_delta,
+                    "action": decision.action,
+                    "portfolio_value": str(ledger.portfolio_value()),
+                },
             )
         )
         if state.session_index >= strategy.expiry.holding_horizon_sessions:
@@ -203,6 +208,13 @@ def run_simulation(
         FUTURES_INSTRUMENT_ID,
         accounting_tolerance,
     )
+    attribution = calculate_greek_attribution(
+        tuple(processed_states),
+        tuple(valuations),
+        selected.call,
+        selected.put,
+        strategy.position.units,
+    )
     status = "complete" if reconciliation.reconciled else "failed"
     return SimulationResult(
         run_id,
@@ -220,6 +232,7 @@ def run_simulation(
         tuple(fills),
         tuple(ledger.entries),
         tuple(events),
+        attribution,
         ledger.starting_nav,
         terminal_value,
         exit_reason if reconciliation.reconciled else "reconciliation_failure",
