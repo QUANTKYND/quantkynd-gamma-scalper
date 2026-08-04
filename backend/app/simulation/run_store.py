@@ -42,7 +42,7 @@ class SimulationRunStore:
     def create_run(
         self,
         base_manifest: SimulationManifest,
-        write_artifacts: Callable[[Path], None],
+        write_artifacts: Callable[[Path], dict[str, object] | None],
     ) -> SimulationManifest:
         if not RUN_ID_PATTERN.fullmatch(base_manifest.run_id):
             raise ValueError("invalid simulation run ID")
@@ -64,8 +64,14 @@ class SimulationRunStore:
         )
         write_manifest(temp_dir / "manifest.json", running)
         try:
-            write_artifacts(temp_dir)
-            completed = running.model_copy(update={"status": "complete", "completed_at": datetime.now(UTC)})
+            manifest_updates = write_artifacts(temp_dir) or {}
+            completed = running.model_copy(
+                update={
+                    **manifest_updates,
+                    "status": "complete",
+                    "completed_at": datetime.now(UTC),
+                }
+            )
             write_manifest(temp_dir / "manifest.json", completed)
             os.replace(temp_dir, final_dir)
             return completed

@@ -50,6 +50,7 @@ def manifest(root: Path, result, strategy, market, path) -> SimulationManifest:
         path_generator=path.generator_id,
         path_config_hash=run_config.path_config_hash,
         path_hash=path.path_hash,
+        executable_market_state_hash=result.executable_market_state_hash,
         seed=path.seed,
         policy_id="no_hedge",
         policy_config_hash=policy_config_hash("no_hedge", {}),

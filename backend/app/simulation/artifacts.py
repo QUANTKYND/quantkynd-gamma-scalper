@@ -54,6 +54,7 @@ class SimulationManifest(BaseModel):
     path_generator: str
     path_config_hash: str
     path_hash: str
+    executable_market_state_hash: str | None
     seed: int | None
     policy_id: str
     policy_config_hash: str
@@ -63,8 +64,8 @@ class SimulationManifest(BaseModel):
     entry_assumptions: dict[str, object]
     run_config_hash: str
     simulation_clock_config: dict[str, object]
-    selected_expiry: date
-    selected_strike: float
+    selected_expiry: date | None
+    selected_strike: float | None
     option_multiplier: int
     futures_multiplier: int
     futures_delta_per_contract: float

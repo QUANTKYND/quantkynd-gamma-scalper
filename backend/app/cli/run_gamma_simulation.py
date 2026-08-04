@@ -23,7 +23,6 @@ from app.simulation.engine import (
     SIMULATOR_VERSION,
     build_simulation_run_config,
     run_simulation,
-    select_simulation_contracts,
     simulation_run_id,
 )
 from app.simulation.metrics import summarize
@@ -77,7 +76,6 @@ def main(argv: list[str] | None = None) -> int:
             FUTURES_COSTS,
         )
         run_id = simulation_run_id(run_config)
-        selected_expiry, selected = select_simulation_contracts(strategy, market, path)
         final_dir = args.artifact_root.resolve() / "runs" / run_id
         manifest = SimulationManifest(
             run_id=run_id,
@@ -92,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
             path_generator=path.generator_id,
             path_config_hash=run_config.path_config_hash,
             path_hash=path.path_hash,
+            executable_market_state_hash=None,
             seed=path.seed,
             policy_id=policy_id,
             policy_config_hash=policy_config_hash(policy_id, run_config.policy_parameters),
@@ -101,8 +100,8 @@ def main(argv: list[str] | None = None) -> int:
             entry_assumptions=run_config.entry_assumptions.model_dump(mode="json"),
             run_config_hash=simulation_run_config_hash(run_config),
             simulation_clock_config=market.clock.model_dump(mode="json"),
-            selected_expiry=selected_expiry.expiry_session_date,
-            selected_strike=selected.call.strike,
+            selected_expiry=None,
+            selected_strike=None,
             option_multiplier=market.options.multiplier,
             futures_multiplier=market.futures.multiplier,
             futures_delta_per_contract=market.futures.delta_per_contract,
@@ -114,12 +113,17 @@ def main(argv: list[str] | None = None) -> int:
         )
         holder = {}
 
-        def write(run_dir: Path) -> None:
+        def write(run_dir: Path) -> dict[str, object]:
             result = run_simulation(strategy, market, path, policy_id, OPTION_COSTS, FUTURES_COSTS)
             if result.status != "complete":
                 raise RuntimeError(result.exit_reason)
             holder["result"] = result
             write_simulation_artifacts(run_dir, manifest, strategy, market, path, result)
+            return {
+                "selected_expiry": result.call_contract.expiry,
+                "selected_strike": result.call_contract.strike,
+                "executable_market_state_hash": result.executable_market_state_hash,
+            }
 
         completed = SimulationRunStore(args.artifact_root).create_run(manifest, write)
         if completed.status == "failed":
