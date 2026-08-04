@@ -181,3 +181,43 @@ def test_loss_limits_exit_deterministically(
     result = run_simulation(constrained, market, collapsed, "no_hedge", ZERO, ZERO)
     assert result.exit_reason == expected_reason
     assert any(record.reason_code == f"{expected_reason}_breached" for record in result.risk_decisions)
+
+
+def test_overnight_gap_can_trigger_daily_loss_at_first_new_session_decision() -> None:
+    strategy, market, path = inputs()
+    first_session_date = path.points[0].session_date
+    next_session_date = next(
+        point.session_date for point in path.points if point.session_date != first_session_date
+    )
+    controlled = replace_path_points(
+        path,
+        tuple(
+            replace(
+                point,
+                spot=path.points[0].spot,
+                implied_volatility=0.0 if point.session_date == next_session_date else 0.18,
+            )
+            for point in path.points
+        ),
+    )
+    risk = strategy.risk.model_copy(
+        update={
+            "maximum_daily_loss_fraction": 0.0001,
+            "maximum_position_loss_fraction": 1.0,
+            "maximum_absolute_delta_units": 10.0,
+        }
+    )
+    result = run_simulation(
+        strategy.model_copy(update={"risk": risk}),
+        market,
+        controlled,
+        "no_hedge",
+        ZERO,
+        ZERO,
+    )
+    first_new_session_timestamp = next(
+        point.timestamp for point in controlled.points if point.session_date == next_session_date
+    )
+    assert result.exit_reason == "daily_loss_limit"
+    exit_event = next(event for event in result.events if event.event_type == "exit_required")
+    assert exit_event.timestamp == first_new_session_timestamp

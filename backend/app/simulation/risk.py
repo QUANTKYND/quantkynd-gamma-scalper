@@ -31,21 +31,27 @@ class SimulationRiskDecision:
 
 @dataclass(frozen=True)
 class SimulationRiskState:
-    position_open_value: Decimal
+    position_reference_portfolio_value: Decimal
     position_pnl_from_entry: Decimal
-    session_open_portfolio_value: Decimal
+    session_reference_portfolio_value: Decimal
     session_pnl: Decimal
+    previous_marked_portfolio_value: Decimal
     hedges_in_current_session: int
     total_hedges: int
     current_session_date: date
 
 
-def initialize_risk_state(portfolio_value: Decimal, session_date: date) -> SimulationRiskState:
+def initialize_risk_state(
+    position_reference_portfolio_value: Decimal,
+    initial_marked_portfolio_value: Decimal,
+    session_date: date,
+) -> SimulationRiskState:
     return SimulationRiskState(
-        portfolio_value,
-        Decimal("0.00"),
-        portfolio_value,
-        Decimal("0.00"),
+        position_reference_portfolio_value,
+        initial_marked_portfolio_value - position_reference_portfolio_value,
+        position_reference_portfolio_value,
+        initial_marked_portfolio_value - position_reference_portfolio_value,
+        initial_marked_portfolio_value,
         0,
         0,
         session_date,
@@ -59,18 +65,20 @@ def mark_risk_state(
 ) -> SimulationRiskState:
     if session_date != state.current_session_date:
         return SimulationRiskState(
-            state.position_open_value,
-            portfolio_value - state.position_open_value,
+            state.position_reference_portfolio_value,
+            portfolio_value - state.position_reference_portfolio_value,
+            state.previous_marked_portfolio_value,
+            portfolio_value - state.previous_marked_portfolio_value,
             portfolio_value,
-            Decimal("0.00"),
             0,
             state.total_hedges,
             session_date,
         )
     return replace(
         state,
-        position_pnl_from_entry=portfolio_value - state.position_open_value,
-        session_pnl=portfolio_value - state.session_open_portfolio_value,
+        position_pnl_from_entry=portfolio_value - state.position_reference_portfolio_value,
+        session_pnl=portfolio_value - state.session_reference_portfolio_value,
+        previous_marked_portfolio_value=portfolio_value,
     )
 
 

@@ -123,6 +123,7 @@ def run_simulation(
         intents.append(intent)
         fills.append(fill)
     risk_state = initialize_risk_state(
+        ledger.starting_nav,
         ledger.portfolio_value(),
         initial.session_date or initial.timestamp.date(),
     )
@@ -319,6 +320,11 @@ def run_simulation(
                 strategy.risk.maximum_absolute_delta_units,
                 "forced_hedge" if forced_delta_control else "within_limit",
             )
+        )
+        risk_state = mark_risk_state(
+            risk_state,
+            portfolio_value_after_fill,
+            state.session_date or state.timestamp.date(),
         )
         decisions.append(decision)
         events.append(
