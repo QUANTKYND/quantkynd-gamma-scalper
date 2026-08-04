@@ -28,6 +28,10 @@ class DatabaseSettings(BaseSettings):
     database_application_name: str = Field(default="quantkynd", min_length=1, max_length=63)
     database_echo: bool = False
     database_restore_test_url: SecretStr | None = None
+    database_allow_destructive_test_operations: bool = False
+    database_expected_integration_test_name: str | None = None
+    database_expected_restore_test_name: str | None = None
+    database_allow_nonlocal_destructive_operations: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -43,6 +47,16 @@ class DatabaseSettings(BaseSettings):
     def validate_application_name(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("DATABASE_APPLICATION_NAME must not be blank")
+        return value
+
+    @field_validator(
+        "database_expected_integration_test_name",
+        "database_expected_restore_test_name",
+    )
+    @classmethod
+    def validate_expected_database_name(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("expected destructive database names must not be blank")
         return value
 
     def require_database_url(self) -> str:
@@ -74,6 +88,14 @@ def redacted_database_url(value: str) -> str:
 
 def database_name(value: str) -> str:
     return _validated_url(value).database or ""
+
+
+def database_host(value: str) -> str:
+    return _normalized_host(_validated_url(value).host)
+
+
+def database_endpoint_identity(value: str) -> tuple[str, int, str]:
+    return _database_identity(_validated_url(value))
 
 
 def _validated_url(value: str) -> URL:
