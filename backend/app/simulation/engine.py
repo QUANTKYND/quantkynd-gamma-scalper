@@ -17,7 +17,13 @@ from app.simulation.clock import SimulationExpiry, expiry_for_remaining_sessions
 from app.simulation.config import SimulationMarketConfig, simulation_market_config_hash
 from app.simulation.paths import GeneratedPath
 from app.simulation.results import OptionValuationRecord, SimulationResult
-from app.simulation.risk import entry_risk_decisions, state_risk_decisions
+from app.simulation.risk import (
+    entry_risk_decisions,
+    initialize_risk_state,
+    mark_risk_state,
+    record_risk_hedge,
+    state_risk_decisions,
+)
 from app.strategy.hashing import strategy_config_hash
 from app.strategy.models import StrategyContractV1
 
@@ -79,7 +85,12 @@ def run_simulation(
     events: list[SimulationEvent] = []
     entry_values = _value_pair(selected.call, selected.put, initial)
     premium = sum(record.price for record in entry_values) * strategy.position.units
-    entry_risks = entry_risk_decisions(initial.timestamp, premium, strategy.risk)
+    entry_risks = entry_risk_decisions(
+        initial.timestamp,
+        initial.session_date or initial.timestamp.date(),
+        premium,
+        strategy.risk,
+    )
     risk_records.extend(entry_risks)
     if any(item.decision == "reject" for item in entry_risks):
         raise ValueError("premium_at_risk_breached")
@@ -99,7 +110,10 @@ def run_simulation(
         ledger.record_fill(fill, "option_entry", position_id)
         intents.append(intent)
         fills.append(fill)
-    hedge_count = 0
+    risk_state = initialize_risk_state(
+        ledger.portfolio_value(),
+        initial.session_date or initial.timestamp.date(),
+    )
     exit_reason = "simulation_end"
     processed_states = []
     for state_index, state in enumerate(normalized_states):
@@ -115,12 +129,15 @@ def run_simulation(
         hedge_position = ledger.positions.get(futures_id)
         hedge_delta = float(hedge_position.quantity * market.futures.delta_per_contract) if hedge_position else 0.0
         net_delta = option_delta + hedge_delta
-        current_pnl = float(ledger.portfolio_value() - ledger.starting_nav)
+        risk_state = mark_risk_state(
+            risk_state,
+            ledger.portfolio_value(),
+            state.session_date or state.timestamp.date(),
+        )
         state_risks = state_risk_decisions(
             state.timestamp,
-            current_pnl,
+            risk_state,
             net_delta,
-            hedge_count,
             strategy.risk,
             manual_kill_switch_engaged,
         )
@@ -167,7 +184,7 @@ def run_simulation(
         if decision.requested_quantity:
             side = "buy" if decision.requested_quantity > 0 else "sell"
             intent = OrderIntent(
-                f"{run_id}-hedge-{state.step_index}-{hedge_count}",
+                f"{run_id}-hedge-{state.step_index}-{risk_state.total_hedges}",
                 state.timestamp,
                 futures_id,
                 side,
@@ -181,7 +198,7 @@ def run_simulation(
             ledger.record_fill(fill, "futures_hedge_buy" if side == "buy" else "futures_hedge_sell", position_id)
             intents.append(intent)
             fills.append(fill)
-            hedge_count += 1
+            risk_state = record_risk_hedge(risk_state)
         events.append(
             SimulationEvent(
                 len(events) + 1,
@@ -275,7 +292,7 @@ def run_simulation(
         ledger.starting_nav,
         terminal_value,
         exit_reason if reconciliation.reconciled else "reconciliation_failure",
-        hedge_count,
+        risk_state.total_hedges,
         reconciliation,
     )
 

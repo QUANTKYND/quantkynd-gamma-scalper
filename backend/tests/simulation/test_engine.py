@@ -55,7 +55,13 @@ def test_maximum_hedge_count_triggers_exit() -> None:
     risk = strategy.risk.model_copy(update={"maximum_hedges_per_session": 1})
     constrained = strategy.model_copy(update={"risk": risk})
     shocked_states = path.states[:1] + tuple(
-        replace(state, spot=state.spot * 1.5, futures_price=state.futures_price * 1.5)
+        replace(
+            state,
+            spot=state.spot * 1.5,
+            futures_price=state.futures_price * 1.5,
+            session_index=0,
+            session_date=path.states[0].session_date,
+        )
         for state in path.states[1:]
     )
     shocked = replace(path, states=shocked_states, path_hash="sha256:" + "e" * 64)
@@ -110,7 +116,18 @@ def test_loss_limits_exit_deterministically(
 ) -> None:
     strategy, market, path = inputs()
     collapsed_states = path.states[:1] + tuple(
-        replace(state, spot=path.states[0].spot, futures_price=path.states[0].futures_price, implied_volatility=0.0)
+        replace(
+            state,
+            spot=path.states[0].spot,
+            futures_price=path.states[0].futures_price,
+            implied_volatility=0.0,
+            session_index=0 if expected_reason == "daily_loss_limit" else state.session_index,
+            session_date=(
+                path.states[0].session_date
+                if expected_reason == "daily_loss_limit"
+                else state.session_date
+            ),
+        )
         for state in path.states[1:]
     )
     collapsed = replace(path, states=collapsed_states, path_hash="sha256:" + "b" * 64)

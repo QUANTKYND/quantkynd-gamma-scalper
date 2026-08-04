@@ -89,6 +89,8 @@ def test_daily_loss_precedes_position_loss_without_opening_hedge() -> None:
                 spot=path.states[0].spot,
                 futures_price=path.states[0].futures_price,
                 implied_volatility=0.0,
+                session_index=0,
+                session_date=path.states[0].session_date,
             )
             for state in path.states[1:]
         ),
