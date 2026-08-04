@@ -1,8 +1,8 @@
 from decimal import Decimal
 
 from app.execution.models import ExecutionCostParameters
-from app.simulation.config import load_simulation_market_config
-from app.simulation.engine import build_simulation_run_config, simulation_run_id
+from app.simulation.config import load_simulation_market_config, simulation_run_config_hash
+from app.simulation.engine import SIMULATOR_VERSION, build_simulation_run_config, simulation_run_id
 from app.simulation.paths import GBMPathConfig, generate_gbm_path
 from app.strategy.config import load_strategy_config
 from tests.simulation.support import sessions_for_path
@@ -51,3 +51,14 @@ def test_policy_parameters_are_in_run_contract() -> None:
     alternate = build_simulation_run_config(changed, market, path, "constant_band", ZERO, ZERO)
     assert base.policy_parameters != alternate.policy_parameters
     assert simulation_run_id(base) != simulation_run_id(alternate)
+
+
+def test_simulator_version_changes_run_hash_and_id() -> None:
+    strategy, market, path = inputs()
+    current = build_simulation_run_config(strategy, market, path, "no_hedge", ZERO, ZERO)
+    legacy = current.model_copy(update={"simulator_version": "sim-1.1"})
+    assert SIMULATOR_VERSION == "sim-1.2"
+    assert current.simulator_version == SIMULATOR_VERSION
+    assert current.schema_version == 2
+    assert simulation_run_config_hash(current) != simulation_run_config_hash(legacy)
+    assert simulation_run_id(current) != simulation_run_id(legacy)

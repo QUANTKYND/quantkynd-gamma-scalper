@@ -42,7 +42,7 @@ from app.strategy.models import StrategyContractV1
 from app.simulation.state_builder import build_executable_market_states, executable_market_state_hash
 
 
-SIMULATOR_VERSION = "sim-1.1"
+SIMULATOR_VERSION = "sim-1.2"
 
 
 def run_simulation(
@@ -552,7 +552,7 @@ def build_simulation_run_config(
     if not isinstance(policy_parameters, dict):
         policy_parameters = {}
     return SimulationRunConfig(
-        schema_version=1,
+        schema_version=2,
         simulator_version=SIMULATOR_VERSION,
         strategy_config_hash=strategy_config_hash(strategy),
         market_config_hash=simulation_market_config_hash(market),

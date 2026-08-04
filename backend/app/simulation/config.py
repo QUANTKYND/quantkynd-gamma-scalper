@@ -68,7 +68,7 @@ class SyntheticFuturesMarketConfig(StrictFrozenModel):
 
 
 class SimulationMarketConfig(StrictFrozenModel):
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     market_id: str = Field(min_length=1)
     underlying: str = Field(min_length=1)
     clock: SimulationClockConfig
@@ -99,7 +99,7 @@ class SimulationEntryAssumptions(StrictFrozenModel):
 
 
 class SimulationRunConfig(StrictFrozenModel):
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     simulator_version: str
     strategy_config_hash: str
     market_config_hash: str
@@ -131,6 +131,9 @@ def load_simulation_market_config(path: Path | str) -> SimulationMarketConfig:
     payload = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("simulation-market configuration must be a YAML mapping")
+    schema_version = payload.get("schema_version")
+    if schema_version != 2:
+        raise ValueError(f"unsupported simulation-market schema version: {schema_version}")
     return SimulationMarketConfig.model_validate(payload)
 
 
