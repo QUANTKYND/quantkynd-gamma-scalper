@@ -102,7 +102,7 @@ def run_simulation(
     hedge_count = 0
     exit_reason = "simulation_end"
     processed_states = []
-    for state in normalized_states:
+    for state_index, state in enumerate(normalized_states):
         processed_states.append(state)
         pair_values = _value_pair(selected.call, selected.put, state)
         valuations.extend(pair_values)
@@ -125,9 +125,28 @@ def run_simulation(
             manual_kill_switch_engaged,
         )
         risk_records.extend(state_risks)
-        risk_exit = _risk_exit_reason(state_risks, strategy.exit.precedence)
+        risk_exit = _exit_reason_at_state(
+            state_risks,
+            strategy,
+            market,
+            state,
+            state_index == len(normalized_states) - 1,
+        )
         if risk_exit:
             exit_reason = risk_exit
+            events.append(
+                SimulationEvent(
+                    len(events) + 1,
+                    state.timestamp,
+                    "exit_required",
+                    position_id,
+                    {
+                        "exit_reason": exit_reason,
+                        "net_delta": net_delta,
+                        "portfolio_value": str(ledger.portfolio_value()),
+                    },
+                )
+            )
             break
         decision = policy.decide(
             HedgePolicyState(
@@ -176,9 +195,6 @@ def run_simulation(
                 },
             )
         )
-        if state.session_index >= strategy.expiry.holding_horizon_sessions:
-            exit_reason = "maximum_holding_period"
-            break
     final_state = processed_states[-1]
     final_values = _value_pair(selected.call, selected.put, final_state)
     for contract, valuation in zip((selected.call, selected.put), final_values, strict=True):
@@ -292,11 +308,18 @@ def _value_pair(call, put, state):
     return tuple(records)
 
 
-def _risk_exit_reason(records, precedence):
+def _exit_reason_at_state(records, strategy, market, state, is_final_state):
     breached = {record.rule_id for record in records if record.decision == "exit"}
     if "manual_kill_switch" in breached:
         return "manual_kill_switch"
-    return next((reason for reason in precedence if reason in breached), None)
+    minimum_time = strategy.expiry.safety_buffer_sessions / market.clock.trading_periods_per_year
+    if state.time_to_expiry_years < minimum_time:
+        breached.add("insufficient_time_to_expiry")
+    if state.session_index >= strategy.expiry.holding_horizon_sessions:
+        breached.add("maximum_holding_period")
+    if is_final_state:
+        breached.add("simulation_end")
+    return next((reason for reason in strategy.exit.precedence if reason in breached), None)
 
 
 def select_simulation_expiry(
