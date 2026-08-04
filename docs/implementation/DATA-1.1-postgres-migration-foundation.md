@@ -935,10 +935,10 @@ Return:
 - Branch: `feature/data-1-postgres-migration-foundation`
 - Required starting SHA: `cfaf5372a7fa5042ed61f16cc0135b0b176641c3`
 - Resolved starting SHA: `cfaf5372a7fa5042ed61f16cc0135b0b176641c3`
-- Implementation ending SHA: `4548b66a83fa84b8d50558e2834914fec2263015`
+- Implementation ending SHA: `aa8689839bdcabcac43dd8f95a0eb27da535efff`
 - Final evidence-only SHA: reported in the final handoff because a Git commit cannot contain its own resulting SHA
 - Migration revision: `20260804_01`
-- Acceptance status: implementation complete; real-Postgres migration and dump/restore acceptance blocked by unavailable local Docker integration and PostgreSQL client tools
+- Acceptance status: passed against Docker Desktop PostgreSQL 17 with real migration lifecycle, repository integration, and dump/restore equivalence checks
 
 ### Commits
 
@@ -951,6 +951,8 @@ ba249ee feat(data): add postgres models repositories and unit of work
 57fb592 feat(data): add deterministic database restore verification
 47285ec test(data): verify postgres foundation invariants
 4548b66 docs(data): document DATA-1.1 postgres foundation
+8f1aa0f docs(data): record DATA-1.1 implementation evidence
+aa86898 test(data): isolate database configuration environment
 ```
 
 ### Implemented foundation
@@ -1031,8 +1033,8 @@ Backend tests:
 
 ```text
 Command: cd backend && UV_CACHE_DIR=/tmp/uv-cache uv run pytest
-Result: PARTIAL PASS — 348 passed, 8 skipped in 5.87s
-Skipped: 1 clean migration lifecycle test and 7 real-Postgres repository/transaction tests because DATABASE_URL was not configured and no PostgreSQL service was available
+Environment: DATABASE_URL configured for the dedicated Docker `quantkynd_test` database
+Result: PASS — 356 passed in 8.78s, no skips
 ```
 
 Dependency lock:
@@ -1070,31 +1072,47 @@ Result: PASS — no tracked generated artifacts matched
 Secret scanner discovery: no gitleaks, detect-secrets, git-secrets, or repository-owned secret-scan command is configured in this environment
 ```
 
-### Blocked acceptance commands
+### PostgreSQL acceptance results
 
 Local Postgres service:
 
 ```text
 Command: docker compose version
-Result: BLOCKED — Docker reports that the command is unavailable in this WSL 2 distribution and requests Docker Desktop WSL integration
-Direct docker.exe probe: BLOCKED — WSL vsock connection failed
+Result: PASS — Docker Compose v5.3.1
+Command: docker version
+Result: PASS — Docker Desktop 4.83.0, Engine 29.6.2
+Command: docker compose up -d postgres && docker compose ps
+Result: PASS — `postgres:17-alpine` service healthy on `127.0.0.1:5432`
 ```
 
 Online migration lifecycle and drift:
 
 ```text
-Commands not claimed as passed: alembic upgrade head; alembic current; alembic check; clean downgrade/re-upgrade integration test
-Reason: no reachable PostgreSQL service is available
+Command: cd backend && DATABASE_URL=<test-safe asyncpg URL> UV_CACHE_DIR=/tmp/uv-cache uv run alembic upgrade head
+Result: PASS — upgraded to `20260804_01`
+Command: cd backend && DATABASE_URL=<test-safe asyncpg URL> UV_CACHE_DIR=/tmp/uv-cache uv run alembic current
+Result: PASS — `20260804_01 (head)`
+Command: cd backend && DATABASE_URL=<test-safe asyncpg URL> UV_CACHE_DIR=/tmp/uv-cache uv run alembic check
+Result: PASS — `No new upgrade operations detected.`
+Clean migration test: PASS — base-to-head, schema inspection, deterministic fixture, downgrade-to-base, table removal, re-upgrade, fixture persistence, and metadata drift check all passed within the 356-test suite
 ```
 
 Restore equivalence:
 
 ```text
 Command: cd backend && DATABASE_URL=<test-safe asyncpg URL> DATABASE_RESTORE_TEST_URL=<distinct test-safe asyncpg URL> UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.verify_database_restore
-Result: BLOCKED, non-zero — {"error": "required PostgreSQL tools are unavailable: pg_dump, pg_restore", "status": "failed"}
+PostgreSQL tools: real `pg_dump` and `pg_restore` 17.10 from the official Postgres container, exposed to the unchanged verifier through temporary `/tmp` command shims
+Source preparation: clean Alembic downgrade to base; verifier upgraded source to head and seeded its deterministic fixture
+Result: PASS
+Source revision: `20260804_01`
+Restored revision: `20260804_01`
+Canonical digest: `sha256:aa1e4cc2663fbc5c845f72a5278ff7fa57987d35c827b2fce86f73c44adcc394`
+Digest match: `true`
+Representative provider/session query match: `true`
+Row counts: `catalogue_versions=1`, `market_instruments=3`, `underlying_instruments=1`, `futures_contracts=1`, `option_contracts=1`, `instrument_versions=3`, `provider_contract_mappings=1`, `trading_sessions=1`, `trading_session_versions=1`
 ```
 
-DATA-1.1 cannot be called fully accepted until Docker/Postgres and the client tools are made available, the 8 database tests run rather than skip, the online Alembic lifecycle and drift checks pass, and the dump/restore equivalence command passes. The implementation keeps those checks automated and ready to rerun without code changes.
+DATA-1.1 database acceptance passed. Host-installed PostgreSQL client packages remain absent from WSL; the acceptance run used the same PostgreSQL 17.10 client programs supplied by the official test-service image. This affects only how the tools were launched, not the custom-format dump, restore, or verifier comparisons.
 
 ### Remaining limitations and scope statement
 
