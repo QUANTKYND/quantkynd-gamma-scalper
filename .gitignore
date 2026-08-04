@@ -1,5 +1,18 @@
 .env
+.env.*
+!.env.example
 .venv
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+backend/artifacts/
+artifacts/
 
 # Logs
 logs
@@ -14,6 +27,8 @@ node_modules
 dist
 dist-ssr
 *.local
+frontend/node_modules/
+frontend/dist/
 
 # Editor directories and files
 .vscode/*

@@ -1,5 +1,8 @@
+from datetime import date
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
 
 class Settings(BaseSettings):
     """Application settings."""
@@ -21,7 +24,12 @@ class Settings(BaseSettings):
         default='http://localhost:5173',
         validation_alias=AliasChoices('FRONT_URL', 'FRONT_END_URL'),
     )
+    rv_synthetic_seed: int = 17
+    rv_synthetic_periods: int = 720
+    rv_synthetic_end_date: date = date(2025, 12, 31)
+    rv_synthetic_initial_price: float = 24_000.0
     
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
 
 settings = Settings()

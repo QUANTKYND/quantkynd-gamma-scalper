@@ -9,6 +9,7 @@ import RvLineChart from '../components/rv/RvLineChart'
 import RvRunHistory from '../components/rv/RvRunHistory'
 import RvSummaryCards, { type SummaryCard } from '../components/rv/RvSummaryCards'
 import {
+  estimateFor,
   useGetBacktestQuery,
   useGetFeaturesQuery,
   useGetHistoryQuery,
@@ -17,6 +18,9 @@ import {
 } from '../store/api/rvApi'
 
 const panelSx = { p: { xs: 2, md: 2.5 }, borderColor: 'divider', backgroundImage: 'none', overflow: 'hidden' }
+const pct = (value: number | null | undefined): string => value == null ? 'N/A' : `${(value * 100).toFixed(2)}%`
+const numberText = (value: number | null | undefined): string => value == null ? 'N/A' : value.toFixed(2)
+const titleCase = (value: string): string => value[0].toUpperCase() + value.slice(1)
 
 const RvDashboard = (): React.ReactElement => {
   const latestQuery = useGetLatestQuery()
@@ -34,11 +38,17 @@ const RvDashboard = (): React.ReactElement => {
 
   const latest = latestQuery.data
   const backtest = backtestQuery.data
+  const oneSession = estimateFor(latest.estimates, 1)
+  const fiveSession = estimateFor(latest.estimates, 5)
+  const twentyOneSession = estimateFor(latest.estimates, 21)
+  const sixtyThreeSession = estimateFor(latest.estimates, 63)
   const cards: SummaryCard[] = [
-    { label: '21-day RV', value: `${(latest.rv_21d * 100).toFixed(2)}%`, sublabel: `As of ${latest.as_of}`, tone: 'accent' },
-    { label: 'Regime', value: latest.regime[0].toUpperCase() + latest.regime.slice(1), sublabel: `Z-score ${latest.rv_zscore_21.toFixed(2)}`, tone: latest.regime === 'high' ? 'warn' : 'good' },
-    { label: 'Forecast RMSE', value: `${(backtest.metrics.rmse * 100).toFixed(2)}%`, sublabel: `${backtest.model.toUpperCase()} · ${backtest.horizon_days}d`, tone: 'neutral' },
-    { label: '5d / 21d ratio', value: latest.rv_ratio_5_21.toFixed(2), sublabel: latest.rv_ratio_5_21 > 1 ? 'Short vol elevated' : 'Short vol contained', tone: latest.rv_ratio_5_21 > 1 ? 'warn' : 'good' },
+    { label: '1-session annualized volatility', value: pct(oneSession?.annualized_volatility), sublabel: `As of ${latest.as_of}`, tone: 'neutral' },
+    { label: '5-session annualized volatility', value: pct(fiveSession?.annualized_volatility), sublabel: `${backtest.horizon_sessions}-session forecast horizon`, tone: 'accent' },
+    { label: '21-session annualized volatility', value: pct(twentyOneSession?.annualized_volatility), sublabel: 'Close-to-close estimator', tone: 'accent' },
+    { label: '63-session annualized volatility', value: pct(sixtyThreeSession?.annualized_volatility), sublabel: 'Daily close fallback', tone: 'neutral' },
+    { label: '5D / 21D annualized variance ratio', value: numberText(latest.variance_ratio_5_21), sublabel: latest.variance_ratio_5_21 != null && latest.variance_ratio_5_21 > 1 ? 'Short variance elevated' : 'Short variance contained', tone: latest.variance_ratio_5_21 != null && latest.variance_ratio_5_21 > 1 ? 'warn' : 'good' },
+    { label: 'Volatility regime', value: titleCase(latest.regime), sublabel: `21D z-score ${numberText(latest.volatility_zscore_21)}`, tone: latest.regime === 'high' ? 'warn' : latest.regime === 'low' ? 'good' : 'neutral' },
   ]
 
   return (
@@ -47,21 +57,21 @@ const RvDashboard = (): React.ReactElement => {
 
       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} sx={{ justifyContent: 'space-between', alignItems: { xs: 'flex-start', sm: 'flex-end' } }}>
         <Box>
-          <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}><AutoGraphRounded color="primary" /><Typography variant="h4" component="h1">Realized volatility</Typography></Stack>
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>Monitor volatility structure and audit forward forecast quality for {latest.symbol}.</Typography>
+          <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}><AutoGraphRounded color="primary" /><Typography variant="h4" component="h1">Close-to-Close Volatility Research</Typography></Stack>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>Calculated from daily close-to-close squared log returns. This is not an intraday realized-volatility estimator.</Typography>
         </Box>
-        <Chip icon={<ScienceRounded />} label={`${latest.source} data`} size="small" variant="outlined" sx={{ textTransform: 'capitalize' }} />
+        <Chip icon={<ScienceRounded />} label={`${latest.dataset.source} data · ${latest.dataset.observations} closes`} size="small" variant="outlined" sx={{ textTransform: 'capitalize' }} />
       </Stack>
 
       <RvSummaryCards cards={cards} />
 
       <Paper variant="outlined" sx={panelSx}>
-        <RvLineChart title="Volatility term structure" subtitle="Annualized realized volatility against the underlying price" points={featuresQuery.data.points} mode="overview" />
+        <RvLineChart title="Close-to-close volatility structure" subtitle="Annualized volatility from daily squared log returns against the underlying price" points={featuresQuery.data.points} mode="overview" />
       </Paper>
 
       <Grid container spacing={2}>
-        <Grid size={{ xs: 12, lg: 8 }}><Paper variant="outlined" sx={{ ...panelSx, height: '100%' }}><RvLineChart title="Forecast versus realized" subtitle="Five-day EWMA forecast compared with subsequent realized volatility" points={historyQuery.data.points} mode="forecast" /></Paper></Grid>
-        <Grid size={{ xs: 12, lg: 4 }}><Paper variant="outlined" sx={{ ...panelSx, height: '100%' }}><Typography variant="h6">Run history</Typography><Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>Latest research executions</Typography><RvRunHistory runs={runsQuery.data.runs} /></Paper></Grid>
+        <Grid size={{ xs: 12, lg: 8 }}><Paper variant="outlined" sx={{ ...panelSx, height: '100%' }}><RvLineChart title="Forecast versus subsequent realization" subtitle={`${backtest.horizon_sessions}-session forecast annualized volatility compared with subsequent realized annualized volatility`} points={historyQuery.data.points} mode="forecast" horizonSessions={backtest.horizon_sessions} /></Paper></Grid>
+        <Grid size={{ xs: 12, lg: 4 }}><Paper variant="outlined" sx={{ ...panelSx, height: '100%' }}><Typography variant="h6">Run history</Typography><Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>Persisted research executions</Typography><RvRunHistory runs={runsQuery.data.runs} /></Paper></Grid>
       </Grid>
 
       <Paper variant="outlined" sx={panelSx}><RvBacktestTable summary={backtest} /></Paper>

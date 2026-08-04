@@ -32,12 +32,12 @@ def main() -> None:
 
     latest = pd.DataFrame(
         {
-            "latest_21d_rv": [rv_21.dropna().iloc[-1]],
-            "rv_5d": [features["rv_5d"].dropna().iloc[-1]],
-            "rv_21d": [features["rv_21d"].dropna().iloc[-1]],
-            "rv_63d": [features["rv_63d"].dropna().iloc[-1]],
-            "rv_ratio_5_21": [features["rv_ratio_5_21"].dropna().iloc[-1]],
-            "rv_regime": [features["rv_regime"].dropna().iloc[-1]],
+            "latest_21d_annualized_volatility": [rv_21.dropna().iloc[-1]],
+            "annualized_volatility_5d": [features["annualized_volatility_5d"].dropna().iloc[-1]],
+            "annualized_volatility_21d": [features["annualized_volatility_21d"].dropna().iloc[-1]],
+            "annualized_volatility_63d": [features["annualized_volatility_63d"].dropna().iloc[-1]],
+            "variance_ratio_5_21": [features["variance_ratio_5_21"].dropna().iloc[-1]],
+            "regime": [features["regime"].dropna().iloc[-1]],
         }
     )
     metrics = pd.DataFrame(result["metrics"]).T
@@ -51,4 +51,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -9,6 +9,60 @@ The application should contain two distinct decision systems:
 
 Most hedging papers solve item 2. Carr-Wu plus the RV forecast provide the basis for item 1.
 
+## Close-to-close volatility estimator
+
+The current estimator uses daily closing prices. It is a close-to-close volatility estimator and not the high-frequency intraday realized-volatility estimator described by Andersen et al. Intraday realized variance will be implemented in a later milestone after validated intraday market-data ingestion exists.
+
+For a positive closing price `P_t`, the close-to-close log return is:
+
+```text
+r_t = log(P_t / P_{t-1})
+```
+
+The horizon realized variance for `h` completed sessions ending at session `t`
+is the cumulative sum of squared log returns:
+
+```text
+RV_{t,h} = sum_{j=0}^{h-1} r_{t-j}^2
+```
+
+Annualized variance uses the horizon divisor:
+
+```text
+AV_{t,h} = (252 / h) * RV_{t,h}
+```
+
+Annualized volatility is the square root of annualized variance:
+
+```text
+VOL_{t,h} = sqrt(AV_{t,h})
+```
+
+At forecast origin `t`, the subsequent `h`-session target begins after the
+origin close:
+
+```text
+RV_forward_{t,h} = sum_{j=1}^{h} r_{t+j}^2
+AV_forward_{t,h} = (252 / h) * RV_forward_{t,h}
+VOL_forward_{t,h} = sqrt(AV_forward_{t,h})
+```
+
+| Quantity | Unit |
+| --- | --- |
+| Log return | decimal |
+| Horizon variance | decimal squared over horizon |
+| Annualized variance | decimal squared per year |
+| Annualized volatility | decimal per square-root year |
+| UI volatility | percentage |
+
+Forecast-origin convention:
+
+```text
+Origin t: after session t close
+Known information: through session t
+Target: sessions t+1 through t+h
+```
+
 ## Proposed data flow
 
 ```text
@@ -45,7 +99,8 @@ All decisions and outcomes
 
 ### `rv_forecast.py`
 
-- Computes `sum r_i^2` or `R'R` from intraday log returns.
+- Current fallback computes close-to-close squared daily log-return sums.
+- Production extension computes `sum r_i^2` or `R'R` from intraday log returns.
 - Fits a fractional-VAR model to log realized volatility.
 - Produces horizon forecasts in variance and volatility units.
 - Production extension: realized kernel/pre-averaging, bipower variation and jump component.

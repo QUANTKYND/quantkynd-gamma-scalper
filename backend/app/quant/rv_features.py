@@ -1,102 +1,114 @@
-"""Feature engineering for realized-volatility forecasting."""
+"""Feature engineering for close-to-close volatility forecasting."""
 
 from __future__ import annotations
+
+from collections.abc import Iterable
 
 import numpy as np
 import pandas as pd
 
-from app.quant.rv_engine import realized_volatility
+from app.quant.rv_engine import (
+    TRADING_DAYS_PER_YEAR,
+    annualized_variance,
+    close_to_close_realized_variance,
+)
 
 
-def _rv_series(rv: pd.Series) -> pd.Series:
-    if not isinstance(rv, pd.Series):
-        raise TypeError("rv must be a pandas Series")
-
-    numeric = pd.to_numeric(rv, errors="coerce").astype(float)
-    return numeric.replace([np.inf, -np.inf], np.nan)
-
-
-def rv_lag_features(rv: pd.Series, lags=(1, 5, 21)) -> pd.DataFrame:
-    """Return lagged RV values so each row uses only older observations."""
-
-    clean_rv = _rv_series(rv)
-    return pd.DataFrame(
-        {f"rv_lag_{lag}": clean_rv.shift(lag) for lag in lags},
-        index=clean_rv.index,
-    )
-
-
-def rv_rolling_features(rv: pd.Series, windows=(5, 21, 63)) -> pd.DataFrame:
-    """Return HAR-style rolling mean RV features using prior observations."""
-
-    clean_rv = _rv_series(rv)
-    past_rv = clean_rv.shift(1)
-    return pd.DataFrame(
-        {
-            f"rv_{window}d": past_rv.rolling(window=window, min_periods=window).mean()
-            for window in windows
-        },
-        index=clean_rv.index,
-    )
+DEFAULT_HORIZONS = (1, 5, 21, 63)
+FEATURE_COLUMNS = [
+    "horizon_variance_1d",
+    "horizon_variance_5d",
+    "horizon_variance_21d",
+    "horizon_variance_63d",
+    "annualized_variance_1d",
+    "annualized_variance_5d",
+    "annualized_variance_21d",
+    "annualized_variance_63d",
+    "annualized_volatility_1d",
+    "annualized_volatility_5d",
+    "annualized_volatility_21d",
+    "annualized_volatility_63d",
+    "variance_ratio_5_21",
+    "volatility_zscore_21",
+    "regime",
+]
 
 
-def rv_ratio_short_long(
-    rv: pd.Series,
-    short: int = 5,
-    long: int = 21,
-) -> pd.Series:
-    """Ratio of short-horizon to long-horizon prior RV."""
-
-    clean_rv = _rv_series(rv)
-    past_rv = clean_rv.shift(1)
-    short_mean = past_rv.rolling(window=short, min_periods=short).mean()
-    long_mean = past_rv.rolling(window=long, min_periods=long).mean()
-    ratio = short_mean / long_mean.replace(0, np.nan)
-    ratio = ratio.replace([np.inf, -np.inf], np.nan)
-    ratio.name = f"rv_ratio_{short}_{long}"
-    return ratio
-
-
-def rv_zscore(rv: pd.Series, window: int = 21) -> pd.Series:
-    """Z-score of prior RV against its prior rolling distribution."""
-
-    clean_rv = _rv_series(rv)
-    past_rv = clean_rv.shift(1)
-    mean = past_rv.rolling(window=window, min_periods=window).mean()
-    std = past_rv.rolling(window=window, min_periods=window).std(ddof=0)
-    zscore = (past_rv - mean) / std.replace(0, np.nan)
-    zscore = zscore.replace([np.inf, -np.inf], np.nan)
-    zscore.name = f"rv_z_{window}"
-    return zscore
-
-
-def rv_regime(rv: pd.Series, window: int = 63) -> pd.Series:
-    """Classify prior RV as low, normal, or high versus its rolling history."""
-
-    clean_rv = _rv_series(rv)
-    past_rv = clean_rv.shift(1)
-    mean = past_rv.rolling(window=window, min_periods=window).mean()
-    std = past_rv.rolling(window=window, min_periods=window).std(ddof=0)
-    zscore = (past_rv - mean) / std.replace(0, np.nan)
-
-    regime = pd.Series(pd.NA, index=clean_rv.index, dtype="object", name="rv_regime")
-    eligible = mean.notna()
-    regime.loc[eligible] = "normal"
-    regime.loc[zscore <= -1.0] = "low"
-    regime.loc[zscore >= 1.0] = "high"
-    return regime
-
-
-def build_rv_feature_frame(prices: pd.Series) -> pd.DataFrame:
-    """Build aligned, time-safe RV features from a close price series."""
-
+def _validate_prices(prices: pd.Series) -> None:
     if not isinstance(prices, pd.Series):
         raise TypeError("prices must be a pandas Series")
 
-    daily_rv = realized_volatility(prices, window=1, annualize=True)
-    features = rv_rolling_features(daily_rv, windows=(1, 5, 21, 63))
-    features["rv_ratio_5_21"] = rv_ratio_short_long(daily_rv, short=5, long=21)
-    features["rv_z_21"] = rv_zscore(daily_rv, window=21)
-    features["rv_regime"] = rv_regime(daily_rv, window=63)
-    return features.reindex(prices.index)
 
+def _validate_horizon(value: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("horizons must contain positive integers")
+
+
+def _replace_infinite(frame: pd.DataFrame) -> pd.DataFrame:
+    return frame.replace([np.inf, -np.inf], np.nan)
+
+
+def volatility_zscore(
+    annualized_volatility: pd.Series,
+    window: int = 63,
+) -> pd.Series:
+    """Compare current volatility with its prior rolling distribution."""
+
+    current = pd.to_numeric(annualized_volatility, errors="coerce").astype(float)
+    prior_mean = current.shift(1).rolling(window=window, min_periods=window).mean()
+    prior_std = current.shift(1).rolling(window=window, min_periods=window).std(ddof=0)
+    zscore = (current - prior_mean) / prior_std.replace(0, np.nan)
+    zscore.name = "volatility_zscore_21"
+    return zscore.replace([np.inf, -np.inf], np.nan)
+
+
+def classify_volatility_regime(zscore: pd.Series) -> pd.Series:
+    """Classify volatility as low, normal, high, or unknown from z-scores."""
+
+    clean_zscore = pd.to_numeric(zscore, errors="coerce").astype(float)
+    regime = pd.Series("unknown", index=clean_zscore.index, dtype="object", name="regime")
+    known = clean_zscore.notna()
+    regime.loc[known] = "normal"
+    regime.loc[clean_zscore <= -1.0] = "low"
+    regime.loc[clean_zscore >= 1.0] = "high"
+    return regime
+
+
+def build_rv_feature_frame(
+    prices: pd.Series,
+    horizons: Iterable[int] = DEFAULT_HORIZONS,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> pd.DataFrame:
+    """Build explicit, time-safe close-to-close variance features."""
+
+    _validate_prices(prices)
+    horizon_list = tuple(horizons)
+    for horizon in horizon_list:
+        _validate_horizon(horizon)
+
+    features = pd.DataFrame(index=prices.index)
+    for horizon in horizon_list:
+        horizon_variance = close_to_close_realized_variance(prices, window=horizon)
+        ann_variance = annualized_variance(
+            horizon_variance,
+            horizon_sessions=horizon,
+            periods_per_year=periods_per_year,
+        )
+        ann_volatility = np.sqrt(ann_variance.clip(lower=0))
+
+        features[f"horizon_variance_{horizon}d"] = horizon_variance
+        features[f"annualized_variance_{horizon}d"] = ann_variance
+        features[f"annualized_volatility_{horizon}d"] = ann_volatility.replace(
+            [np.inf, -np.inf],
+            np.nan,
+        )
+
+    denominator = features["annualized_variance_21d"].replace(0, np.nan)
+    features["variance_ratio_5_21"] = features["annualized_variance_5d"] / denominator
+    features["volatility_zscore_21"] = volatility_zscore(
+        features["annualized_volatility_21d"],
+        window=63,
+    )
+    features["regime"] = classify_volatility_regime(features["volatility_zscore_21"])
+
+    return _replace_infinite(features.reindex(columns=FEATURE_COLUMNS))

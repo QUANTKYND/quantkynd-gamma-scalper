@@ -17,7 +17,7 @@ const toneColor = { neutral: 'text.secondary', accent: 'primary.main', good: 'su
 const RvSummaryCards = ({ cards }: Props): React.ReactElement => (
   <Grid container spacing={2}>
     {cards.map((card, index) => (
-      <Grid key={card.label} size={{ xs: 12, sm: 6, lg: 3 }}>
+      <Grid key={card.label} size={{ xs: 12, sm: 6, lg: 2 }}>
         <Card variant="outlined" sx={{ height: '100%', bgcolor: 'background.default' }}>
           <CardContent sx={{ p: 2.25, '&:last-child': { pb: 2.25 } }}>
             <Stack direction="row" spacing={1} sx={{ alignItems: 'flex-start', justifyContent: 'space-between' }}>
