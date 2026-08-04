@@ -40,6 +40,8 @@ Use generated cases for invariants:
 
 ### Repository and persistence tests
 
+- Canonical catalogue fixtures reproduce economic, version, and provider-mapping identities independent of mapping or set order and Decimal text form.
+- Naive timestamps, non-finite numerics, invalid effective intervals, and float values at Decimal domain boundaries fail explicitly.
 - Point-in-time contract queries exclude future and expired contracts.
 - Quote writes are deduplicated by provider identity and sequence.
 - Transactions preserve intent, order, fill, position, and cash invariants.
@@ -52,6 +54,8 @@ Use generated cases for invariants:
 - Changing future data does not change earlier decisions.
 - Every terminal P&L is reconstructable from events and ledger entries.
 - Historical chain selection uses only contracts known at the replay timestamp.
+- Backfilled quotes, later catalogue corrections, explicit quote corrections, and later quality assessments do not alter an earlier `known_as_of` result.
+- Deterministic chain tie-breaking uses exchange time, provider sequence or event order, receipt/availability time, and stable event ID before expiry-strike-side sorting.
 
 ### Failure tests
 

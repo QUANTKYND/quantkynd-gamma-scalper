@@ -6,7 +6,7 @@ Create point-in-time, replayable, quality-aware options-market state. The system
 
 ## O0 — Domain contract
 
-Status: READY. STRAT-1 and SIM-1 provide offline contract, pricing, selection, and simulation semantics; point-in-time provider identity and persistence remain DATA-1 work.
+Status: IMPLEMENTED by DATA-1.0. STRAT-1 and SIM-1 provide offline contract, pricing, selection, and simulation semantics. DATA-1.0 freezes provider-neutral economic identity, validity-bounded metadata, provider mapping, point-in-time clocks, append-only corrections, event identity, quality assessments, and deterministic chain selection. Persistence remains DATA-1 work.
 
 Define:
 
@@ -20,7 +20,9 @@ Define:
 - Provider lifecycle events.
 - Data-quality events.
 
-Contract identity includes exchange, underlying, expiry, strike, side, multiplier, lot size, tick size, provider key, and validity interval.
+Economic option identity includes exchange, underlying identity, expiry exchange date, canonical Decimal strike, side, exercise style, settlement type, economically defining multiplier, and currency. Lot size, tick size, display symbol, trading status, catalogue version, and validity interval belong to a contract version. Provider and provider key belong to an effective and system-time-bounded provider mapping.
+
+Market events separate exchange time, receipt time, availability time, and record time. Historical replay uses `known_as_of` when availability is defensible. Imports without original dissemination time are marked explicitly and cannot silently satisfy that replay mode.
 
 ## O1 — Postgres persistence
 
@@ -106,6 +108,8 @@ expiry filter
 quote freshness threshold
 quality policy version
 ```
+
+It applies contract and mapping validity, market and knowledge cutoffs, the latest visible assessment under the requested policy version, explicit event supersession, and a stable quote tie-break. Final rows sort by expiry, strike, and option side.
 
 It returns:
 

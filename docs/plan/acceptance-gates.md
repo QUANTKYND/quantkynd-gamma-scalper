@@ -40,7 +40,9 @@
 
 ## Point-in-time data gate
 
-- Contract identity is stable and validity-bounded.
+DATA-1.0 satisfies the semantic sub-gate when deterministic economic identity is separate from contract versions and provider mappings; market and knowledge clocks are explicit; append-only corrections and quality reassessments preserve earlier results; canonical Decimal/time hashing is stable; and focused no-future-leakage tests pass. This does not pass the full DATA-1 gate because database migrations, persistence, catalogue ingestion, session-calendar integration, and restore testing remain.
+
+- Economic contract identity is stable and trading metadata is validity-bounded.
 - Historical chain reconstruction is deterministic.
 - No future contract or quote leakage.
 - Quote quality and exclusions are persisted.
