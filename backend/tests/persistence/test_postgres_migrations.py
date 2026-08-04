@@ -35,8 +35,16 @@ from app.persistence.postgres.migrations import alembic_config
 
 EXPECTED_TABLES = set(Base.metadata.tables)
 INITIAL_REVISION = "20260804_01"
-EXPECTED_REVISION = "20260804_02"
+DATA_1_1_REVISION = "20260804_02"
+EXPECTED_REVISION = "20260804_03"
 RECORDED_AT = datetime(2026, 8, 4, 3, 30, tzinfo=UTC)
+DATA_1_2_TABLES = {
+    "catalogue_source_artifacts",
+    "catalogue_ingestion_runs",
+    "catalogue_row_outcomes",
+    "catalogue_memberships",
+}
+DATA_1_1_TABLES = EXPECTED_TABLES - DATA_1_2_TABLES
 
 
 @pytest.mark.anyio
@@ -97,6 +105,39 @@ async def test_followup_migration_rejects_legacy_superseded_at(
             await lease.drop_and_recreate_public()
             await asyncio.to_thread(command.upgrade, config, "head")
             assert await _revision(engine) == EXPECTED_REVISION
+    finally:
+        await dispose_database_engine(engine)
+
+
+@pytest.mark.anyio
+async def test_data_1_2_migration_lifecycle_preserves_data_1_1(
+    postgres_url: str,
+    postgres_settings: DatabaseSettings,
+) -> None:
+    engine = create_database_engine(postgres_settings)
+    config = alembic_config(postgres_url)
+    try:
+        async with destructive_database_lease(
+            engine,
+            postgres_url,
+            postgres_settings,
+            DestructiveDatabasePurpose.INTEGRATION,
+        ) as lease:
+            await lease.drop_and_recreate_public()
+            await asyncio.to_thread(command.upgrade, config, DATA_1_1_REVISION)
+            assert await _revision(engine) == DATA_1_1_REVISION
+            await _assert_tables(engine, present=DATA_1_1_TABLES, absent=DATA_1_2_TABLES)
+            await asyncio.to_thread(command.upgrade, config, "head")
+            assert await _revision(engine) == EXPECTED_REVISION
+            await _assert_tables(engine, present=EXPECTED_TABLES, absent=set())
+            await asyncio.to_thread(command.downgrade, config, DATA_1_1_REVISION)
+            assert await _revision(engine) == DATA_1_1_REVISION
+            await _assert_tables(engine, present=DATA_1_1_TABLES, absent=DATA_1_2_TABLES)
+            await asyncio.to_thread(command.downgrade, config, "base")
+            await _assert_foundation_tables_absent(engine)
+            await asyncio.to_thread(command.upgrade, config, "head")
+            assert await _revision(engine) == EXPECTED_REVISION
+            await _assert_tables(engine, present=EXPECTED_TABLES, absent=set())
     finally:
         await dispose_database_engine(engine)
 
@@ -256,3 +297,10 @@ async def _assert_foundation_tables_absent(engine) -> None:
     async with engine.connect() as connection:
         tables = await connection.run_sync(lambda value: set(inspect(value).get_table_names()))
     assert EXPECTED_TABLES.isdisjoint(tables)
+
+
+async def _assert_tables(engine, *, present: set[str], absent: set[str]) -> None:
+    async with engine.connect() as connection:
+        tables = await connection.run_sync(lambda value: set(inspect(value).get_table_names()))
+    assert present <= tables
+    assert absent.isdisjoint(tables)

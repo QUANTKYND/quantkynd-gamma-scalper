@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.instruments.ports import UnitOfWorkStateError
 from app.persistence.postgres.repositories import (
+    PostgresCatalogueIngestionRepository,
     PostgresCatalogueRepository,
     PostgresInstrumentRepository,
     PostgresTradingSessionRepository,
@@ -20,6 +21,7 @@ class PostgresUnitOfWork:
         self._finalized = False
         self._instruments: PostgresInstrumentRepository | None = None
         self._catalogues: PostgresCatalogueRepository | None = None
+        self._catalogue_ingestions: PostgresCatalogueIngestionRepository | None = None
         self._trading_sessions: PostgresTradingSessionRepository | None = None
 
     @property
@@ -40,12 +42,22 @@ class PostgresUnitOfWork:
         assert self._trading_sessions is not None
         return self._trading_sessions
 
+    @property
+    def catalogue_ingestions(self) -> PostgresCatalogueIngestionRepository:
+        self._require_active()
+        assert self._catalogue_ingestions is not None
+        return self._catalogue_ingestions
+
     async def __aenter__(self) -> PostgresUnitOfWork:
         if self._closed or self._session is not None:
             raise UnitOfWorkStateError("unit of work instances cannot be reused")
         self._session = self._session_factory()
         self._instruments = PostgresInstrumentRepository(self._session, self._require_active)
         self._catalogues = PostgresCatalogueRepository(self._session, self._require_active)
+        self._catalogue_ingestions = PostgresCatalogueIngestionRepository(
+            self._session,
+            self._require_active,
+        )
         self._trading_sessions = PostgresTradingSessionRepository(
             self._session,
             self._require_active,
@@ -71,6 +83,7 @@ class PostgresUnitOfWork:
             self._session = None
             self._instruments = None
             self._catalogues = None
+            self._catalogue_ingestions = None
             self._trading_sessions = None
 
     async def commit(self) -> None:

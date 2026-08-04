@@ -350,3 +350,185 @@ class TradingSessionVersionRecordRow(Base):
         ForeignKey("trading_session_version_records.record_id"),
     )
     source_provenance_id: Mapped[str | None] = mapped_column(String(HASH_LENGTH))
+
+
+class CatalogueSourceArtifactRow(Base):
+    __tablename__ = "catalogue_source_artifacts"
+    __table_args__ = (
+        CheckConstraint("char_length(source_artifact_id) > 0", name="catalogue_source_artifact_id_nonempty"),
+        CheckConstraint("char_length(provider) > 0", name="catalogue_source_artifact_provider_nonempty"),
+        CheckConstraint("char_length(profile_version) > 0", name="catalogue_source_artifact_profile_nonempty"),
+        CheckConstraint("media_type = 'application/json'", name="catalogue_source_artifact_media_type"),
+        CheckConstraint("compression = 'gzip'", name="catalogue_source_artifact_compression"),
+        CheckConstraint("char_length(compressed_sha256) > 0", name="catalogue_source_artifact_compressed_hash_nonempty"),
+        CheckConstraint("char_length(decompressed_sha256) > 0", name="catalogue_source_artifact_decompressed_hash_nonempty"),
+        CheckConstraint("compressed_byte_count >= 0", name="catalogue_source_artifact_compressed_count_nonnegative"),
+        CheckConstraint("decompressed_byte_count >= 0", name="catalogue_source_artifact_decompressed_count_nonnegative"),
+        CheckConstraint("char_length(source_schema_version) > 0", name="catalogue_source_artifact_schema_nonempty"),
+        CheckConstraint("char_length(artifact_object_key) > 0", name="catalogue_source_artifact_object_key_nonempty"),
+        UniqueConstraint(
+            "provider",
+            "profile_version",
+            "compression",
+            "media_type",
+            "compressed_sha256",
+            "decompressed_sha256",
+            "source_schema_version",
+            name="uq_catalogue_source_artifact_identity",
+        ),
+        Index("ix_catalogue_source_artifacts_provider_profile", "provider", "profile_version"),
+    )
+
+    source_artifact_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(NAME_LENGTH), nullable=False)
+    profile_version: Mapped[str] = mapped_column(String(NAME_LENGTH), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(NAME_LENGTH), nullable=False)
+    compression: Mapped[str] = mapped_column(String(16), nullable=False)
+    compressed_sha256: Mapped[str] = mapped_column(String(HASH_LENGTH), nullable=False)
+    decompressed_sha256: Mapped[str] = mapped_column(String(HASH_LENGTH), nullable=False)
+    compressed_byte_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    decompressed_byte_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_schema_version: Mapped[str] = mapped_column(String(NAME_LENGTH), nullable=False)
+    artifact_object_key: Mapped[str] = mapped_column(String(KEY_LENGTH), nullable=False)
+
+
+class CatalogueIngestionRunRow(Base):
+    __tablename__ = "catalogue_ingestion_runs"
+    __table_args__ = (
+        CheckConstraint("char_length(ingestion_run_id) > 0", name="catalogue_ingestion_run_id_nonempty"),
+        CheckConstraint("char_length(idempotency_key) > 0", name="catalogue_ingestion_idempotency_nonempty"),
+        CheckConstraint("char_length(command_digest) > 0", name="catalogue_ingestion_command_digest_nonempty"),
+        CheckConstraint("char_length(profile_version) > 0", name="catalogue_ingestion_profile_nonempty"),
+        CheckConstraint("char_length(original_file_name) > 0", name="catalogue_ingestion_file_name_nonempty"),
+        CheckConstraint("effective_until IS NULL OR effective_until > effective_from", name="catalogue_ingestion_effective_interval"),
+        CheckConstraint("completed_at >= started_at", name="catalogue_ingestion_completed_after_started"),
+        CheckConstraint("char_length(normalized_catalogue_hash) > 0", name="catalogue_ingestion_catalogue_hash_nonempty"),
+        CheckConstraint("physical_row_count >= 0", name="catalogue_ingestion_physical_count_nonnegative"),
+        CheckConstraint("accepted_unique_count >= 0", name="catalogue_ingestion_accepted_count_nonnegative"),
+        CheckConstraint("exact_duplicate_count >= 0", name="catalogue_ingestion_duplicate_count_nonnegative"),
+        CheckConstraint("excluded_count >= 0", name="catalogue_ingestion_excluded_count_nonnegative"),
+        CheckConstraint(
+            "physical_row_count = accepted_unique_count + exact_duplicate_count + excluded_count",
+            name="catalogue_ingestion_row_reconciliation",
+        ),
+        CheckConstraint("char_length(database_revision) > 0", name="catalogue_ingestion_revision_nonempty"),
+        UniqueConstraint("idempotency_key", name="uq_catalogue_ingestion_idempotency_key"),
+        Index("ix_catalogue_ingestion_runs_artifact", "source_artifact_id"),
+        Index("ix_catalogue_ingestion_runs_catalogue", "catalogue_version_id"),
+    )
+
+    ingestion_run_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    idempotency_key: Mapped[str] = mapped_column(String(KEY_LENGTH), nullable=False)
+    command_digest: Mapped[str] = mapped_column(String(HASH_LENGTH), nullable=False)
+    source_artifact_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("catalogue_source_artifacts.source_artifact_id"),
+        nullable=False,
+    )
+    catalogue_version_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("catalogue_versions.catalogue_version_id"),
+        nullable=False,
+    )
+    catalogue_record_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("catalogue_version_records.record_id"),
+        nullable=False,
+    )
+    profile_version: Mapped[str] = mapped_column(String(NAME_LENGTH), nullable=False)
+    original_file_name: Mapped[str] = mapped_column(String(KEY_LENGTH), nullable=False)
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    effective_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    normalized_catalogue_hash: Mapped[str] = mapped_column(String(HASH_LENGTH), nullable=False)
+    physical_row_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    accepted_unique_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    exact_duplicate_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    excluded_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    database_revision: Mapped[str] = mapped_column(String(NAME_LENGTH), nullable=False)
+
+
+class CatalogueRowOutcomeRow(Base):
+    __tablename__ = "catalogue_row_outcomes"
+    __table_args__ = (
+        CheckConstraint("char_length(row_outcome_id) > 0", name="catalogue_row_outcome_id_nonempty"),
+        CheckConstraint("char_length(source_row_occurrence_id) > 0", name="catalogue_row_occurrence_id_nonempty"),
+        CheckConstraint("char_length(source_row_semantic_id) > 0", name="catalogue_row_semantic_id_nonempty"),
+        CheckConstraint("physical_row_number > 0", name="catalogue_row_number_positive"),
+        CheckConstraint("char_length(raw_row_hash) > 0", name="catalogue_row_raw_hash_nonempty"),
+        CheckConstraint("normalized_row_hash IS NULL OR char_length(normalized_row_hash) > 0", name="catalogue_row_normalized_hash_nonempty"),
+        CheckConstraint("disposition IN ('accepted', 'exact_duplicate', 'excluded_by_profile')", name="catalogue_row_disposition_supported"),
+        CheckConstraint("char_length(reason_codes) >= 2", name="catalogue_row_reason_codes_json_nonempty"),
+        UniqueConstraint("ingestion_run_id", "source_row_occurrence_id", name="uq_catalogue_row_outcome_occurrence"),
+        Index("ix_catalogue_row_outcomes_run_number", "ingestion_run_id", "physical_row_number"),
+        Index("ix_catalogue_row_outcomes_disposition", "disposition"),
+        Index("ix_catalogue_row_outcomes_provider_key", "provider_contract_key"),
+    )
+
+    row_outcome_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    ingestion_run_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("catalogue_ingestion_runs.ingestion_run_id"),
+        nullable=False,
+    )
+    source_row_occurrence_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    source_row_semantic_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    physical_row_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    raw_row_hash: Mapped[str] = mapped_column(String(HASH_LENGTH), nullable=False)
+    normalized_row_hash: Mapped[str | None] = mapped_column(String(HASH_LENGTH))
+    provider_contract_key: Mapped[str | None] = mapped_column(String(KEY_LENGTH))
+    disposition: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason_codes: Mapped[str] = mapped_column(String(KEY_LENGTH), nullable=False)
+    instrument_id: Mapped[str | None] = mapped_column(String(ID_LENGTH))
+    version_id: Mapped[str | None] = mapped_column(String(ID_LENGTH))
+    mapping_id: Mapped[str | None] = mapped_column(String(ID_LENGTH))
+
+
+class CatalogueMembershipRow(Base):
+    __tablename__ = "catalogue_memberships"
+    __table_args__ = (
+        CheckConstraint("char_length(membership_id) > 0", name="catalogue_membership_id_nonempty"),
+        CheckConstraint("char_length(source_row_occurrence_id) > 0", name="catalogue_membership_occurrence_id_nonempty"),
+        CheckConstraint("char_length(source_row_semantic_id) > 0", name="catalogue_membership_semantic_id_nonempty"),
+        CheckConstraint("char_length(provider_contract_key) > 0", name="catalogue_membership_provider_key_nonempty"),
+        CheckConstraint("char_length(raw_row_hash) > 0", name="catalogue_membership_raw_hash_nonempty"),
+        CheckConstraint("char_length(normalized_row_hash) > 0", name="catalogue_membership_normalized_hash_nonempty"),
+        UniqueConstraint("catalogue_version_id", "source_row_semantic_id", name="uq_catalogue_membership_semantic_row"),
+        Index("ix_catalogue_memberships_catalogue", "catalogue_version_id"),
+        Index("ix_catalogue_memberships_mapping", "mapping_id"),
+        Index("ix_catalogue_memberships_provider_key", "provider_contract_key"),
+    )
+
+    membership_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    catalogue_version_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("catalogue_versions.catalogue_version_id"),
+        nullable=False,
+    )
+    row_outcome_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("catalogue_row_outcomes.row_outcome_id"),
+        nullable=False,
+    )
+    source_row_occurrence_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    source_row_semantic_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    instrument_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("market_instruments.instrument_id"),
+        nullable=False,
+    )
+    version_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("instrument_versions.version_id"),
+        nullable=False,
+    )
+    mapping_id: Mapped[str] = mapped_column(
+        String(ID_LENGTH),
+        ForeignKey("provider_contract_mappings.mapping_id"),
+        nullable=False,
+    )
+    provider_contract_key: Mapped[str] = mapped_column(String(KEY_LENGTH), nullable=False)
+    raw_row_hash: Mapped[str] = mapped_column(String(HASH_LENGTH), nullable=False)
+    normalized_row_hash: Mapped[str] = mapped_column(String(HASH_LENGTH), nullable=False)

@@ -4,7 +4,7 @@ from collections.abc import Callable
 from datetime import date, datetime
 from typing import Any, TypeVar
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +18,12 @@ from app.instruments.identity import (
     UnderlyingInstrumentIdentity,
 )
 from app.instruments.ports import PersistenceIntegrityError, SemanticCollisionError
+from app.instruments.provider_catalogue import (
+    CatalogueIngestionRun,
+    CatalogueMembership,
+    CatalogueRowOutcome,
+    CatalogueSourceArtifact,
+)
 from app.instruments.sessions import TradingSessionIdentity, TradingSessionVersion
 from app.instruments.temporal_records import (
     TemporalRecord,
@@ -40,6 +46,11 @@ from app.persistence.postgres.mappings import (
     option_values,
     provider_mapping_from_row,
     provider_mapping_values,
+    ingestion_run_from_row,
+    ingestion_run_values,
+    membership_values,
+    row_outcome_values,
+    source_artifact_values,
     temporal_record_from_row,
     temporal_record_values,
     trading_session_values,
@@ -51,6 +62,10 @@ from app.persistence.postgres.mappings import (
     version_values,
 )
 from app.persistence.postgres.models import (
+    CatalogueIngestionRunRow,
+    CatalogueMembershipRow,
+    CatalogueRowOutcomeRow,
+    CatalogueSourceArtifactRow,
     CatalogueVersionRecordRow,
     CatalogueVersionRow,
     FuturesContractRow,
@@ -65,6 +80,7 @@ from app.persistence.postgres.models import (
     TradingSessionVersionRow,
     UnderlyingInstrumentRow,
 )
+from app.core.hashing import stable_hash
 
 
 class PostgresCatalogueRepository:
@@ -597,6 +613,75 @@ class PostgresTradingSessionRepository:
         return resolved.value if resolved is not None else None
 
 
+class PostgresCatalogueIngestionRepository:
+    def __init__(self, session: AsyncSession, require_active: Callable[[], None]) -> None:
+        self._session = session
+        self._require_active = require_active
+
+    async def lock_provider_profile(self, provider: str, profile_version: str) -> None:
+        self._require_active()
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_key)"),
+            {"lock_key": _advisory_lock_key(provider, profile_version)},
+        )
+
+    async def add_source_artifact(self, artifact: CatalogueSourceArtifact) -> None:
+        self._require_active()
+        await _insert_immutable(
+            self._session,
+            CatalogueSourceArtifactRow,
+            "source_artifact_id",
+            source_artifact_values(artifact),
+            "catalogue source artifact",
+        )
+
+    async def add_ingestion_run(self, run: CatalogueIngestionRun) -> None:
+        self._require_active()
+        await _insert_immutable(
+            self._session,
+            CatalogueIngestionRunRow,
+            "ingestion_run_id",
+            ingestion_run_values(run),
+            "catalogue ingestion run",
+        )
+
+    async def add_row_outcomes(self, outcomes: tuple[CatalogueRowOutcome, ...]) -> None:
+        self._require_active()
+        for outcome in outcomes:
+            await _insert_immutable(
+                self._session,
+                CatalogueRowOutcomeRow,
+                "row_outcome_id",
+                row_outcome_values(outcome),
+                "catalogue row outcome",
+            )
+
+    async def add_memberships(self, memberships: tuple[CatalogueMembership, ...]) -> None:
+        self._require_active()
+        for membership in memberships:
+            await _insert_immutable(
+                self._session,
+                CatalogueMembershipRow,
+                "membership_id",
+                membership_values(membership),
+                "catalogue membership",
+            )
+
+    async def get_ingestion_run_by_idempotency_key(
+        self,
+        idempotency_key: str,
+    ) -> CatalogueIngestionRun | None:
+        self._require_active()
+        row = (
+            await self._session.scalars(
+                select(CatalogueIngestionRunRow).where(
+                    CatalogueIngestionRunRow.idempotency_key == idempotency_key
+                )
+            )
+        ).one_or_none()
+        return ingestion_run_from_row(row) if row is not None else None
+
+
 RowType = TypeVar("RowType")
 
 
@@ -709,3 +794,15 @@ def _required_subtype(row: RowType | None) -> RowType:
     if row is None:
         raise PersistenceIntegrityError("durable instrument subtype row is missing")
     return row
+
+
+def _advisory_lock_key(provider: str, profile_version: str) -> int:
+    digest = stable_hash(
+        {
+            "entity": "catalogue_provider_profile_lock",
+            "provider": provider,
+            "profile_version": profile_version,
+        }
+    ).removeprefix("sha256:")
+    value = int(digest[:16], 16)
+    return value - 2**64 if value >= 2**63 else value

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from app.instruments.catalogue import CatalogueVersion
@@ -18,6 +19,12 @@ from app.instruments.sessions import (
     TradingSessionVersion,
 )
 from app.instruments.temporal_records import TemporalRecord, TemporalRecordKind
+from app.instruments.provider_catalogue import (
+    CatalogueIngestionRun,
+    CatalogueMembership,
+    CatalogueRowOutcome,
+    CatalogueSourceArtifact,
+)
 
 
 class MalformedPersistenceRecordError(ValueError):
@@ -299,6 +306,124 @@ def temporal_record_values(value: TemporalRecord, semantic_column: str) -> dict[
         "recorded_at": value.recorded_at,
         "supersedes_record_id": value.supersedes_record_id,
         "source_provenance_id": value.source_provenance_id,
+    }
+
+
+def source_artifact_values(value: CatalogueSourceArtifact) -> dict[str, Any]:
+    return {
+        "source_artifact_id": value.source_artifact_id,
+        "provider": value.provider,
+        "profile_version": value.profile_version,
+        "media_type": value.media_type,
+        "compression": value.compression,
+        "compressed_sha256": value.compressed_sha256,
+        "decompressed_sha256": value.decompressed_sha256,
+        "compressed_byte_count": value.compressed_byte_count,
+        "decompressed_byte_count": value.decompressed_byte_count,
+        "source_schema_version": value.source_schema_version,
+        "artifact_object_key": value.artifact_object_key,
+    }
+
+
+def source_artifact_from_row(row: Any) -> CatalogueSourceArtifact:
+    return _construct_with_id(
+        CatalogueSourceArtifact,
+        "source_artifact_id",
+        row.source_artifact_id,
+        provider=row.provider,
+        profile_version=row.profile_version,
+        media_type=row.media_type,
+        compression=row.compression,
+        compressed_sha256=row.compressed_sha256,
+        decompressed_sha256=row.decompressed_sha256,
+        compressed_byte_count=row.compressed_byte_count,
+        decompressed_byte_count=row.decompressed_byte_count,
+        source_schema_version=row.source_schema_version,
+        artifact_object_key=row.artifact_object_key,
+    )
+
+
+def ingestion_run_values(value: CatalogueIngestionRun) -> dict[str, Any]:
+    return {
+        "ingestion_run_id": value.ingestion_run_id,
+        "idempotency_key": value.idempotency_key,
+        "command_digest": value.command_digest,
+        "source_artifact_id": value.source_artifact_id,
+        "catalogue_version_id": value.catalogue_version_id,
+        "catalogue_record_id": value.catalogue_record_id,
+        "profile_version": value.profile_version,
+        "original_file_name": value.original_file_name,
+        "effective_from": value.effective_from,
+        "effective_until": value.effective_until,
+        "started_at": value.started_at,
+        "recorded_at": value.recorded_at,
+        "completed_at": value.completed_at,
+        "normalized_catalogue_hash": value.normalized_catalogue_hash,
+        "physical_row_count": value.physical_row_count,
+        "accepted_unique_count": value.accepted_unique_count,
+        "exact_duplicate_count": value.exact_duplicate_count,
+        "excluded_count": value.excluded_count,
+        "database_revision": value.database_revision,
+    }
+
+
+def ingestion_run_from_row(row: Any) -> CatalogueIngestionRun:
+    return _construct_with_id(
+        CatalogueIngestionRun,
+        "ingestion_run_id",
+        row.ingestion_run_id,
+        idempotency_key=row.idempotency_key,
+        command_digest=row.command_digest,
+        source_artifact_id=row.source_artifact_id,
+        catalogue_version_id=row.catalogue_version_id,
+        catalogue_record_id=row.catalogue_record_id,
+        profile_version=row.profile_version,
+        original_file_name=row.original_file_name,
+        effective_from=row.effective_from,
+        effective_until=row.effective_until,
+        started_at=row.started_at,
+        recorded_at=row.recorded_at,
+        completed_at=row.completed_at,
+        normalized_catalogue_hash=row.normalized_catalogue_hash,
+        physical_row_count=row.physical_row_count,
+        accepted_unique_count=row.accepted_unique_count,
+        exact_duplicate_count=row.exact_duplicate_count,
+        excluded_count=row.excluded_count,
+        database_revision=row.database_revision,
+    )
+
+
+def row_outcome_values(value: CatalogueRowOutcome) -> dict[str, Any]:
+    return {
+        "row_outcome_id": value.row_outcome_id,
+        "ingestion_run_id": value.ingestion_run_id,
+        "source_row_occurrence_id": value.source_row_occurrence_id,
+        "source_row_semantic_id": value.source_row_semantic_id,
+        "physical_row_number": value.physical_row_number,
+        "raw_row_hash": value.raw_row_hash,
+        "normalized_row_hash": value.normalized_row_hash,
+        "provider_contract_key": value.provider_contract_key,
+        "disposition": value.disposition.value,
+        "reason_codes": json.dumps(list(value.reason_codes), separators=(",", ":"), sort_keys=True),
+        "instrument_id": value.instrument_id,
+        "version_id": value.version_id,
+        "mapping_id": value.mapping_id,
+    }
+
+
+def membership_values(value: CatalogueMembership) -> dict[str, Any]:
+    return {
+        "membership_id": value.membership_id,
+        "catalogue_version_id": value.catalogue_version_id,
+        "row_outcome_id": value.row_outcome_id,
+        "source_row_occurrence_id": value.source_row_occurrence_id,
+        "source_row_semantic_id": value.source_row_semantic_id,
+        "instrument_id": value.instrument_id,
+        "version_id": value.version_id,
+        "mapping_id": value.mapping_id,
+        "provider_contract_key": value.provider_contract_key,
+        "raw_row_hash": value.raw_row_hash,
+        "normalized_row_hash": value.normalized_row_hash,
     }
 
 

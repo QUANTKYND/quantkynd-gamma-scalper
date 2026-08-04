@@ -10,6 +10,10 @@ from app.persistence.postgres.models import (
     CatalogueVersionRow,
     CatalogueVersionRecordRow,
     FuturesContractRow,
+    CatalogueIngestionRunRow,
+    CatalogueMembershipRow,
+    CatalogueRowOutcomeRow,
+    CatalogueSourceArtifactRow,
     InstrumentVersionRow,
     InstrumentVersionRecordRow,
     MarketInstrumentRow,
@@ -37,6 +41,10 @@ DURABLE_MODELS = (
     TradingSessionRow,
     TradingSessionVersionRow,
     TradingSessionVersionRecordRow,
+    CatalogueSourceArtifactRow,
+    CatalogueIngestionRunRow,
+    CatalogueRowOutcomeRow,
+    CatalogueMembershipRow,
 )
 
 

@@ -22,9 +22,9 @@ target_metadata = Base.metadata
 
 def _database_url() -> str:
     value = config.get_main_option("sqlalchemy.url") or os.environ.get("DATABASE_URL")
-    if not value:
-        raise DatabaseConfigurationError("DATABASE_URL is required for Alembic")
-    return DatabaseSettings(database_url=value).require_database_url()
+    if value:
+        return DatabaseSettings(database_url=value).require_database_url()
+    return DatabaseSettings().require_database_url()
 
 
 def run_migrations_offline() -> None:
