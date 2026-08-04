@@ -24,6 +24,8 @@ Economic option identity includes exchange, underlying identity, expiry exchange
 
 Market events separate exchange time, receipt time, availability time, and record time. Historical replay uses `known_as_of` when availability is defensible. Imports without original dissemination time are marked explicitly and cannot silently satisfy that replay mode.
 
+Provider sequence identity requires an explicit non-empty scope. Semantic identity indexes tolerate only completely equal duplicate records and reject conflicts. Correction graphs fail closed on missing or mismatched targets, self-reference, cycles, and ambiguous branches. Normalized quotes preserve finite zero prices for policy evaluation; zero does not imply quality eligibility.
+
 ## O1 — Postgres persistence
 
 Add:
@@ -83,7 +85,7 @@ The normalizer never invents missing fields.
 
 Checks:
 
-- Non-positive or nonsensical prices.
+- Zero, negative, non-finite, or otherwise nonsensical prices with representation validity distinguished from policy eligibility.
 - Bid above ask.
 - Zero-width or negative-width market.
 - Quote age.
@@ -109,7 +111,7 @@ quote freshness threshold
 quality policy version
 ```
 
-It applies contract and mapping validity, market and knowledge cutoffs, the latest visible assessment under the requested policy version, explicit event supersession, and a stable quote tie-break. Final rows sort by expiry, strike, and option side.
+It applies conflict-free contract and mapping indexes, market and knowledge cutoffs, the latest visible assessment under the requested policy version, validated fail-closed event supersession, and a stable quote tie-break. Final rows sort by expiry, strike, and option side.
 
 It returns:
 

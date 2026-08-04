@@ -214,7 +214,7 @@ All domain timestamps are timezone-aware and normalized to UTC. NSE sessions are
 
 ### Event identities
 
-`RawMarketObservationIdentity` prefers a provider event or trade ID, a provider sequence within its guaranteed scope, or a source-file plus source-row identity. Otherwise it requires a unique ingestion-event identity. A content hash records provenance but never proves two transmissions are the same event. Therefore repeated quotes with identical market fields remain distinct when their provider event identities differ.
+`RawMarketObservationIdentity` prefers a provider event or trade ID, a provider sequence within its guaranteed scope, or a source-file plus source-row identity. A provider sequence requires a non-empty `provider_sequence_scope_id`; no global scope is inferred. The scope can identify a connection, feed session, channel, partition, trading date, or a provider-guaranteed global sequence. Otherwise the observation requires a unique ingestion-event identity. A content hash records provenance but never proves two transmissions are the same event. Therefore repeated quotes with identical market fields remain distinct when their provider event identities differ.
 
 `NormalizedMarketEventIdentity` deterministically combines raw event identity, event type, subject identity, and normalization schema version. Raw and normalized observations are append-only.
 
@@ -261,7 +261,7 @@ quality_flags
 supersedes_event_id
 ```
 
-Prices use `Decimal`. Bid, ask, last sizes, volume, and open interest are non-negative integer contracts in DATA-1.0; a provider adapter must explicitly convert and document any provider-specific lot or unit representation. Optional values remain absent when unavailable.
+Prices use finite non-negative `Decimal` values. Zero bid, ask, or last values are preserved as observations; negative and non-finite values are invalid representations. `None` means unavailable and remains distinct from zero. Crossed markets, zero prices, and other liquidity or market-quality conditions are classified by versioned quality assessments rather than removed during normalization. Bid, ask, last sizes, volume, and open interest are non-negative integer contracts in DATA-1.0; a provider adapter must explicitly convert and document any provider-specific lot or unit representation.
 
 ### `OptionTrade`
 
@@ -330,10 +330,12 @@ For each economic contract, a query applies this order:
 2. require `exchange_timestamp <= market_as_of`;
 3. require `available_at <= known_as_of` and defensible availability unless explicitly waived;
 4. select the latest visible assessment for the requested quality policy ID and version and require an eligible disposition;
-5. apply visible `supersedes_event_id` correction relations;
+5. validate and apply visible `supersedes_event_id` correction relations;
 6. prefer newest exchange timestamp, then provider sequence, event order, receipt time, availability time, and stable event ID.
 
-The final chain is sorted by expiry, strike, and option side. The same inputs and cutoffs therefore return the same result regardless of ingestion or mapping iteration order.
+Correction sources cannot supersede themselves. A target must exist as a visible or historically eligible normalized quote with the same economic contract and normalized event type. Correction graphs must be acyclic and have at most one visible correction per target. Missing targets, cross-contract or cross-type edges, self-edges, cycles, and competing correction branches raise `InvalidCorrectionGraphError`; they never silently remove a quote.
+
+Contract-version, provider-mapping, and normalized-event indexes accept repeated IDs only when the complete immutable records are equal. A shared ID with different record content raises `ConflictingSemanticIdentityError`. The final chain is sorted by expiry, strike, and option side. Successful results and structural errors are therefore invariant to input order.
 
 ## Option analytics models
 

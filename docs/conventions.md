@@ -124,7 +124,10 @@ Avoid introducing large functions that would otherwise need comments. Split them
 - Decimal-equivalent text forms serialize identically; finite numbers only are accepted.
 - Sets are canonically ordered, timestamps are timezone-aware UTC values, and expiry remains an exchange date.
 - Economic hashes exclude provider keys, display symbols, catalogue runtime timestamps, and ingestion runtime metadata.
-- Content equality is provenance, not event equality. Deduplication requires a guaranteed provider identity, provider sequence scope, source-file and row identity, or explicit ingestion event ID.
+- A provider sequence is identity material only with a non-empty explicit provider sequence scope. The scope may be a connection, feed session, channel, partition, trading date, or provider-declared global scope; QuantKYND never infers a global scope.
+- Content equality is provenance, not event equality. Deduplication requires a guaranteed provider identity, explicitly scoped provider sequence, source-file and row identity, or explicit ingestion event ID.
+- Duplicate semantic version, mapping, or normalized-event IDs are accepted only when their complete immutable records are equal. Conflicting records fail explicitly instead of using iterable order.
+- Normalized bid, ask, and last observations are finite non-negative `Decimal` values or absent. Zero is preserved for quality evaluation and is not itself evidence of eligibility.
 
 ## Strategy and execution
 

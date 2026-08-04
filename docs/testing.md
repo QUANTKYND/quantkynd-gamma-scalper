@@ -41,7 +41,11 @@ Use generated cases for invariants:
 ### Repository and persistence tests
 
 - Canonical catalogue fixtures reproduce economic, version, and provider-mapping identities independent of mapping or set order and Decimal text form.
+- Provider sequences without an explicit scope fail; identical scoped sequences reproduce IDs and different scopes cannot collide.
 - Naive timestamps, non-finite numerics, invalid effective intervals, and float values at Decimal domain boundaries fail explicitly.
+- Exact duplicate semantic records are idempotent, while conflicting contract-version, provider-mapping, and normalized-event records raise the same error under every input permutation.
+- Correction graphs reject missing targets, cross-contract and cross-type edges, self-edges, cycles, and ambiguous branches without changing results under input permutation.
+- Zero quote prices and absent quote prices remain distinct observations; eligibility follows the visible quality assessment, while negative prices fail representation validation.
 - Point-in-time contract queries exclude future and expired contracts.
 - Quote writes are deduplicated by provider identity and sequence.
 - Transactions preserve intent, order, fill, position, and cash invariants.

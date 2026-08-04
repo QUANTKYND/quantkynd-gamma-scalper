@@ -173,6 +173,8 @@ recorded_at/superseded_at bound system visibility
 
 Historical imports without defensible dissemination or receipt timestamps carry an explicit non-defensible availability basis. They may support market-time analysis, but do not silently satisfy a knowledge-time replay claim.
 
+Point-in-time reconstruction fails closed on structurally invalid inputs. Semantic version, provider-mapping, and normalized-event indexes reject conflicting records that share an ID. Correction edges are resolved only after their targets, economic contracts, event types, acyclic structure, and single-successor branches are validated. Representation validity preserves finite zero-price observations; a versioned quality assessment, not normalization, determines chain eligibility.
+
 ## State ownership
 
 | State | Owner | Durable | Redis eligible |
