@@ -936,6 +936,10 @@ Merge recommendation: APPROVED
 Ready for DATA-1: YES
 ```
 
+## SIM-1.2.1 release-identity addendum
+
+SIM-1.2.1 corrected the persisted release identity without changing SIM-1.2 pricing, hedging, risk, path, fill, or accounting behavior. Final runs use `simulator_version=sim-1.2`, simulation-market schema version 2, simulation-run schema version 2, manifest schema version 2, and path generator version 2. The active market instance moved to `config/simulation/nifty-synthetic-market-v2.yaml` with market ID `nifty-synthetic-market-v2`. These identities participate in their owning hashes, so hashes and run IDs recorded before this correction are historical and cannot collide with the final release.
+
 ---
 
 # 14. Verification commands
