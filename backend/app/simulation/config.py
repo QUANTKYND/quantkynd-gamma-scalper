@@ -65,7 +65,6 @@ class SyntheticFuturesMarketConfig(StrictFrozenModel):
     delta_per_contract: float = Field(gt=0)
     expiry_rule: Literal["holding_horizon_plus_buffer"]
     expiry_buffer_sessions: int = Field(ge=0)
-    half_spread_per_unit: Decimal = Field(ge=0)
 
 
 class SimulationMarketConfig(StrictFrozenModel):

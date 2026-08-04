@@ -27,4 +27,3 @@ futures:
   delta_per_contract: 1
   expiry_rule: holding_horizon_plus_buffer
   expiry_buffer_sessions: 5
-  half_spread_per_unit: 0.25

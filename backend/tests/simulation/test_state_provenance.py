@@ -65,4 +65,8 @@ def test_option_expiry_and_futures_buffer_change_executable_state_identity() -> 
     assert later_expiry.executable_market_state_hash != baseline.executable_market_state_hash
     assert later_future.executable_market_state_hash != baseline.executable_market_state_hash
     assert later_future.market_states[0].futures_price != baseline.market_states[0].futures_price
+    assert (
+        later_future.market_states[0].futures_time_to_expiry_years
+        > baseline.market_states[0].futures_time_to_expiry_years
+    )
     assert later_future.run_id != baseline.run_id

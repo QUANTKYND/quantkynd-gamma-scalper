@@ -16,6 +16,7 @@ class MarketState:
     dividend_yield: float
     implied_volatility: float
     time_to_expiry_years: float
+    futures_time_to_expiry_years: float
     step_year_fraction: float
     session_date: date | None = None
     local_timestamp: datetime | None = None
@@ -34,14 +35,15 @@ class MarketState:
             self.dividend_yield,
             self.implied_volatility,
             self.time_to_expiry_years,
+            self.futures_time_to_expiry_years,
             self.step_year_fraction,
         )
         if not all(math.isfinite(value) for value in finite):
             raise ValueError("market-state values must be finite")
         if self.spot <= 0 or self.futures_price <= 0:
             raise ValueError("market prices must be positive")
-        if self.implied_volatility < 0 or self.time_to_expiry_years < 0:
-            raise ValueError("volatility and time to expiry must be non-negative")
+        if self.implied_volatility < 0 or self.time_to_expiry_years < 0 or self.futures_time_to_expiry_years < 0:
+            raise ValueError("volatility and times to expiry must be non-negative")
         if self.step_year_fraction < 0:
             raise ValueError("step year fraction must be non-negative")
 

@@ -42,6 +42,7 @@ def build_executable_market_states(
                 dividend_yield=point.dividend_yield,
                 implied_volatility=point.implied_volatility,
                 time_to_expiry_years=remaining_time_to_expiry(option_expiry, elapsed),
+                futures_time_to_expiry_years=remaining_futures_maturity,
                 step_year_fraction=point.realized_step_year_fraction,
                 session_date=point.session_date,
                 local_timestamp=point.timestamp.astimezone(timezone),

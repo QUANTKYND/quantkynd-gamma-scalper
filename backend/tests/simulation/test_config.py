@@ -55,6 +55,15 @@ def test_cost_model_round_trip() -> None:
     assert CostModelConfig.from_parameters(parameters).to_parameters() == parameters
 
 
+def test_futures_execution_spread_is_owned_only_by_run_cost_model() -> None:
+    config = load_simulation_market_config(CONFIG)
+    assert not hasattr(config.futures, "half_spread_per_unit")
+    payload = config.model_dump(mode="python")
+    payload["futures"]["half_spread_per_unit"] = Decimal("0.25")
+    with pytest.raises(ValidationError):
+        SimulationMarketConfig.model_validate(payload)
+
+
 def test_run_config_identity_includes_runtime_and_accounting_inputs() -> None:
     costs = CostModelConfig(
         fixed_cost_per_order=Decimal("0"),
