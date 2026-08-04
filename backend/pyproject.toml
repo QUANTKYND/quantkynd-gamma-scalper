@@ -11,6 +11,9 @@ dependencies = [
     "pyyaml>=6.0,<7",
     "uvicorn>=0.52.1",
     "upstox-python-sdk>=2.28,<3",
+    "sqlalchemy[asyncio]>=2.0,<3",
+    "alembic>=1.13,<2",
+    "asyncpg>=0.29,<1",
 ]
 
 [dependency-groups]
