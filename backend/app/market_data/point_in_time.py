@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Iterable
+from typing import Callable, Iterable, TypeVar
 
 from app.core.hashing import stable_hash
 from app.instruments.identity import (
@@ -33,6 +33,14 @@ class QuoteQualityDisposition(StrEnum):
     @property
     def is_eligible(self) -> bool:
         return self in {self.ACCEPTED, self.ACCEPTED_WITH_FLAGS}
+
+
+class InvalidCorrectionGraphError(ValueError):
+    pass
+
+
+class ConflictingSemanticIdentityError(ValueError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -94,7 +102,7 @@ class PointInTimeQuery:
 class RawMarketObservationIdentity:
     provider: str
     content_hash: str
-    connection_id: str | None = None
+    provider_sequence_scope_id: str | None = None
     provider_event_id: str | None = None
     provider_sequence: int | None = None
     source_file_id: str | None = None
@@ -110,6 +118,16 @@ class RawMarketObservationIdentity:
             or self.provider_sequence < 0
         ):
             raise ValueError("provider_sequence must be non-negative")
+        if (self.provider_sequence is None) != (self.provider_sequence_scope_id is None):
+            raise ValueError("provider_sequence requires an explicit provider_sequence_scope_id")
+        if (
+            self.provider_sequence_scope_id is not None
+            and (
+                not isinstance(self.provider_sequence_scope_id, str)
+                or not self.provider_sequence_scope_id.strip()
+            )
+        ):
+            raise ValueError("provider_sequence_scope_id must be non-empty")
         if (self.source_file_id is None) != (self.source_row_id is None):
             raise ValueError("batch identity requires source_file_id and source_row_id")
         if not any(
@@ -130,7 +148,7 @@ class RawMarketObservationIdentity:
         elif self.provider_sequence is not None:
             identity_type = "provider_sequence"
             identity_value = {
-                "connection_id": self.connection_id,
+                "provider_sequence_scope_id": self.provider_sequence_scope_id,
                 "provider_sequence": self.provider_sequence,
             }
         elif self.source_file_id is not None:
@@ -251,7 +269,7 @@ class PointInTimeOptionQuote:
         if not self.contract_version_id or not self.provider_mapping_id:
             raise ValueError("quote contract version and provider mapping are required")
         for field_name in ("bid_price", "ask_price", "last_price"):
-            _optional_positive_decimal(getattr(self, field_name), field_name)
+            _optional_non_negative_decimal(getattr(self, field_name), field_name)
         for field_name in (
             "bid_size_contracts",
             "ask_size_contracts",
@@ -279,19 +297,30 @@ def reconstruct_option_chain(
     quality_assessments: Iterable[DataQualityAssessment],
     query: PointInTimeQuery,
 ) -> tuple[PointInTimeOptionQuote, ...]:
-    versions = {item.version_id: item for item in contract_versions}
-    mappings = {item.mapping_id: item for item in provider_mappings}
+    versions = _unique_index(
+        contract_versions,
+        lambda item: item.version_id,
+        "contract version",
+    )
+    mappings = _unique_index(
+        provider_mappings,
+        lambda item: item.mapping_id,
+        "provider mapping",
+    )
+    quote_index = _unique_index(quotes, lambda item: item.event_id, "normalized event")
     assessments = tuple(quality_assessments)
     visible = [
         quote
-        for quote in quotes
+        for quote in quote_index.values()
         if _quote_is_visible(quote, versions, mappings, assessments, query)
     ]
-    superseded_ids = {
-        quote.supersedes_event_id
-        for quote in visible
-        if quote.supersedes_event_id is not None
-    }
+    superseded_ids = _resolve_correction_graph(
+        visible,
+        quote_index,
+        versions,
+        mappings,
+        query,
+    )
     latest_by_contract: dict[str, PointInTimeOptionQuote] = {}
     for quote in visible:
         if quote.event_id in superseded_ids:
@@ -309,6 +338,101 @@ def reconstruct_option_chain(
                 quote.contract.option_side.value,
             ),
         )
+    )
+
+
+def _resolve_correction_graph(
+    visible_quotes: list[PointInTimeOptionQuote],
+    quote_index: dict[str, PointInTimeOptionQuote],
+    versions: dict[str, OptionContractVersion],
+    mappings: dict[str, ProviderContractMapping],
+    query: PointInTimeQuery,
+) -> set[str]:
+    corrections = sorted(
+        (
+            quote
+            for quote in visible_quotes
+            if quote.supersedes_event_id is not None
+        ),
+        key=lambda quote: quote.event_id,
+    )
+    edges: dict[str, str] = {}
+    sources_by_target: dict[str, list[str]] = {}
+    for source in corrections:
+        target_id = source.supersedes_event_id
+        if target_id == source.event_id:
+            raise InvalidCorrectionGraphError(
+                f"correction event {source.event_id} cannot supersede itself"
+            )
+        target = quote_index.get(target_id)
+        if target is None or not _quote_is_historically_eligible(
+            target,
+            versions,
+            mappings,
+            query,
+        ):
+            raise InvalidCorrectionGraphError(
+                f"correction event {source.event_id} has no eligible target {target_id}"
+            )
+        if source.contract.contract_id != target.contract.contract_id:
+            raise InvalidCorrectionGraphError(
+                f"correction event {source.event_id} targets a different economic contract"
+            )
+        if source.identity.event_type != target.identity.event_type:
+            raise InvalidCorrectionGraphError(
+                f"correction event {source.event_id} targets a different event type"
+            )
+        edges[source.event_id] = target_id
+        sources_by_target.setdefault(target_id, []).append(source.event_id)
+    ambiguous_targets = sorted(
+        target_id
+        for target_id, source_ids in sources_by_target.items()
+        if len(source_ids) > 1
+    )
+    if ambiguous_targets:
+        raise InvalidCorrectionGraphError(
+            f"ambiguous correction branch for target {ambiguous_targets[0]}"
+        )
+    for start_id in sorted(edges):
+        path: set[str] = set()
+        current_id = start_id
+        while current_id in edges:
+            if current_id in path:
+                raise InvalidCorrectionGraphError(
+                    f"correction graph contains a cycle at event {current_id}"
+                )
+            path.add(current_id)
+            current_id = edges[current_id]
+    return set(edges.values())
+
+
+def _quote_is_historically_eligible(
+    quote: PointInTimeOptionQuote,
+    versions: dict[str, OptionContractVersion],
+    mappings: dict[str, ProviderContractMapping],
+    query: PointInTimeQuery,
+) -> bool:
+    version = versions.get(quote.contract_version_id)
+    mapping = mappings.get(quote.provider_mapping_id)
+    if version is None or mapping is None:
+        return False
+    if version.contract_id != quote.contract.contract_id:
+        return False
+    if mapping.contract_version_id != version.version_id:
+        return False
+    if quote.event_time.exchange_timestamp > query.market_as_of:
+        return False
+    if query.known_as_of is not None:
+        if quote.event_time.available_at > query.known_as_of:
+            return False
+        if query.require_defensible_availability and not quote.event_time.has_defensible_knowledge_time:
+            return False
+    return version.effective_at(
+        quote.event_time.exchange_timestamp,
+        quote.event_time.available_at,
+    ) and mapping.effective_at(
+        quote.event_time.exchange_timestamp,
+        quote.event_time.available_at,
     )
 
 
@@ -375,13 +499,33 @@ def _quote_order(
     )
 
 
-def _optional_positive_decimal(value: Decimal | None, field_name: str) -> None:
+Item = TypeVar("Item")
+
+
+def _unique_index(
+    items: Iterable[Item],
+    key: Callable[[Item], str],
+    label: str,
+) -> dict[str, Item]:
+    indexed: dict[str, Item] = {}
+    for item in items:
+        item_id = key(item)
+        existing = indexed.get(item_id)
+        if existing is not None and existing != item:
+            raise ConflictingSemanticIdentityError(
+                f"conflicting {label} records share identity {item_id}"
+            )
+        indexed[item_id] = item
+    return indexed
+
+
+def _optional_non_negative_decimal(value: Decimal | None, field_name: str) -> None:
     if value is None:
         return
     if not isinstance(value, Decimal):
         raise TypeError(f"{field_name} must be Decimal")
-    if not value.is_finite() or value <= 0:
-        raise ValueError(f"{field_name} must be positive and finite")
+    if not value.is_finite() or value < 0:
+        raise ValueError(f"{field_name} must be non-negative and finite")
 
 
 def _utc(value: datetime, field_name: str) -> datetime:
