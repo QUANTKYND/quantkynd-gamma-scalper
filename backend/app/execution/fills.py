@@ -13,13 +13,11 @@ def simulate_fill(
     fill_id: str | None = None,
 ) -> SimulatedFill:
     reference = Decimal(str(reference_price))
-    if reference <= 0:
-        raise ValueError("fill reference price must be positive")
+    if reference < 0:
+        raise ValueError("fill reference price must be non-negative")
     direction = Decimal(1) if intent.side == "buy" else Decimal(-1)
     execution_adjustment = costs.half_spread_per_unit + costs.slippage_per_unit
-    fill_price = money(reference + direction * execution_adjustment)
-    if fill_price <= 0:
-        raise ValueError("execution adjustments produce a non-positive fill")
+    fill_price = money(max(reference + direction * execution_adjustment, Decimal("0")))
     units = Decimal(intent.quantity * intent.multiplier)
     gross_notional = money(reference * units)
     half_spread_cost = money(costs.half_spread_per_unit * units)
