@@ -1,0 +1,87 @@
+from __future__ import annotations
+
+from types import TracebackType
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.instruments.ports import UnitOfWorkStateError
+from app.persistence.postgres.repositories import (
+    PostgresCatalogueRepository,
+    PostgresInstrumentRepository,
+    PostgresTradingSessionRepository,
+)
+
+
+class PostgresUnitOfWork:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+        self._session: AsyncSession | None = None
+        self._closed = False
+        self._committed = False
+        self._instruments: PostgresInstrumentRepository | None = None
+        self._catalogues: PostgresCatalogueRepository | None = None
+        self._trading_sessions: PostgresTradingSessionRepository | None = None
+
+    @property
+    def instruments(self) -> PostgresInstrumentRepository:
+        self._require_active()
+        assert self._instruments is not None
+        return self._instruments
+
+    @property
+    def catalogues(self) -> PostgresCatalogueRepository:
+        self._require_active()
+        assert self._catalogues is not None
+        return self._catalogues
+
+    @property
+    def trading_sessions(self) -> PostgresTradingSessionRepository:
+        self._require_active()
+        assert self._trading_sessions is not None
+        return self._trading_sessions
+
+    async def __aenter__(self) -> PostgresUnitOfWork:
+        if self._closed or self._session is not None:
+            raise UnitOfWorkStateError("unit of work instances cannot be reused")
+        self._session = self._session_factory()
+        self._instruments = PostgresInstrumentRepository(self._session)
+        self._catalogues = PostgresCatalogueRepository(self._session)
+        self._trading_sessions = PostgresTradingSessionRepository(self._session)
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        session = self._require_active()
+        try:
+            if exc_type is not None or not self._committed:
+                await session.rollback()
+        finally:
+            await session.close()
+            self._closed = True
+            self._session = None
+            self._instruments = None
+            self._catalogues = None
+            self._trading_sessions = None
+
+    async def commit(self) -> None:
+        session = self._require_active()
+        try:
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        self._committed = True
+
+    async def rollback(self) -> None:
+        session = self._require_active()
+        await session.rollback()
+        self._committed = False
+
+    def _require_active(self) -> AsyncSession:
+        if self._session is None:
+            raise UnitOfWorkStateError("unit of work is not active")
+        return self._session
