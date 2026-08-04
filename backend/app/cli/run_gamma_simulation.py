@@ -24,7 +24,6 @@ from app.simulation.config import (
     stable_hash,
 )
 from app.simulation.engine import (
-    SIMULATOR_VERSION,
     build_simulation_run_config,
     run_simulation,
     simulation_run_id,
@@ -90,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
             strategy_id=strategy.strategy_id,
             strategy_version=strategy.strategy_version,
             strategy_config_hash=config_hash,
-            simulator_version=SIMULATOR_VERSION,
+            simulator_version=run_config.simulator_version,
             market_config_hash=market_hash,
             path_generator=path.generator_id,
             path_config_hash=run_config.path_config_hash,
@@ -138,6 +137,10 @@ def main(argv: list[str] | None = None) -> int:
         output = {
             "run_id": completed.run_id,
             "simulator_version": completed.simulator_version,
+            "market_schema_version": market.schema_version,
+            "run_schema_version": run_config.schema_version,
+            "manifest_schema_version": completed.manifest_schema_version,
+            "path_generator_version": path.generator_version,
             "strategy_id": strategy.strategy_id,
             "strategy_config_hash": completed.strategy_config_hash,
             "market_config_hash": completed.market_config_hash,
