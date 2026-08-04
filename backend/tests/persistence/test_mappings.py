@@ -14,6 +14,7 @@ from app.persistence.postgres.mappings import (
     option_values,
     provider_mapping_from_row,
     provider_mapping_values,
+    temporal_record_values,
     trading_session_from_row,
     trading_session_values,
     trading_session_version_from_row,
@@ -23,6 +24,12 @@ from app.persistence.postgres.mappings import (
     version_from_row,
     version_values,
 )
+from app.instruments.temporal_records import (
+    catalogue_temporal_record,
+    instrument_version_temporal_record,
+    provider_mapping_temporal_record,
+    trading_session_version_temporal_record,
+)
 
 
 def row(values):
@@ -31,7 +38,10 @@ def row(values):
 
 def test_all_data_foundation_models_round_trip_exactly() -> None:
     fixture = deterministic_fixture()
-    assert catalogue_from_row(row(catalogue_values(fixture.catalogue))) == fixture.catalogue
+    assert catalogue_from_row(
+        row(catalogue_values(fixture.catalogue)),
+        row(temporal_record_values(catalogue_temporal_record(fixture.catalogue), "catalogue_version_id")),
+    ) == fixture.catalogue
     assert underlying_from_rows(
         row(market_instrument_values(fixture.underlying)),
         row(underlying_values(fixture.underlying)),
@@ -44,13 +54,29 @@ def test_all_data_foundation_models_round_trip_exactly() -> None:
         row(market_instrument_values(fixture.option)),
         row(option_values(fixture.option)),
     ) == fixture.option
-    assert version_from_row(row(version_values(fixture.underlying_version)), "underlying") == fixture.underlying_version
-    assert version_from_row(row(version_values(fixture.future_version)), "future") == fixture.future_version
-    assert version_from_row(row(version_values(fixture.option_version)), "option") == fixture.option_version
-    assert provider_mapping_from_row(row(provider_mapping_values(fixture.provider_mapping))) == fixture.provider_mapping
+    assert version_from_row(
+        row(version_values(fixture.underlying_version)),
+        row(temporal_record_values(instrument_version_temporal_record(fixture.underlying_version), "version_id")),
+        "underlying",
+    ) == fixture.underlying_version
+    assert version_from_row(
+        row(version_values(fixture.future_version)),
+        row(temporal_record_values(instrument_version_temporal_record(fixture.future_version), "version_id")),
+        "future",
+    ) == fixture.future_version
+    assert version_from_row(
+        row(version_values(fixture.option_version)),
+        row(temporal_record_values(instrument_version_temporal_record(fixture.option_version), "version_id")),
+        "option",
+    ) == fixture.option_version
+    assert provider_mapping_from_row(
+        row(provider_mapping_values(fixture.provider_mapping)),
+        row(temporal_record_values(provider_mapping_temporal_record(fixture.provider_mapping), "mapping_id")),
+    ) == fixture.provider_mapping
     assert trading_session_from_row(row(trading_session_values(fixture.session))) == fixture.session
     assert trading_session_version_from_row(
-        row(trading_session_version_values(fixture.session_version))
+        row(trading_session_version_values(fixture.session_version)),
+        row(temporal_record_values(trading_session_version_temporal_record(fixture.session_version), "session_version_id")),
     ) == fixture.session_version
 
 
@@ -60,7 +86,11 @@ def test_decimal_precision_and_nullable_values_are_preserved() -> None:
         row(market_instrument_values(fixture.option)),
         row(option_values(fixture.option)),
     )
-    version = version_from_row(row(version_values(fixture.option_version)), "option")
+    version = version_from_row(
+        row(version_values(fixture.option_version)),
+        row(temporal_record_values(instrument_version_temporal_record(fixture.option_version), "version_id")),
+        "option",
+    )
     assert option.strike == fixture.option.strike
     assert version.tick_size == fixture.option_version.tick_size
     assert version.valid_until is None
@@ -84,4 +114,7 @@ def test_invalid_enum_and_deterministic_id_mismatch_fail_explicitly() -> None:
     catalogue_row = catalogue_values(fixture.catalogue)
     catalogue_row["catalogue_version_id"] = "sha256:" + "f" * 64
     with pytest.raises(MalformedPersistenceRecordError, match="identity"):
-        catalogue_from_row(row(catalogue_row))
+        catalogue_from_row(
+            row(catalogue_row),
+            row(temporal_record_values(catalogue_temporal_record(fixture.catalogue), "catalogue_version_id")),
+        )

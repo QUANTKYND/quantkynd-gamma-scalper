@@ -17,7 +17,7 @@ class PostgresUnitOfWork:
         self._session_factory = session_factory
         self._session: AsyncSession | None = None
         self._closed = False
-        self._committed = False
+        self._finalized = False
         self._instruments: PostgresInstrumentRepository | None = None
         self._catalogues: PostgresCatalogueRepository | None = None
         self._trading_sessions: PostgresTradingSessionRepository | None = None
@@ -44,9 +44,12 @@ class PostgresUnitOfWork:
         if self._closed or self._session is not None:
             raise UnitOfWorkStateError("unit of work instances cannot be reused")
         self._session = self._session_factory()
-        self._instruments = PostgresInstrumentRepository(self._session)
-        self._catalogues = PostgresCatalogueRepository(self._session)
-        self._trading_sessions = PostgresTradingSessionRepository(self._session)
+        self._instruments = PostgresInstrumentRepository(self._session, self._require_active)
+        self._catalogues = PostgresCatalogueRepository(self._session, self._require_active)
+        self._trading_sessions = PostgresTradingSessionRepository(
+            self._session,
+            self._require_active,
+        )
         return self
 
     async def __aexit__(
@@ -55,10 +58,13 @@ class PostgresUnitOfWork:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        session = self._require_active()
+        if self._session is None:
+            raise UnitOfWorkStateError("unit of work is not active")
+        session = self._session
         try:
-            if exc_type is not None or not self._committed:
+            if not self._finalized:
                 await session.rollback()
+                self._finalized = True
         finally:
             await session.close()
             self._closed = True
@@ -72,16 +78,17 @@ class PostgresUnitOfWork:
         try:
             await session.commit()
         except Exception:
+            self._finalized = True
             await session.rollback()
             raise
-        self._committed = True
+        self._finalized = True
 
     async def rollback(self) -> None:
         session = self._require_active()
+        self._finalized = True
         await session.rollback()
-        self._committed = False
 
     def _require_active(self) -> AsyncSession:
-        if self._session is None:
+        if self._session is None or self._finalized:
             raise UnitOfWorkStateError("unit of work is not active")
         return self._session

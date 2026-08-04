@@ -8,27 +8,35 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from app.core.hashing import stable_hash
 from app.persistence.postgres.models import (
     CatalogueVersionRow,
+    CatalogueVersionRecordRow,
     FuturesContractRow,
     InstrumentVersionRow,
+    InstrumentVersionRecordRow,
     MarketInstrumentRow,
     OptionContractRow,
     ProviderContractMappingRow,
+    ProviderMappingRecordRow,
     TradingSessionRow,
     TradingSessionVersionRow,
+    TradingSessionVersionRecordRow,
     UnderlyingInstrumentRow,
 )
 
 
 DURABLE_MODELS = (
     CatalogueVersionRow,
+    CatalogueVersionRecordRow,
     MarketInstrumentRow,
     UnderlyingInstrumentRow,
     FuturesContractRow,
     OptionContractRow,
     InstrumentVersionRow,
+    InstrumentVersionRecordRow,
     ProviderContractMappingRow,
+    ProviderMappingRecordRow,
     TradingSessionRow,
     TradingSessionVersionRow,
+    TradingSessionVersionRecordRow,
 )
 
 

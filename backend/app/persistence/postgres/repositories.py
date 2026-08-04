@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date, datetime
 from typing import Any, TypeVar
 
@@ -16,12 +17,19 @@ from app.instruments.identity import (
     ProviderContractMapping,
     UnderlyingInstrumentIdentity,
 )
-from app.instruments.ports import (
-    AmbiguousPointInTimeResultError,
-    PersistenceIntegrityError,
-    SemanticCollisionError,
-)
+from app.instruments.ports import PersistenceIntegrityError, SemanticCollisionError
 from app.instruments.sessions import TradingSessionIdentity, TradingSessionVersion
+from app.instruments.temporal_records import (
+    TemporalRecord,
+    TemporalRecordKind,
+    TemporalState,
+    TemporalSupersessionConflictError,
+    catalogue_temporal_record,
+    instrument_version_temporal_record,
+    provider_mapping_temporal_record,
+    resolve_temporal_state,
+    trading_session_version_temporal_record,
+)
 from app.persistence.postgres.mappings import (
     catalogue_from_row,
     catalogue_values,
@@ -32,6 +40,8 @@ from app.persistence.postgres.mappings import (
     option_values,
     provider_mapping_from_row,
     provider_mapping_values,
+    temporal_record_from_row,
+    temporal_record_values,
     trading_session_values,
     trading_session_version_from_row,
     trading_session_version_values,
@@ -41,23 +51,33 @@ from app.persistence.postgres.mappings import (
     version_values,
 )
 from app.persistence.postgres.models import (
+    CatalogueVersionRecordRow,
     CatalogueVersionRow,
     FuturesContractRow,
+    InstrumentVersionRecordRow,
     InstrumentVersionRow,
     MarketInstrumentRow,
     OptionContractRow,
     ProviderContractMappingRow,
+    ProviderMappingRecordRow,
     TradingSessionRow,
+    TradingSessionVersionRecordRow,
     TradingSessionVersionRow,
     UnderlyingInstrumentRow,
 )
 
 
 class PostgresCatalogueRepository:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, require_active: Callable[[], None]) -> None:
         self._session = session
+        self._require_active = require_active
 
-    async def add(self, catalogue: CatalogueVersion) -> None:
+    async def add(
+        self,
+        catalogue: CatalogueVersion,
+        supersedes_record_id: str | None = None,
+    ) -> str:
+        self._require_active()
         await _insert_immutable(
             self._session,
             CatalogueVersionRow,
@@ -65,23 +85,59 @@ class PostgresCatalogueRepository:
             catalogue_values(catalogue),
             "catalogue version",
         )
+        record = catalogue_temporal_record(catalogue, supersedes_record_id)
+        await _insert_temporal_record(
+            self._session,
+            CatalogueVersionRecordRow,
+            "catalogue_version_id",
+            record,
+            "catalogue version record",
+        )
+        return record.record_id
 
     async def get(self, catalogue_version_id: str) -> CatalogueVersion | None:
-        row = await self._session.get(CatalogueVersionRow, catalogue_version_id)
-        return catalogue_from_row(row) if row is not None else None
+        self._require_active()
+        item = (
+            await self._session.execute(
+                select(CatalogueVersionRow, CatalogueVersionRecordRow)
+                .join(
+                    CatalogueVersionRecordRow,
+                    CatalogueVersionRecordRow.catalogue_version_id
+                    == CatalogueVersionRow.catalogue_version_id,
+                )
+                .where(CatalogueVersionRow.catalogue_version_id == catalogue_version_id)
+                .order_by(
+                    CatalogueVersionRecordRow.recorded_at.desc(),
+                    CatalogueVersionRecordRow.record_id,
+                )
+                .limit(1)
+            )
+        ).one_or_none()
+        return catalogue_from_row(*item) if item is not None else None
 
     async def list_for_provider(self, provider: str) -> tuple[CatalogueVersion, ...]:
+        self._require_active()
         rows = (
-            await self._session.scalars(
-                select(CatalogueVersionRow)
+            await self._session.execute(
+                select(CatalogueVersionRow, CatalogueVersionRecordRow)
+                .join(
+                    CatalogueVersionRecordRow,
+                    CatalogueVersionRecordRow.catalogue_version_id
+                    == CatalogueVersionRow.catalogue_version_id,
+                )
                 .where(CatalogueVersionRow.provider == provider)
                 .order_by(
                     CatalogueVersionRow.effective_from,
                     CatalogueVersionRow.catalogue_version_id,
+                    CatalogueVersionRecordRow.recorded_at.desc(),
+                    CatalogueVersionRecordRow.record_id,
                 )
             )
         ).all()
-        return tuple(catalogue_from_row(row) for row in rows)
+        values: dict[str, CatalogueVersion] = {}
+        for row, record_row in rows:
+            values.setdefault(row.catalogue_version_id, catalogue_from_row(row, record_row))
+        return tuple(values.values())
 
     async def resolve(
         self,
@@ -89,36 +145,56 @@ class PostgresCatalogueRepository:
         market_as_of: datetime,
         known_as_of: datetime | None,
     ) -> CatalogueVersion | None:
-        conditions = [
-            CatalogueVersionRow.provider == provider,
-            CatalogueVersionRow.effective_from <= market_as_of,
-            or_(
-                CatalogueVersionRow.effective_until.is_(None),
-                CatalogueVersionRow.effective_until > market_as_of,
-            ),
-        ]
+        self._require_active()
+        states = await self._states_for_provider(provider, known_as_of)
+        resolved = resolve_temporal_state(
+            states,
+            known_as_of,
+            lambda value: value.effective_from <= market_as_of
+            and (value.effective_until is None or market_as_of < value.effective_until),
+        )
+        return resolved.value if resolved is not None else None
+
+    async def _states_for_provider(
+        self,
+        provider: str,
+        known_as_of: datetime | None,
+    ) -> tuple[TemporalState[CatalogueVersion], ...]:
+        conditions = [CatalogueVersionRow.provider == provider]
         if known_as_of is not None:
-            conditions.append(CatalogueVersionRow.recorded_at <= known_as_of)
+            conditions.append(CatalogueVersionRecordRow.recorded_at <= known_as_of)
         rows = (
-            await self._session.scalars(
-                select(CatalogueVersionRow)
+            await self._session.execute(
+                select(CatalogueVersionRow, CatalogueVersionRecordRow)
+                .join(
+                    CatalogueVersionRecordRow,
+                    CatalogueVersionRecordRow.catalogue_version_id
+                    == CatalogueVersionRow.catalogue_version_id,
+                )
                 .where(*conditions)
-                .order_by(CatalogueVersionRow.catalogue_version_id)
-                .limit(2)
+                .order_by(CatalogueVersionRecordRow.recorded_at, CatalogueVersionRecordRow.record_id)
             )
         ).all()
-        if len(rows) > 1:
-            raise AmbiguousPointInTimeResultError(
-                "multiple catalogue versions are visible at the requested cutoffs"
+        return tuple(
+            TemporalState(
+                temporal_record_from_row(
+                    record_row,
+                    TemporalRecordKind.CATALOGUE_VERSION,
+                    "catalogue_version_id",
+                ),
+                catalogue_from_row(row, record_row),
             )
-        return catalogue_from_row(rows[0]) if rows else None
+            for row, record_row in rows
+        )
 
 
 class PostgresInstrumentRepository:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, require_active: Callable[[], None]) -> None:
         self._session = session
+        self._require_active = require_active
 
     async def add_underlying(self, instrument: UnderlyingInstrumentIdentity) -> None:
+        self._require_active()
         await self._add_registry(instrument)
         await _insert_immutable(
             self._session,
@@ -129,6 +205,7 @@ class PostgresInstrumentRepository:
         )
 
     async def add_future(self, contract: FuturesContractIdentity) -> None:
+        self._require_active()
         await self._add_registry(contract)
         await _insert_immutable(
             self._session,
@@ -139,6 +216,7 @@ class PostgresInstrumentRepository:
         )
 
     async def add_option(self, contract: OptionContractIdentity) -> None:
+        self._require_active()
         await self._add_registry(contract)
         await _insert_immutable(
             self._session,
@@ -148,7 +226,12 @@ class PostgresInstrumentRepository:
             "option contract",
         )
 
-    async def add_version(self, version: ContractVersion) -> None:
+    async def add_version(
+        self,
+        version: ContractVersion,
+        supersedes_record_id: str | None = None,
+    ) -> str:
+        self._require_active()
         await _insert_immutable(
             self._session,
             InstrumentVersionRow,
@@ -156,8 +239,22 @@ class PostgresInstrumentRepository:
             version_values(version),
             "instrument version",
         )
+        record = instrument_version_temporal_record(version, supersedes_record_id)
+        await _insert_temporal_record(
+            self._session,
+            InstrumentVersionRecordRow,
+            "version_id",
+            record,
+            "instrument version record",
+        )
+        return record.record_id
 
-    async def add_provider_mapping(self, mapping: ProviderContractMapping) -> None:
+    async def add_provider_mapping(
+        self,
+        mapping: ProviderContractMapping,
+        supersedes_record_id: str | None = None,
+    ) -> str:
+        self._require_active()
         await _insert_immutable(
             self._session,
             ProviderContractMappingRow,
@@ -165,36 +262,67 @@ class PostgresInstrumentRepository:
             provider_mapping_values(mapping),
             "provider mapping",
         )
+        record = provider_mapping_temporal_record(mapping, supersedes_record_id)
+        await _insert_temporal_record(
+            self._session,
+            ProviderMappingRecordRow,
+            "mapping_id",
+            record,
+            "provider mapping record",
+        )
+        return record.record_id
 
     async def get_identity(
         self,
         instrument_id: str,
     ) -> UnderlyingInstrumentIdentity | FuturesContractIdentity | OptionContractIdentity | None:
+        self._require_active()
         registry = await self._session.get(MarketInstrumentRow, instrument_id)
         if registry is None:
             return None
         if registry.instrument_kind == "underlying":
-            row = await self._session.get(UnderlyingInstrumentRow, instrument_id)
-            return underlying_from_rows(registry, _required_subtype(row))
+            return underlying_from_rows(
+                registry,
+                _required_subtype(await self._session.get(UnderlyingInstrumentRow, instrument_id)),
+            )
         if registry.instrument_kind == "future":
-            row = await self._session.get(FuturesContractRow, instrument_id)
-            return future_from_rows(registry, _required_subtype(row))
+            return future_from_rows(
+                registry,
+                _required_subtype(await self._session.get(FuturesContractRow, instrument_id)),
+            )
         if registry.instrument_kind == "option":
-            row = await self._session.get(OptionContractRow, instrument_id)
-            return option_from_rows(registry, _required_subtype(row))
+            return option_from_rows(
+                registry,
+                _required_subtype(await self._session.get(OptionContractRow, instrument_id)),
+            )
         raise PersistenceIntegrityError("durable instrument registry has an unsupported kind")
 
     async def get_version(self, version_id: str) -> ContractVersion | None:
-        result = await self._session.execute(
-            select(InstrumentVersionRow, MarketInstrumentRow.instrument_kind)
-            .join(
-                MarketInstrumentRow,
-                MarketInstrumentRow.instrument_id == InstrumentVersionRow.instrument_id,
+        self._require_active()
+        item = (
+            await self._session.execute(
+                select(
+                    InstrumentVersionRow,
+                    InstrumentVersionRecordRow,
+                    MarketInstrumentRow.instrument_kind,
+                )
+                .join(
+                    InstrumentVersionRecordRow,
+                    InstrumentVersionRecordRow.version_id == InstrumentVersionRow.version_id,
+                )
+                .join(
+                    MarketInstrumentRow,
+                    MarketInstrumentRow.instrument_id == InstrumentVersionRow.instrument_id,
+                )
+                .where(InstrumentVersionRow.version_id == version_id)
+                .order_by(
+                    InstrumentVersionRecordRow.recorded_at.desc(),
+                    InstrumentVersionRecordRow.record_id,
+                )
+                .limit(1)
             )
-            .where(InstrumentVersionRow.version_id == version_id)
-        )
-        item = result.one_or_none()
-        return version_from_row(item[0], item[1]) if item is not None else None
+        ).one_or_none()
+        return version_from_row(item[0], item[1], item[2]) if item is not None else None
 
     async def resolve_provider_key(
         self,
@@ -203,61 +331,62 @@ class PostgresInstrumentRepository:
         market_as_of: datetime,
         known_as_of: datetime | None,
     ) -> ProviderContractMapping | None:
-        conditions = [
-            ProviderContractMappingRow.provider == provider,
-            ProviderContractMappingRow.provider_contract_key == provider_contract_key,
-            ProviderContractMappingRow.effective_from <= market_as_of,
-            or_(
-                ProviderContractMappingRow.effective_until.is_(None),
-                ProviderContractMappingRow.effective_until > market_as_of,
-            ),
-            InstrumentVersionRow.valid_from <= market_as_of,
-            or_(
-                InstrumentVersionRow.valid_until.is_(None),
-                InstrumentVersionRow.valid_until > market_as_of,
-            ),
-        ]
-        if known_as_of is not None:
-            conditions.extend(
-                [
-                    ProviderContractMappingRow.recorded_at <= known_as_of,
-                    or_(
-                        ProviderContractMappingRow.superseded_at.is_(None),
-                        ProviderContractMappingRow.superseded_at > known_as_of,
-                    ),
-                    InstrumentVersionRow.recorded_at <= known_as_of,
-                    or_(
-                        InstrumentVersionRow.superseded_at.is_(None),
-                        InstrumentVersionRow.superseded_at > known_as_of,
-                    ),
-                ]
-            )
-        rows = (
-            await self._session.scalars(
-                select(ProviderContractMappingRow)
-                .join(
-                    InstrumentVersionRow,
-                    InstrumentVersionRow.version_id
-                    == ProviderContractMappingRow.contract_version_id,
+        self._require_active()
+        mapping_rows = await self._mapping_rows(
+            provider,
+            provider_contract_key,
+            known_as_of,
+        )
+        scopes = {row.instrument_id for _, _, row in mapping_rows}
+        current_versions = {
+            resolved.record.semantic_id
+            for scope in sorted(scopes)
+            if (
+                resolved := resolve_temporal_state(
+                    await self._version_states(scope, known_as_of),
+                    known_as_of,
+                    lambda value: value.valid_from <= market_as_of
+                    and (value.valid_until is None or market_as_of < value.valid_until),
                 )
-                .where(*conditions)
-                .order_by(ProviderContractMappingRow.mapping_id)
-                .limit(2)
             )
-        ).all()
-        if len(rows) > 1:
-            raise AmbiguousPointInTimeResultError(
-                "multiple provider mappings are visible at the requested cutoffs"
+            is not None
+        }
+        states = tuple(
+            TemporalState(
+                temporal_record_from_row(
+                    record_row,
+                    TemporalRecordKind.PROVIDER_MAPPING,
+                    "mapping_id",
+                ),
+                provider_mapping_from_row(mapping_row, record_row),
             )
-        return provider_mapping_from_row(rows[0]) if rows else None
+            for mapping_row, record_row, _ in mapping_rows
+        )
+        resolved = resolve_temporal_state(
+            states,
+            known_as_of,
+            lambda value: value.contract_version_id in current_versions
+            and value.effective_from <= market_as_of
+            and (value.effective_until is None or market_as_of < value.effective_until),
+        )
+        return resolved.value if resolved is not None else None
 
     async def list_contract_versions(
         self,
         underlying_instrument_id: str,
         expiry: date,
     ) -> tuple[ContractVersion, ...]:
+        self._require_active()
         result = await self._session.execute(
-            select(InstrumentVersionRow, MarketInstrumentRow.instrument_kind)
+            select(
+                InstrumentVersionRow,
+                InstrumentVersionRecordRow,
+                MarketInstrumentRow.instrument_kind,
+            )
+            .join(
+                InstrumentVersionRecordRow,
+                InstrumentVersionRecordRow.version_id == InstrumentVersionRow.version_id,
+            )
             .join(
                 MarketInstrumentRow,
                 MarketInstrumentRow.instrument_id == InstrumentVersionRow.instrument_id,
@@ -282,9 +411,91 @@ class PostgresInstrumentRepository:
                     ),
                 )
             )
-            .order_by(InstrumentVersionRow.version_id)
+            .order_by(
+                InstrumentVersionRow.version_id,
+                InstrumentVersionRecordRow.recorded_at.desc(),
+                InstrumentVersionRecordRow.record_id,
+            )
         )
-        return tuple(version_from_row(row, kind) for row, kind in result.all())
+        values: dict[str, ContractVersion] = {}
+        for row, record_row, kind in result.all():
+            values.setdefault(row.version_id, version_from_row(row, record_row, kind))
+        return tuple(values.values())
+
+    async def _mapping_rows(
+        self,
+        provider: str,
+        provider_contract_key: str,
+        known_as_of: datetime | None,
+    ) -> list[tuple[Any, Any, Any]]:
+        conditions = [
+            ProviderContractMappingRow.provider == provider,
+            ProviderContractMappingRow.provider_contract_key == provider_contract_key,
+        ]
+        if known_as_of is not None:
+            conditions.append(ProviderMappingRecordRow.recorded_at <= known_as_of)
+        return list(
+            (
+                await self._session.execute(
+                    select(
+                        ProviderContractMappingRow,
+                        ProviderMappingRecordRow,
+                        InstrumentVersionRow,
+                    )
+                    .join(
+                        ProviderMappingRecordRow,
+                        ProviderMappingRecordRow.mapping_id
+                        == ProviderContractMappingRow.mapping_id,
+                    )
+                    .join(
+                        InstrumentVersionRow,
+                        InstrumentVersionRow.version_id
+                        == ProviderContractMappingRow.contract_version_id,
+                    )
+                    .where(*conditions)
+                    .order_by(ProviderMappingRecordRow.recorded_at, ProviderMappingRecordRow.record_id)
+                )
+            ).all()
+        )
+
+    async def _version_states(
+        self,
+        scope_id: str,
+        known_as_of: datetime | None,
+    ) -> tuple[TemporalState[ContractVersion], ...]:
+        conditions = [InstrumentVersionRecordRow.scope_id == scope_id]
+        if known_as_of is not None:
+            conditions.append(InstrumentVersionRecordRow.recorded_at <= known_as_of)
+        rows = (
+            await self._session.execute(
+                select(
+                    InstrumentVersionRow,
+                    InstrumentVersionRecordRow,
+                    MarketInstrumentRow.instrument_kind,
+                )
+                .join(
+                    InstrumentVersionRecordRow,
+                    InstrumentVersionRecordRow.version_id == InstrumentVersionRow.version_id,
+                )
+                .join(
+                    MarketInstrumentRow,
+                    MarketInstrumentRow.instrument_id == InstrumentVersionRow.instrument_id,
+                )
+                .where(*conditions)
+                .order_by(InstrumentVersionRecordRow.recorded_at, InstrumentVersionRecordRow.record_id)
+            )
+        ).all()
+        return tuple(
+            TemporalState(
+                temporal_record_from_row(
+                    record_row,
+                    TemporalRecordKind.INSTRUMENT_VERSION,
+                    "version_id",
+                ),
+                version_from_row(row, record_row, kind),
+            )
+            for row, record_row, kind in rows
+        )
 
     async def _add_registry(
         self,
@@ -300,10 +511,12 @@ class PostgresInstrumentRepository:
 
 
 class PostgresTradingSessionRepository:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, require_active: Callable[[], None]) -> None:
         self._session = session
+        self._require_active = require_active
 
     async def add_identity(self, session: TradingSessionIdentity) -> None:
+        self._require_active()
         await _insert_immutable(
             self._session,
             TradingSessionRow,
@@ -312,7 +525,12 @@ class PostgresTradingSessionRepository:
             "trading session",
         )
 
-    async def add_version(self, version: TradingSessionVersion) -> None:
+    async def add_version(
+        self,
+        version: TradingSessionVersion,
+        supersedes_record_id: str | None = None,
+    ) -> str:
+        self._require_active()
         await _insert_immutable(
             self._session,
             TradingSessionVersionRow,
@@ -320,6 +538,15 @@ class PostgresTradingSessionRepository:
             trading_session_version_values(version),
             "trading session version",
         )
+        record = trading_session_version_temporal_record(version, supersedes_record_id)
+        await _insert_temporal_record(
+            self._session,
+            TradingSessionVersionRecordRow,
+            "session_version_id",
+            record,
+            "trading session version record",
+        )
+        return record.record_id
 
     async def resolve(
         self,
@@ -328,41 +555,111 @@ class PostgresTradingSessionRepository:
         session_kind: str,
         known_as_of: datetime | None,
     ) -> TradingSessionVersion | None:
+        self._require_active()
         conditions = [
             TradingSessionRow.exchange == exchange,
             TradingSessionRow.session_date == session_date,
             TradingSessionRow.session_kind == session_kind,
         ]
         if known_as_of is not None:
-            conditions.extend(
-                [
-                    TradingSessionVersionRow.recorded_at <= known_as_of,
-                    or_(
-                        TradingSessionVersionRow.superseded_at.is_(None),
-                        TradingSessionVersionRow.superseded_at > known_as_of,
-                    ),
-                ]
-            )
+            conditions.append(TradingSessionVersionRecordRow.recorded_at <= known_as_of)
         rows = (
-            await self._session.scalars(
-                select(TradingSessionVersionRow)
+            await self._session.execute(
+                select(TradingSessionVersionRow, TradingSessionVersionRecordRow)
                 .join(
                     TradingSessionRow,
                     TradingSessionRow.session_id == TradingSessionVersionRow.session_id,
                 )
+                .join(
+                    TradingSessionVersionRecordRow,
+                    TradingSessionVersionRecordRow.session_version_id
+                    == TradingSessionVersionRow.session_version_id,
+                )
                 .where(*conditions)
-                .order_by(TradingSessionVersionRow.session_version_id)
-                .limit(2)
+                .order_by(
+                    TradingSessionVersionRecordRow.recorded_at,
+                    TradingSessionVersionRecordRow.record_id,
+                )
             )
         ).all()
-        if len(rows) > 1:
-            raise AmbiguousPointInTimeResultError(
-                "multiple trading-session versions are visible at the knowledge cutoff"
+        states = tuple(
+            TemporalState(
+                temporal_record_from_row(
+                    record_row,
+                    TemporalRecordKind.TRADING_SESSION_VERSION,
+                    "session_version_id",
+                ),
+                trading_session_version_from_row(row, record_row),
             )
-        return trading_session_version_from_row(rows[0]) if rows else None
+            for row, record_row in rows
+        )
+        resolved = resolve_temporal_state(states, known_as_of, lambda value: True)
+        return resolved.value if resolved is not None else None
 
 
 RowType = TypeVar("RowType")
+
+
+async def _insert_temporal_record(
+    session: AsyncSession,
+    model: type[RowType],
+    semantic_column: str,
+    record: TemporalRecord,
+    label: str,
+) -> None:
+    values = temporal_record_values(record, semantic_column)
+    existing = await session.get(model, record.record_id)
+    if existing is not None:
+        _require_equal_record(existing, values, label)
+        return
+    if record.supersedes_record_id is not None:
+        predecessor = (
+            await session.scalars(
+                select(model)
+                .where(getattr(model, "record_id") == record.supersedes_record_id)
+                .with_for_update()
+            )
+        ).one_or_none()
+        if predecessor is None:
+            raise TemporalSupersessionConflictError(
+                f"{label} supersession target does not exist"
+            )
+        if predecessor.scope_id != record.scope_id:
+            raise TemporalSupersessionConflictError(
+                f"{label} supersession target belongs to another scope"
+            )
+        if record.recorded_at <= predecessor.recorded_at:
+            raise TemporalSupersessionConflictError(
+                f"{label} must be recorded after its supersession target"
+            )
+        successor = (
+            await session.scalars(
+                select(model).where(
+                    getattr(model, "supersedes_record_id") == record.supersedes_record_id
+                )
+            )
+        ).one_or_none()
+        if successor is not None:
+            if successor.record_id == record.record_id:
+                _require_equal_record(successor, values, label)
+                return
+            raise TemporalSupersessionConflictError(
+                f"{label} supersession target already has a successor"
+            )
+    try:
+        await _insert_immutable(
+            session,
+            model,
+            "record_id",
+            values,
+            label,
+        )
+    except PersistenceIntegrityError:
+        if record.supersedes_record_id is not None:
+            raise TemporalSupersessionConflictError(
+                f"{label} conflicts with a concurrent successor"
+            ) from None
+        raise
 
 
 async def _insert_immutable(
@@ -396,6 +693,13 @@ async def _insert_immutable(
         if getattr(existing, field_name) != expected
     ]
     if differences:
+        raise SemanticCollisionError(
+            f"{label} identity collision with different immutable content"
+        )
+
+
+def _require_equal_record(existing: Any, values: dict[str, Any], label: str) -> None:
+    if any(getattr(existing, field_name) != expected for field_name, expected in values.items()):
         raise SemanticCollisionError(
             f"{label} identity collision with different immutable content"
         )

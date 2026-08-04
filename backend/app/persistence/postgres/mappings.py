@@ -17,6 +17,7 @@ from app.instruments.sessions import (
     TradingSessionIdentity,
     TradingSessionVersion,
 )
+from app.instruments.temporal_records import TemporalRecord, TemporalRecordKind
 
 
 class MalformedPersistenceRecordError(ValueError):
@@ -32,12 +33,11 @@ def catalogue_values(value: CatalogueVersion) -> dict[str, Any]:
         "effective_from": value.effective_from,
         "effective_until": value.effective_until,
         "published_at": value.published_at,
-        "recorded_at": value.recorded_at,
         "row_count": value.row_count,
     }
 
 
-def catalogue_from_row(row: Any) -> CatalogueVersion:
+def catalogue_from_row(row: Any, record_row: Any) -> CatalogueVersion:
     return _construct_with_id(
         CatalogueVersion,
         "catalogue_version_id",
@@ -48,7 +48,7 @@ def catalogue_from_row(row: Any) -> CatalogueVersion:
         effective_from=row.effective_from,
         effective_until=row.effective_until,
         published_at=row.published_at,
-        recorded_at=row.recorded_at,
+        recorded_at=record_row.recorded_at,
         row_count=row.row_count,
     )
 
@@ -169,12 +169,10 @@ def version_values(value: ContractVersion) -> dict[str, Any]:
         "display_symbol": value.display_symbol,
         "trading_status": value.trading_status.value,
         "catalogue_version_id": value.catalogue_version_id,
-        "recorded_at": value.recorded_at,
-        "superseded_at": value.superseded_at,
     }
 
 
-def version_from_row(row: Any, instrument_kind: str) -> ContractVersion:
+def version_from_row(row: Any, record_row: Any, instrument_kind: str) -> ContractVersion:
     fields = {
         "valid_from": row.valid_from,
         "valid_until": row.valid_until,
@@ -183,8 +181,8 @@ def version_from_row(row: Any, instrument_kind: str) -> ContractVersion:
         "display_symbol": row.display_symbol,
         "trading_status": row.trading_status,
         "catalogue_version_id": row.catalogue_version_id,
-        "recorded_at": row.recorded_at,
-        "superseded_at": row.superseded_at,
+        "recorded_at": record_row.recorded_at,
+        "superseded_at": None,
     }
     if instrument_kind == "underlying":
         return _construct_with_id(
@@ -223,12 +221,10 @@ def provider_mapping_values(value: ProviderContractMapping) -> dict[str, Any]:
         "source_row_identity": value.source_row_identity,
         "effective_from": value.effective_from,
         "effective_until": value.effective_until,
-        "recorded_at": value.recorded_at,
-        "superseded_at": value.superseded_at,
     }
 
 
-def provider_mapping_from_row(row: Any) -> ProviderContractMapping:
+def provider_mapping_from_row(row: Any, record_row: Any) -> ProviderContractMapping:
     return _construct_with_id(
         ProviderContractMapping,
         "mapping_id",
@@ -240,8 +236,8 @@ def provider_mapping_from_row(row: Any) -> ProviderContractMapping:
         source_row_identity=row.source_row_identity,
         effective_from=row.effective_from,
         effective_until=row.effective_until,
-        recorded_at=row.recorded_at,
-        superseded_at=row.superseded_at,
+        recorded_at=record_row.recorded_at,
+        superseded_at=None,
     )
 
 
@@ -275,12 +271,10 @@ def trading_session_version_values(value: TradingSessionVersion) -> dict[str, An
         "post_close_at": value.post_close_at,
         "timezone": value.timezone,
         "status": value.status.value,
-        "recorded_at": value.recorded_at,
-        "superseded_at": value.superseded_at,
     }
 
 
-def trading_session_version_from_row(row: Any) -> TradingSessionVersion:
+def trading_session_version_from_row(row: Any, record_row: Any) -> TradingSessionVersion:
     return _construct_with_id(
         TradingSessionVersion,
         "session_version_id",
@@ -292,8 +286,33 @@ def trading_session_version_from_row(row: Any) -> TradingSessionVersion:
         post_close_at=row.post_close_at,
         timezone=row.timezone,
         status=row.status,
+        recorded_at=record_row.recorded_at,
+        superseded_at=None,
+    )
+
+
+def temporal_record_values(value: TemporalRecord, semantic_column: str) -> dict[str, Any]:
+    return {
+        "record_id": value.record_id,
+        semantic_column: value.semantic_id,
+        "scope_id": value.scope_id,
+        "recorded_at": value.recorded_at,
+        "supersedes_record_id": value.supersedes_record_id,
+        "source_provenance_id": value.source_provenance_id,
+    }
+
+
+def temporal_record_from_row(row: Any, kind: TemporalRecordKind, semantic_column: str) -> TemporalRecord:
+    return _construct_with_id(
+        TemporalRecord,
+        "record_id",
+        row.record_id,
+        kind=kind,
+        semantic_id=getattr(row, semantic_column),
+        scope_id=row.scope_id,
         recorded_at=row.recorded_at,
-        superseded_at=row.superseded_at,
+        supersedes_record_id=row.supersedes_record_id,
+        source_provenance_id=row.source_provenance_id,
     )
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import timedelta
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -40,6 +41,15 @@ class DataFoundationFixture:
     provider_mapping: ProviderContractMapping
     session: TradingSessionIdentity
     session_version: TradingSessionVersion
+
+
+@dataclass(frozen=True)
+class TemporalDataFoundationFixture:
+    base: DataFoundationFixture
+    catalogue_successor: CatalogueVersion
+    option_version_successor: OptionContractVersion
+    provider_mapping_successor: ProviderContractMapping
+    session_version_successor: TradingSessionVersion
 
 
 def deterministic_fixture() -> DataFoundationFixture:
@@ -134,6 +144,44 @@ def deterministic_fixture() -> DataFoundationFixture:
     )
 
 
+def deterministic_temporal_fixture() -> TemporalDataFoundationFixture:
+    base = deterministic_fixture()
+    catalogue_successor = CatalogueVersion(
+        provider=base.catalogue.provider,
+        source_content_hash="sha256:" + "c" * 64,
+        catalogue_schema_version=base.catalogue.catalogue_schema_version,
+        effective_from=base.catalogue.effective_from + timedelta(days=1),
+        effective_until=None,
+        published_at=base.catalogue.published_at + timedelta(minutes=30),
+        recorded_at=base.catalogue.recorded_at + timedelta(hours=1),
+        row_count=base.catalogue.row_count,
+    )
+    option_version_successor = replace(
+        base.option_version,
+        display_symbol="NIFTY26AUG24000C",
+        recorded_at=base.option_version.recorded_at + timedelta(hours=1),
+    )
+    provider_mapping_successor = replace(
+        base.provider_mapping,
+        contract_version_id=option_version_successor.version_id,
+        provider_payload_hash="sha256:" + "d" * 64,
+        source_row_identity="source-row-3-correction",
+        recorded_at=base.provider_mapping.recorded_at + timedelta(hours=2),
+    )
+    session_version_successor = replace(
+        base.session_version,
+        status=SessionStatus.CANCELLED,
+        recorded_at=base.session_version.recorded_at + timedelta(hours=1),
+    )
+    return TemporalDataFoundationFixture(
+        base,
+        catalogue_successor,
+        option_version_successor,
+        provider_mapping_successor,
+        session_version_successor,
+    )
+
+
 async def seed_fixture(unit_of_work: UnitOfWork, fixture: DataFoundationFixture) -> None:
     async with unit_of_work:
         await unit_of_work.catalogues.add(fixture.catalogue)
@@ -146,4 +194,45 @@ async def seed_fixture(unit_of_work: UnitOfWork, fixture: DataFoundationFixture)
         await unit_of_work.instruments.add_provider_mapping(fixture.provider_mapping)
         await unit_of_work.trading_sessions.add_identity(fixture.session)
         await unit_of_work.trading_sessions.add_version(fixture.session_version)
+        await unit_of_work.commit()
+
+
+async def seed_temporal_fixture(
+    unit_of_work: UnitOfWork,
+    fixture: TemporalDataFoundationFixture,
+) -> None:
+    async with unit_of_work:
+        base = fixture.base
+        catalogue_predecessor = await unit_of_work.catalogues.add(base.catalogue)
+        await unit_of_work.instruments.add_underlying(base.underlying)
+        await unit_of_work.instruments.add_future(base.future)
+        await unit_of_work.instruments.add_option(base.option)
+        await unit_of_work.instruments.add_version(base.underlying_version)
+        await unit_of_work.instruments.add_version(base.future_version)
+        option_version_predecessor = await unit_of_work.instruments.add_version(
+            base.option_version
+        )
+        mapping_predecessor = await unit_of_work.instruments.add_provider_mapping(
+            base.provider_mapping
+        )
+        await unit_of_work.trading_sessions.add_identity(base.session)
+        session_predecessor = await unit_of_work.trading_sessions.add_version(
+            base.session_version
+        )
+        await unit_of_work.catalogues.add(
+            fixture.catalogue_successor,
+            catalogue_predecessor,
+        )
+        await unit_of_work.instruments.add_version(
+            fixture.option_version_successor,
+            option_version_predecessor,
+        )
+        await unit_of_work.instruments.add_provider_mapping(
+            fixture.provider_mapping_successor,
+            mapping_predecessor,
+        )
+        await unit_of_work.trading_sessions.add_version(
+            fixture.session_version_successor,
+            session_predecessor,
+        )
         await unit_of_work.commit()

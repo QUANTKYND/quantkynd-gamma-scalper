@@ -12,13 +12,10 @@ from app.instruments.identity import (
     UnderlyingInstrumentIdentity,
 )
 from app.instruments.sessions import TradingSessionIdentity, TradingSessionVersion
+from app.instruments.temporal_records import AmbiguousPointInTimeResultError
 
 
 class SemanticCollisionError(ValueError):
-    pass
-
-
-class AmbiguousPointInTimeResultError(ValueError):
     pass
 
 
@@ -31,7 +28,11 @@ class PersistenceIntegrityError(ValueError):
 
 
 class CatalogueRepository(Protocol):
-    async def add(self, catalogue: CatalogueVersion) -> None: ...
+    async def add(
+        self,
+        catalogue: CatalogueVersion,
+        supersedes_record_id: str | None = None,
+    ) -> str: ...
 
     async def get(self, catalogue_version_id: str) -> CatalogueVersion | None: ...
 
@@ -52,9 +53,17 @@ class InstrumentRepository(Protocol):
 
     async def add_option(self, contract: OptionContractIdentity) -> None: ...
 
-    async def add_version(self, version: ContractVersion) -> None: ...
+    async def add_version(
+        self,
+        version: ContractVersion,
+        supersedes_record_id: str | None = None,
+    ) -> str: ...
 
-    async def add_provider_mapping(self, mapping: ProviderContractMapping) -> None: ...
+    async def add_provider_mapping(
+        self,
+        mapping: ProviderContractMapping,
+        supersedes_record_id: str | None = None,
+    ) -> str: ...
 
     async def get_identity(
         self,
@@ -81,7 +90,11 @@ class InstrumentRepository(Protocol):
 class TradingSessionRepository(Protocol):
     async def add_identity(self, session: TradingSessionIdentity) -> None: ...
 
-    async def add_version(self, version: TradingSessionVersion) -> None: ...
+    async def add_version(
+        self,
+        version: TradingSessionVersion,
+        supersedes_record_id: str | None = None,
+    ) -> str: ...
 
     async def resolve(
         self,
