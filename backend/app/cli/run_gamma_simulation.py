@@ -10,7 +10,11 @@ from zoneinfo import ZoneInfo
 
 from app.execution.models import ExecutionCostParameters
 from app.services.rv_run_store import current_git_commit
-from app.simulation.artifacts import SimulationManifest, write_simulation_artifacts
+from app.simulation.artifacts import (
+    MANIFEST_SCHEMA_VERSION,
+    SimulationManifest,
+    write_simulation_artifacts,
+)
 from app.simulation.clock import generate_simulation_sessions
 from app.simulation.config import (
     load_simulation_market_config,
@@ -78,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
         run_id = simulation_run_id(run_config)
         final_dir = args.artifact_root.resolve() / "runs" / run_id
         manifest = SimulationManifest(
+            manifest_schema_version=MANIFEST_SCHEMA_VERSION,
             run_id=run_id,
             created_at=datetime.now(UTC),
             completed_at=None,

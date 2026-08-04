@@ -37,11 +37,13 @@ REQUIRED_SIMULATION_ARTIFACTS = (
     "pnl-attribution.csv",
     "summary.json",
 )
+MANIFEST_SCHEMA_VERSION = 2
 
 
 class SimulationManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
+    manifest_schema_version: Literal[2]
     run_id: str
     created_at: datetime
     completed_at: datetime | None

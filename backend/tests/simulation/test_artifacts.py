@@ -4,9 +4,15 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from app.execution.models import ExecutionCostParameters
-from app.simulation.artifacts import REQUIRED_SIMULATION_ARTIFACTS, SimulationManifest, write_simulation_artifacts
+from app.simulation.artifacts import (
+    MANIFEST_SCHEMA_VERSION,
+    REQUIRED_SIMULATION_ARTIFACTS,
+    SimulationManifest,
+    write_simulation_artifacts,
+)
 from app.simulation.engine import SIMULATOR_VERSION, run_simulation
 from app.simulation.config import (
     load_simulation_market_config,
@@ -40,6 +46,7 @@ def inputs():
 def manifest(root: Path, result, strategy, market, path) -> SimulationManifest:
     run_config = result.run_config
     return SimulationManifest(
+        manifest_schema_version=MANIFEST_SCHEMA_VERSION,
         run_id=result.run_id,
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
         completed_at=None,
@@ -84,6 +91,7 @@ def test_completed_run_has_every_artifact_and_is_immutable(tmp_path) -> None:
         lambda run_dir: write_simulation_artifacts(run_dir, base, strategy, market, path, result),
     )
     assert completed.status == "complete"
+    assert completed.manifest_schema_version == MANIFEST_SCHEMA_VERSION
     assert completed.executable_market_state_hash == result.executable_market_state_hash
     assert completed.selected_expiry == result.call_contract.expiry
     assert completed.selected_strike == result.call_contract.strike
@@ -139,6 +147,7 @@ def test_failed_run_persists_manifest_and_temp_is_not_listed(tmp_path) -> None:
     base = manifest(store.root, result, strategy, market, path)
     failed = store.create_run(base, lambda _: (_ for _ in ()).throw(RuntimeError("failed deliberately")))
     assert failed.status == "failed"
+    assert failed.manifest_schema_version == MANIFEST_SCHEMA_VERSION
     assert failed.failure_reason == "failed deliberately"
     assert failed.run_config_hash == simulation_run_config_hash(result.run_config)
     assert failed.simulation_clock_config == market.clock.model_dump(mode="json")
@@ -167,3 +176,23 @@ def test_deterministic_artifacts_match_across_roots(tmp_path) -> None:
             }
         )
     assert contents[0] == contents[1]
+
+
+def test_manifest_schema_round_trip_and_rejects_unsupported_version(tmp_path) -> None:
+    strategy, market, path, result = inputs()
+    current = manifest(tmp_path, result, strategy, market, path)
+    assert current.status == "running"
+    assert current.manifest_schema_version == MANIFEST_SCHEMA_VERSION
+    assert SimulationManifest.model_validate_json(current.model_dump_json()) == current
+    legacy_payload = current.model_dump(mode="python")
+    legacy_payload["manifest_schema_version"] = 1
+    with pytest.raises(ValidationError):
+        SimulationManifest.model_validate(legacy_payload)
+
+
+def test_manifest_schema_is_independent_of_simulator_version(tmp_path) -> None:
+    strategy, market, path, result = inputs()
+    current = manifest(tmp_path, result, strategy, market, path)
+    legacy_simulator = current.model_copy(update={"simulator_version": "sim-1.1"})
+    assert legacy_simulator.manifest_schema_version == current.manifest_schema_version
+    assert legacy_simulator.simulator_version != current.simulator_version
