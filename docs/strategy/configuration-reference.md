@@ -1,0 +1,18 @@
+# Strategy Configuration Reference
+
+The configured instance is `config/strategies/nifty-long-gamma-v1.yaml`. Pydantic models under `backend/app/strategy/` define its strict schema. Unknown and missing fields fail validation.
+
+Identity fields are `strategy_id`, `strategy_version`, `schema_version`, and `created_at`. The content hash excludes `created_at` and includes every behavioral field. Canonical JSON uses sorted UTF-8 keys, no insignificant whitespace, and normalized decimal text for floating-point configuration values before SHA-256 hashing.
+
+`underlying`, `signal`, `entry`, `expiry`, `strike`, and `position` freeze instrument and construction semantics. `hedging` includes the complete benchmark set and typed parameters for every policy. `exit.precedence` is complete and ordered. `risk` requires every lockout and limit explicitly.
+
+The strategy contract does not define synthetic exchange mechanics. `config/simulation/nifty-synthetic-market-v2.yaml` is the schema-version-2 simulation-market contract for the trading-session clock, eligible expiry sessions, strike grid, liquidity assumptions, option and futures multipliers, futures identity, futures delta, and the holding-horizon-plus-buffer futures expiry convention. Its market ID is `nifty-synthetic-market-v2`. Option spread is a market input. Futures spread, slippage, fixed cost, and proportional cost belong only to the run cost model. Unknown or missing fields and all NaN or infinite numeric values fail validation, and every behavioral field is included in the appropriate market or simulation-run hash.
+
+The strategy schema remains version 1. The simulation-market and simulation-run schemas are version 2, the path generator is version 2, the simulator behavior version is `sim-1.2`, and the manifest schema is version 2. These fields identify different contracts. Legacy simulation-market schema versions fail explicitly; legacy run and manifest payloads fail current model validation.
+
+Validate from `backend`:
+
+```bash
+UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.validate_strategy_config \
+  --config ../config/strategies/nifty-long-gamma-v1.yaml
+```

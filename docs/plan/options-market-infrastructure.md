@@ -6,6 +6,8 @@ Create point-in-time, replayable, quality-aware options-market state. The system
 
 ## O0 — Domain contract
 
+Status: READY. STRAT-1 and SIM-1 provide offline contract, pricing, selection, and simulation semantics; point-in-time provider identity and persistence remain DATA-1 work.
+
 Define:
 
 - Underlying instruments.

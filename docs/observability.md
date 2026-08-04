@@ -112,6 +112,8 @@ Every strategy decision records:
 
 The journal is immutable and queryable.
 
+SIM-1 persists this journal as deterministic underlying-path, executable market-state, unit/position valuation, timed hedge-decision, session-aware risk-decision, intent, fill, ledger, attribution, and summary artifacts. Pre-hedge trigger delta and post-hedge residual delta are separate metrics; forced delta overrides and unhedgeable exits have stable reason codes. CLI success JSON exposes simulator, strategy, market, path-config, path, executable-state, run-config, policy, option-cost, futures-cost, and runtime-risk hashes plus seed, exit, costs, delta timings, reconciliation, and artifact location. Failed post-identity runs expose a failed manifest and reason without appearing complete. No metrics backend is introduced for offline runs.
+
 ## Alerts
 
 Critical:

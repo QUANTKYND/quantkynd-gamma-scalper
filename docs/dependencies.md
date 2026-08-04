@@ -13,6 +13,7 @@ Dependencies are added only when a milestone requires them. Each dependency must
 | `numpy` | Numerical arrays and quantitative calculations. |
 | `pandas` | Time-series research, feature frames, and artifact generation. |
 | `pydantic-settings` | Typed environment configuration. |
+| `pyyaml` | STRAT-1 owner; safe loading of versioned strategy configuration. Remove if configuration moves to a format supported by the standard library. |
 | `httpx` | LIVE-RV-1 owner; explicit asynchronous Upstox search and historical-candle reads with mock-transport testability. Remove only if the provider adapter is replaced by an equally testable owned HTTP boundary. |
 | `upstox-python-sdk` | LIVE-RV-1 owner; official V3 protobuf market-feed decoding, subscription management, and bounded reconnect support. Remove when Upstox connectivity is retired or an approved provider-neutral feed adapter replaces it. |
 

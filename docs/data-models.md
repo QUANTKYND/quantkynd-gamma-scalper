@@ -320,6 +320,8 @@ quality_flags
 
 ## Strategy models
 
+STRAT-1 materializes a strict immutable `StrategyContractV1` with identity, creation timestamp, simulation-only mode, underlying, signal, entry, expiry, strike, position, hedging, exit, and risk blocks. Its behavioral content excludes `created_at` from a canonical SHA-256 configuration hash.
+
 ### `StrategyDefinition`
 
 ```text
@@ -379,13 +381,25 @@ decision_id
 strategy_run_id
 as_of
 position_id
-current_delta
+option_delta_before_decision
+hedge_delta_before_decision
+net_delta_before_decision
 target_delta
 lower_boundary
 upper_boundary
 policy_id
 action
-requested_quantity
+continuous_target_futures_quantity
+rounded_requested_futures_quantity
+executed_futures_quantity
+option_delta_after_fill
+hedge_delta_after_fill
+net_delta_after_fill
+quantity_rounding_residual_delta
+portfolio_value_before_fill
+portfolio_value_after_fill
+session_hedge_count
+total_hedge_count
 reason_codes
 state_snapshot_id
 ```
@@ -569,3 +583,11 @@ resolution_status
 - Durable prices, fees, cash, and ledger balances use decimal values or integer minor units.
 - Quantities use integers where instruments trade in indivisible lots; fractional support must be explicit.
 - Never infer units from field names without a documented contract.
+
+## Offline simulation models
+
+SIM-1 uses immutable option contracts, exogenous `UnderlyingPathPoint` sequences, derived executable `MarketState` sequences, unit-and-position option valuations, order intents, simulated fills, timed hedge and risk decisions, ledger entries, Greek-attribution intervals, reconciliation, summary, and run manifest values. Underlying points carry UTC timestamp, session identity, spot, realized step fraction, rates, dividend yield, and implied volatility. Executable market states add local timestamp, selected-option time to expiry, futures time to expiry, and carry-derived futures price. Distinct path and executable-state hashes identify the exact persisted sequences.
+
+Fills retain reference price, executable price, notional, multiplier, spread, slippage, fixed, and proportional costs. Risk state retains pre-entry position reference NAV, cumulative position P&L, prior-session marked reference, session P&L, previous marked value, and separate session and total hedge counts. Risk decisions expose entry gate dispositions, pre-decision limits, forced delta overrides, and terminal risk reasons. The manifest permits null selected expiry, strike, and executable-state hash while a post-identity run is running or fails before selection; a completed manifest requires those values to have been populated by execution. Persisted strategy, market, path, and run configurations record every behavioral input and provenance hash needed to reproduce a run.
+
+SIM-1.2.1 uses simulator behavior version `sim-1.2`, simulation-market schema version 2, simulation-run schema version 2, and manifest schema version 2. The active market instance is `nifty-synthetic-market-v2`. Path generator version remains 2. Simulator behavior, payload schemas, generated scenario identity, and exact content hashes are independent identity dimensions and all persist in their owning artifacts.

@@ -1,0 +1,94 @@
+schema_version: 1
+strategy_id: nifty-long-gamma-straddle
+strategy_version: 1
+created_at: "2026-08-04T00:00:00Z"
+mode: simulation
+underlying:
+  name: NIFTY 50
+  instrument_key: NSE_INDEX|Nifty 50
+  currency: INR
+signal:
+  origin: end_of_finalized_session
+  forecast_horizon_sessions: 5
+entry:
+  eligibility: next_session
+  entry_time_local: "09:30:00"
+  exchange_timezone: Asia/Kolkata
+expiry:
+  holding_horizon_sessions: 5
+  safety_buffer_sessions: 2
+  minimum_remaining_sessions: 7
+  maximum_remaining_sessions: 15
+  choose: earliest_eligible
+  require_quote_quality: true
+  require_liquidity: true
+strike:
+  method: nearest_forward_atm
+  tie_breakers:
+    - lowest_combined_relative_spread
+    - highest_combined_volume
+    - highest_combined_open_interest
+    - lower_strike
+position:
+  structure: long_straddle
+  direction: long
+  call_quantity: 1
+  put_quantity: 1
+  units: 1
+  maximum_concurrent_positions: 1
+  exercise_style: european
+  settlement_type: cash
+  require_same_strike: true
+  require_same_expiry: true
+  require_same_multiplier: true
+hedging:
+  instrument: nifty_future
+  delta_unit: portfolio_underlying_equivalent_units
+  default_policy: constant_band
+  benchmark_policies:
+    - no_hedge
+    - fixed_interval
+    - delta_threshold
+    - constant_band
+    - whalley_wilmott
+  fixed_interval:
+    interval_steps: 1
+    target_net_delta_units: 0.0
+  delta_threshold:
+    maximum_absolute_net_delta_units: 0.10
+    target_net_delta_units: 0.0
+  constant_band:
+    lower_net_delta_units: -0.05
+    upper_net_delta_units: 0.05
+    rebalance_target: nearest_boundary
+  whalley_wilmott:
+    transaction_cost_rate: 0.0002
+    risk_aversion_per_inr: 1.0
+    rebalance_target: nearest_boundary
+    maximum_half_width_delta_units: 0.50
+exit:
+  precedence:
+    - invalid_market_state
+    - invalid_quote_state
+    - daily_loss_limit
+    - position_loss_limit
+    - maximum_hedge_count
+    - insufficient_time_to_expiry
+    - maximum_holding_period
+    - simulation_end
+risk:
+  starting_nav_inr: 1000000
+  maximum_concurrent_positions: 1
+  maximum_premium_at_risk_fraction: 0.02
+  maximum_daily_theta_fraction: 0.001
+  minimum_expected_net_edge_fraction: 0.0005
+  maximum_position_loss_fraction: 0.01
+  maximum_daily_loss_fraction: 0.015
+  maximum_absolute_delta_units: 0.10
+  maximum_hedges_per_session: 12
+  maximum_option_relative_spread: 0.10
+  maximum_quote_age_seconds: 5
+  stale_data_lockout: true
+  missing_contract_lockout: true
+  reconciliation_lockout: true
+  manual_kill_switch: true

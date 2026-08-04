@@ -1,0 +1,212 @@
+from __future__ import annotations
+
+from decimal import ROUND_HALF_EVEN, Decimal
+
+from app.hedging.models import HedgeDecision, HedgePolicy, HedgePolicyState
+from app.strategy.models import HedgingConfig
+
+
+class NoHedgePolicy:
+    policy_id = "no_hedge"
+
+    def decide(self, state: HedgePolicyState) -> HedgeDecision:
+        return _hold(state, self.policy_id, state.current_net_delta, None, None, "policy_never_hedges")
+
+
+class FixedIntervalPolicy:
+    policy_id = "fixed_interval"
+
+    def __init__(self, interval_steps: int, target_net_delta: float):
+        if interval_steps <= 0:
+            raise ValueError("fixed hedge interval must be positive")
+        self.interval_steps = interval_steps
+        self.target_net_delta = target_net_delta
+
+    def decide(self, state: HedgePolicyState) -> HedgeDecision:
+        if state.step_index % self.interval_steps:
+            return _hold(state, self.policy_id, self.target_net_delta, None, None, "outside_scheduled_step")
+        return _trade_to_target(state, self.policy_id, self.target_net_delta, None, None, "scheduled_rebalance")
+
+
+class DeltaThresholdPolicy:
+    policy_id = "delta_threshold"
+
+    def __init__(self, maximum_absolute_delta: float, target_net_delta: float):
+        if maximum_absolute_delta < 0:
+            raise ValueError("delta threshold must be non-negative")
+        self.maximum_absolute_delta = maximum_absolute_delta
+        self.target_net_delta = target_net_delta
+
+    def decide(self, state: HedgePolicyState) -> HedgeDecision:
+        if abs(state.current_net_delta) <= self.maximum_absolute_delta:
+            return _hold(
+                state,
+                self.policy_id,
+                self.target_net_delta,
+                -self.maximum_absolute_delta,
+                self.maximum_absolute_delta,
+                "inside_delta_threshold",
+            )
+        return _trade_to_target(
+            state,
+            self.policy_id,
+            self.target_net_delta,
+            -self.maximum_absolute_delta,
+            self.maximum_absolute_delta,
+            "delta_threshold_breached",
+        )
+
+
+class ConstantBandPolicy:
+    policy_id = "constant_band"
+
+    def __init__(self, lower_boundary: float, upper_boundary: float):
+        if lower_boundary >= upper_boundary:
+            raise ValueError("constant hedge band is invalid")
+        self.lower_boundary = lower_boundary
+        self.upper_boundary = upper_boundary
+
+    def decide(self, state: HedgePolicyState) -> HedgeDecision:
+        if self.lower_boundary <= state.current_net_delta <= self.upper_boundary:
+            return _hold(
+                state,
+                self.policy_id,
+                state.current_net_delta,
+                self.lower_boundary,
+                self.upper_boundary,
+                "inside_constant_band",
+            )
+        target = self.lower_boundary if state.current_net_delta < self.lower_boundary else self.upper_boundary
+        return _trade_to_target(
+            state,
+            self.policy_id,
+            target,
+            self.lower_boundary,
+            self.upper_boundary,
+            "constant_band_breached",
+        )
+
+
+def build_hedge_policy(policy_id: str, config: HedgingConfig) -> HedgePolicy:
+    if policy_id not in config.benchmark_policies:
+        raise ValueError(f"unsupported hedge policy: {policy_id}")
+    if policy_id == "no_hedge":
+        return NoHedgePolicy()
+    if policy_id == "fixed_interval":
+        params = config.fixed_interval
+        return FixedIntervalPolicy(params.interval_steps, params.target_net_delta_units)
+    if policy_id == "delta_threshold":
+        params = config.delta_threshold
+        return DeltaThresholdPolicy(params.maximum_absolute_net_delta_units, params.target_net_delta_units)
+    if policy_id == "constant_band":
+        params = config.constant_band
+        return ConstantBandPolicy(params.lower_net_delta_units, params.upper_net_delta_units)
+    if policy_id == "whalley_wilmott":
+        from app.hedging.whalley_wilmott import WhalleyWilmottPolicy
+
+        return WhalleyWilmottPolicy(config.whalley_wilmott)
+    raise ValueError(f"unsupported hedge policy: {policy_id}")
+
+
+def _trade_to_target(
+    state: HedgePolicyState,
+    policy_id: str,
+    target: float,
+    lower: float | None,
+    upper: float | None,
+    reason: str,
+) -> HedgeDecision:
+    continuous = (target - state.current_net_delta) / state.futures_delta_per_contract
+    requested = int(Decimal(str(continuous)).quantize(Decimal("1"), rounding=ROUND_HALF_EVEN))
+    residual = state.current_net_delta + requested * state.futures_delta_per_contract
+    if requested == 0:
+        return HedgeDecision(
+            timestamp=state.timestamp,
+            policy_id=policy_id,
+            option_delta_before_decision=state.current_option_delta,
+            hedge_delta_before_decision=state.current_hedge_delta,
+            net_delta_before_decision=state.current_net_delta,
+            target_net_delta=target,
+            lower_boundary=lower,
+            upper_boundary=upper,
+            action="hold",
+            continuous_target_futures_quantity=continuous,
+            rounded_requested_futures_quantity=0,
+            executed_futures_quantity=0,
+            option_delta_after_fill=state.current_option_delta,
+            hedge_delta_after_fill=state.current_hedge_delta,
+            net_delta_after_fill=residual,
+            quantity_rounding_residual_delta=residual - target,
+            portfolio_value_before_fill=None,
+            portfolio_value_after_fill=None,
+            session_hedge_count=0,
+            total_hedge_count=0,
+            reason_code="rounded_quantity_zero",
+        )
+    return HedgeDecision(
+        timestamp=state.timestamp,
+        policy_id=policy_id,
+        option_delta_before_decision=state.current_option_delta,
+        hedge_delta_before_decision=state.current_hedge_delta,
+        net_delta_before_decision=state.current_net_delta,
+        target_net_delta=target,
+        lower_boundary=lower,
+        upper_boundary=upper,
+        action="buy_hedge" if requested > 0 else "sell_hedge",
+        continuous_target_futures_quantity=continuous,
+        rounded_requested_futures_quantity=requested,
+        executed_futures_quantity=requested,
+        option_delta_after_fill=state.current_option_delta,
+        hedge_delta_after_fill=state.current_hedge_delta + requested * state.futures_delta_per_contract,
+        net_delta_after_fill=residual,
+        quantity_rounding_residual_delta=residual - target,
+        portfolio_value_before_fill=None,
+        portfolio_value_after_fill=None,
+        session_hedge_count=0,
+        total_hedge_count=0,
+        reason_code=reason,
+    )
+
+
+def _hold(
+    state: HedgePolicyState,
+    policy_id: str,
+    target: float,
+    lower: float | None,
+    upper: float | None,
+    reason: str,
+) -> HedgeDecision:
+    return HedgeDecision(
+        timestamp=state.timestamp,
+        policy_id=policy_id,
+        option_delta_before_decision=state.current_option_delta,
+        hedge_delta_before_decision=state.current_hedge_delta,
+        net_delta_before_decision=state.current_net_delta,
+        target_net_delta=target,
+        lower_boundary=lower,
+        upper_boundary=upper,
+        action="hold",
+        continuous_target_futures_quantity=0.0,
+        rounded_requested_futures_quantity=0,
+        executed_futures_quantity=0,
+        option_delta_after_fill=state.current_option_delta,
+        hedge_delta_after_fill=state.current_hedge_delta,
+        net_delta_after_fill=state.current_net_delta,
+        quantity_rounding_residual_delta=state.current_net_delta - target,
+        portfolio_value_before_fill=None,
+        portfolio_value_after_fill=None,
+        session_hedge_count=0,
+        total_hedge_count=0,
+        reason_code=reason,
+    )
+
+
+def force_delta_reduction(state: HedgePolicyState, policy_id: str) -> HedgeDecision:
+    return _trade_to_target(
+        state,
+        policy_id,
+        0.0,
+        -0.0,
+        0.0,
+        "absolute_delta_forced_hedge",
+    )
