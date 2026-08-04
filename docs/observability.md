@@ -156,3 +156,9 @@ The foundation provides a credential-masking `SELECT 1` health probe and sets bo
 Destructive refusals distinguish missing opt-in, exact-name mismatch, non-local-host denial, sentinel failure, advisory-lock contention, and source/target identity collision without exposing credentials. Temporal write conflicts and invalid or ambiguous read graphs are explicit domain/repository failures.
 
 Persistent database metrics, structured SQL tracing, slow-query dashboards, automated alerts, retry loops, and production backup scheduling remain later operational work. DATA-1.1 does not add logging or metrics dependencies and does not enable SQL echo by default.
+
+## DATA-1.2 catalogue ingestion signals
+
+Catalogue ingestion emits structured CLI/service events for `catalogue_ingestion_started`, `catalogue_artifact_validated`, `catalogue_rows_parsed`, `catalogue_rows_normalized`, `catalogue_conflicts_checked`, `catalogue_ingestion_committed`, `catalogue_ingestion_rejected`, `catalogue_ingestion_failed`, and `catalogue_ingestion_rollback`.
+
+Events include provider, profile version, source artifact ID, catalogue version ID when available, ingestion run ID when committed, normalized catalogue hash, physical row count, accepted unique count, exact duplicate count, excluded count, field-name fingerprint, elapsed parse and persistence time, database revision, and redacted error code. Events do not include raw provider payloads, provider credentials, database URLs, or local absolute artifact paths.

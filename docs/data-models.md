@@ -172,6 +172,105 @@ Invariants:
 - Expired or not-yet-listed contracts cannot enter a point-in-time chain.
 - Replacing validity-bounded trading metadata creates a new version without changing economic identity where the economic terms are unchanged.
 
+## DATA-1.2 provider catalogue ingestion models
+
+DATA-1.2 ingests one approved profile, `upstox-nse-nifty-index-derivatives-v1`, from a local official Upstox BOD NSE `NSE.json.gz` artifact. The profile supports the `NSE_INDEX|Nifty 50` underlying, its `NSE_FO` index futures, and its `NSE_FO` call and put options. `underlying_key` is authoritative for derivative relationship resolution. `underlying_symbol` is only a consistency check. Approved constants for this profile are `exchange=NSE`, `currency=INR`, `exercise_style=european`, `settlement_type=cash`, and `multiplier=1`; lot size remains trading metadata.
+
+### `CatalogueSourceArtifact`
+
+```text
+source_artifact_id
+provider
+profile_version
+media_type
+compression
+compressed_sha256
+decompressed_sha256
+compressed_byte_count
+decompressed_byte_count
+source_schema_version
+artifact_object_key
+```
+
+The artifact identity includes exact compressed content and the parsing contract. File name, local path, operator, receipt time, recorded time, and temporary path are excluded. Different gzip bytes produce different artifact IDs even when decompressed content is equal.
+
+### Source row identities
+
+```text
+source_row_semantic_id = provider + profile_version + canonical raw-row hash
+source_row_occurrence_id = source_artifact_id + physical row number + canonical raw-row hash
+```
+
+Semantic row identity is independent of row order and artifact bytes. Physical occurrence identity preserves where a row appeared in one artifact. Provider mappings use `source_row_semantic_id`; row outcomes and membership provenance retain `source_row_occurrence_id`.
+
+### Normalized catalogue identity
+
+`CatalogueVersion.source_content_hash` is the normalized catalogue hash over sorted unique in-profile normalized row projections. The projection excludes row number, artifact identity, file name, receipt time, record time, duplicate occurrence count, raw object key order, and runtime metadata. `CatalogueVersion.row_count` is the accepted unique membership count.
+
+### `CatalogueIngestionRun`
+
+```text
+ingestion_run_id
+idempotency_key
+command_digest
+source_artifact_id
+catalogue_version_id
+catalogue_record_id
+profile_version
+original_file_name
+effective_from
+effective_until
+started_at
+recorded_at
+completed_at
+normalized_catalogue_hash
+physical_row_count
+accepted_unique_count
+exact_duplicate_count
+excluded_count
+database_revision
+```
+
+DATA-1.2 persists accepted commit-mode runs only. Validation failures, dry-runs, and rejected commits are visible through CLI output and structured logs rather than mutable run rows.
+
+### `CatalogueRowOutcome`
+
+```text
+row_outcome_id
+ingestion_run_id
+source_row_occurrence_id
+source_row_semantic_id
+physical_row_number
+raw_row_hash
+normalized_row_hash
+provider_contract_key
+disposition
+reason_codes
+instrument_id
+version_id
+mapping_id
+```
+
+Allowed dispositions are `accepted`, `exact_duplicate`, and `excluded_by_profile`. In-profile malformed or conflicting rows reject the full catalogue and are not persisted as accepted-run outcomes.
+
+### `CatalogueMembership`
+
+```text
+membership_id
+catalogue_version_id
+row_outcome_id
+source_row_occurrence_id
+source_row_semantic_id
+instrument_id
+version_id
+mapping_id
+provider_contract_key
+raw_row_hash
+normalized_row_hash
+```
+
+Membership has one row per accepted unique in-profile provider row. Exact duplicates and out-of-profile rows have outcomes but no membership. Disappearance from a later catalogue is reported by diffing memberships and does not imply expiry, delisting, mapping closure, or temporal supersession.
+
 ### `TradingSession`
 
 ```text

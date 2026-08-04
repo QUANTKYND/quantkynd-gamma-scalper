@@ -152,3 +152,39 @@ UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.verify_database_restore
 ```
 
 The restore verifier holds verified source and target advisory locks, seeds append-only histories through repositories, creates a custom-format public-schema-only no-owner/no-privilege dump, drops only the verified target's `public` schema, restores it, and rechecks the protected target sentinel. It compares the Alembic revision, all thirteen table counts, canonical durable-row digest, semantic and record IDs, and historical/current provider-mapping, trading-session, and catalogue A/B reads. A successful `pg_restore` alone is not acceptance.
+
+## DATA-1.2 catalogue ingestion verification
+
+DATA-1.2 tests cover the approved Upstox BOD NSE profile only. Fixture tests use sanitized official-format `NSE.json.gz` samples and hostile variants. Acceptance does not require a live Upstox endpoint or access token.
+
+Required parser and profile tests:
+
+- one top-level JSON array;
+- gzip CRC validation and multi-member rejection;
+- UTF-8 without BOM;
+- duplicate object-key rejection;
+- non-standard numeric rejection;
+- epoch-millisecond expiry converted through `Asia/Kolkata` to an exchange date;
+- lexical JSON numeric parsing into `Decimal`;
+- raw `tick_size=5` persisted as `Decimal("0.05")`;
+- Nifty 50 underlying resolution by `underlying_key`;
+- unrelated NSE rows excluded rather than rejected;
+- in-profile malformed or conflicting rows rejecting the catalogue.
+
+Required identity tests:
+
+- row permutation changes occurrence IDs but not semantic row IDs;
+- row permutation preserves normalized catalogue hash, catalogue ID, version IDs, and mapping IDs;
+- exact duplicates do not alter catalogue identity;
+- different file names with exact bytes preserve artifact ID;
+- different gzip bytes with equal decompressed content produce different artifact IDs and equal catalogue IDs.
+
+Required persistence tests:
+
+- accepted commit stores the compressed artifact in the content-addressed artifact root;
+- dry-run and validate-only retain no artifact;
+- rejected commit persists no accepted audit rows;
+- all outcomes and memberships commit atomically;
+- two concurrent first catalogues cannot both become roots;
+- same idempotency key with different command digest conflicts;
+- migration `20260804_03` upgrades, downgrades, passes Alembic drift checks, and is included in restore digests.

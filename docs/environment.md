@@ -99,6 +99,7 @@ DATABASE_ALLOW_DESTRUCTIVE_TEST_OPERATIONS
 DATABASE_EXPECTED_INTEGRATION_TEST_NAME
 DATABASE_EXPECTED_RESTORE_TEST_NAME
 DATABASE_ALLOW_NONLOCAL_DESTRUCTIVE_OPERATIONS
+CATALOGUE_ARTIFACT_ROOT
 REDIS_URL
 REDIS_KEY_PREFIX
 ARTIFACT_ROOT
@@ -197,6 +198,8 @@ UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.bootstrap_disposable_databas
 ```
 
 The bootstrap creates one row in `quantkynd_control.disposable_database_sentinel` with the exact database name, `integration` or `restore` purpose, schema marker, creation timestamp, and fixed QuantKYND ownership marker. The control schema is outside `public` and survives public-schema replacement.
+
+DATA-1.2 catalogue commit mode requires `CATALOGUE_ARTIFACT_ROOT`. The path must be writable by the backend process and stores exact compressed provider artifacts in a content-addressed layout. Validate-only and dry-run modes do not retain artifacts.
 
 From `backend`, migrate or inspect the schema with:
 

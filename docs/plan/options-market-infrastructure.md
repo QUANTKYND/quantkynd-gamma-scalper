@@ -57,6 +57,8 @@ Historical market events are append-only. Corrections create explicit supersedin
 
 ## O2 — Catalogue ingestion
 
+DATA-1.2 status: IMPLEMENTED PENDING ACCEPTANCE. The initial provider-catalogue slice ingests only the approved Upstox BOD NSE `NSE.json.gz` artifact through the `upstox-nse-nifty-index-derivatives-v1` profile. It supports `NSE_INDEX|Nifty 50`, its `NSE_FO` index futures, and its `NSE_FO` call/put options. It remains local-file, offline, CLI-only, and independent of live subscriptions and execution.
+
 Requirements:
 
 - Provider payload stored or hashed for provenance.

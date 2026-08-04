@@ -65,3 +65,11 @@ WebSocket denials and closes use stable internal codes and generic safe text. Th
 - Restore verification compares configured endpoints plus connected database/server identity, refuses a source/target alias to the same physical database, passes passwords only through the child environment, suppresses tool output, and removes its temporary dump automatically.
 - Only the verified restore target's `public` schema is replaced. The protected control schema survives and is revalidated after restore.
 - Dump and backup extensions are ignored, and no database service is required by broker, research, simulation, or unrelated unit-test imports.
+
+## DATA-1.2 catalogue artifact safety
+
+- Catalogue ingestion is local-file only for the approved Upstox BOD NSE `NSE.json.gz` profile. Provider downloads, URLs, authenticated acquisition, ZIP, CSV, and live endpoints are not part of DATA-1.2.
+- The ingester refuses unsafe symlink inputs, invalid gzip members, concatenated gzip members, invalid UTF-8, UTF-8 BOM, duplicate JSON object keys, non-standard JSON constants, and configured byte-limit breaches.
+- Commit mode stores exact compressed artifacts in a content-addressed object layout under `CATALOGUE_ARTIFACT_ROOT` with owner-only permissions and atomically verifies existing objects before treating retention as idempotent.
+- Postgres stores artifact hashes and relative object keys, not raw provider payload blobs. A transaction rollback may leave an unreferenced content-addressed artifact, but accepted database rows must not point to a missing or hash-invalid object.
+- Upstox `instrument_key` is the provider mapping key. `exchange_token` is provenance only and never provider identity.
