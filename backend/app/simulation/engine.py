@@ -40,7 +40,7 @@ def run_simulation(
         raise ValueError("simulation path cannot be empty")
     policy = build_hedge_policy(policy_id, strategy.hedging)
     config_hash = strategy_config_hash(strategy)
-    run_id = _run_id(config_hash, path.path_hash, policy_id, option_costs, futures_costs)
+    run_id = simulation_run_id(config_hash, path.path_hash, policy_id, option_costs, futures_costs)
     initial = path.states[0]
     expiry = initial.timestamp.date() + timedelta(days=15)
     forward = continuous_forward(
@@ -276,7 +276,7 @@ def _risk_exit_reason(records, precedence):
     return next((reason for reason in precedence if reason in breached), None)
 
 
-def _run_id(config_hash, path_hash, policy_id, option_costs, futures_costs):
+def simulation_run_id(config_hash, path_hash, policy_id, option_costs, futures_costs):
     payload = json.dumps(
         {
             "simulator": SIMULATOR_VERSION,
