@@ -16,6 +16,9 @@ Dependencies are added only when a milestone requires them. Each dependency must
 | `pyyaml` | STRAT-1 owner; safe loading of versioned strategy configuration. Remove if configuration moves to a format supported by the standard library. |
 | `httpx` | LIVE-RV-1 owner; explicit asynchronous Upstox search and historical-candle reads with mock-transport testability. Remove only if the provider adapter is replaced by an equally testable owned HTTP boundary. |
 | `upstox-python-sdk` | LIVE-RV-1 owner; official V3 protobuf market-feed decoding, subscription management, and bounded reconnect support. Remove when Upstox connectivity is retired or an approved provider-neutral feed adapter replaces it. |
+| `sqlalchemy[asyncio]` | DATA-1.1 owner; SQLAlchemy 2 async engine, typed relational mappings, statements, repositories, and transaction sessions. Remove only if the Postgres adapter is replaced with an equivalent explicit persistence boundary. |
+| `alembic` | DATA-1.1 owner; reviewed forward and reverse Postgres schema migrations plus metadata drift detection. Remove only with an approved replacement migration system and converted revision history. |
+| `asyncpg` | DATA-1.1 owner; async PostgreSQL driver for application repositories and Alembic online migrations. Remove when Postgres or the SQLAlchemy async adapter is retired. |
 
 ### Backend development
 
@@ -57,13 +60,10 @@ Dependencies are added only when a milestone requires them. Each dependency must
 
 ## Planned: options-market infrastructure
 
-DATA-1.0 is a pure domain semantic freeze and adds none of these dependencies. Database drivers, ORM mappings, migrations, retries, calendar packages, and optimized serialization remain deferred until their owning later DATA-1 slice demonstrates the need.
+DATA-1.1 owns SQLAlchemy, Alembic, and asyncpg. It does not add a synchronous driver, retries, calendar packages, or optimized serialization.
 
 | Dependency | Phase | Purpose |
 |---|---|---|
-| `sqlalchemy` | Data-1 | Persistence mappings and transactional repositories. |
-| `alembic` | Data-1 | Database migrations. |
-| `asyncpg` | Data-1 | Async Postgres driver. |
 | `psycopg` | Data-1 optional | Synchronous CLI, migrations, and recovery utilities if needed. |
 | `tenacity` | Data-1 | Bounded retries with explicit policies. |
 | `orjson` | Data-1 | Fast event serialization where profiling justifies it. |

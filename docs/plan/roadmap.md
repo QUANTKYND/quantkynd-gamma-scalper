@@ -20,7 +20,7 @@
 | Strategy Contract v1 | COMPLETE | Frozen NIFTY long-straddle contract, typed risk limits, and stable behavioral hash. |
 | SIM-1 deterministic option engine | COMPLETE | Contract-driven Black–Scholes, separate path/executable-state provenance, strict clock and finite inputs, explicit valuation units, and hardened IV outcomes. |
 | SIM-2 hedge simulator | COMPLETE | Contract-owned maturities, executable entry and delta risk, correct P&L references, five policies, exact ledger, attribution, failed manifests, and full provenance. |
-| DATA-1 point-in-time options model | ACTIVE | DATA-1.0 freezes deterministic economic/version/provider identity, knowledge-time semantics, append-only corrections, quality assessments, and chain selection; persistence, ingestion, sessions, and restore evidence remain. |
+| DATA-1 point-in-time options model | ACTIVE | DATA-1.0 freezes deterministic semantics. DATA-1.1 supplies the Postgres/Alembic catalogue, instrument, provider-mapping, session, and transactional repository foundation; provider ingestion and market-event persistence remain. |
 | OPTIONS-1 IV surface | BLOCKED by DATA-1 | Market-derived IV, Greeks, surface, and diagnostics. |
 | EDGE-1 gamma opportunity engine | BLOCKED by OPTIONS-1 | Physical versus implied variance and net edge decomposition. |
 | BACKTEST-1 event replay | BLOCKED by DATA-1, SIM-2, EDGE-1 | Point-in-time entries, hedges, fills, ledger, and journal. |
@@ -66,6 +66,8 @@ Deliver:
 - P&L attribution and reconciliation.
 
 ### DATA-1 — Point-in-time options data
+
+DATA-1.1 implements the migration and persistence foundation with lazy typed configuration, one async transaction boundary, deterministic immutable inserts, two-clock repository reads, local test Postgres, and automated dump/restore equivalence verification. It does not yet implement provider catalogue ingestion, normalized quote/trade/quality persistence, chain snapshots, retention, Redis, or production backup operations.
 
 Deliver:
 

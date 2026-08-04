@@ -31,6 +31,8 @@ redis           6379
 
 Postgres and Redis are added when their owning milestones begin. The RV research baseline may continue to run without them.
 
+DATA-1.1 adds the optional local Postgres service. Redis remains deferred. Database-free research, simulation, API startup, and unit tests remain supported.
+
 ## Environment variables
 
 ### Application
@@ -86,6 +88,13 @@ RV_SYNTHETIC_INITIAL_PRICE
 DATABASE_URL
 DATABASE_POOL_SIZE
 DATABASE_MAX_OVERFLOW
+DATABASE_POOL_TIMEOUT_SECONDS
+DATABASE_POOL_RECYCLE_SECONDS
+DATABASE_CONNECT_TIMEOUT_SECONDS
+DATABASE_STATEMENT_TIMEOUT_MS
+DATABASE_APPLICATION_NAME
+DATABASE_ECHO
+DATABASE_RESTORE_TEST_URL
 REDIS_URL
 REDIS_KEY_PREFIX
 ARTIFACT_ROOT
@@ -153,6 +162,39 @@ UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.run_gamma_simulation \
 ```
 
 SIM-1 uses no environment secrets, provider token, database, Redis, or execution-mode variable. Its default artifact root is `backend/artifacts/simulation`.
+
+## DATA-1.1 local Postgres
+
+Start the test service from the repository root:
+
+```bash
+docker compose up -d postgres
+docker compose ps
+```
+
+Use local-only values matching `docker-compose.yaml` in `backend/.env`:
+
+```text
+DATABASE_URL=postgresql+asyncpg://quantkynd:quantkynd_local@localhost:5432/quantkynd_test
+DATABASE_RESTORE_TEST_URL=postgresql+asyncpg://quantkynd:quantkynd_local@localhost:5432/quantkynd_restore
+```
+
+Both variables are optional until a database-backed command is invoked. Application URLs must use `postgresql+asyncpg`. The restore verifier refuses equal source and target databases and requires both database names to contain an explicit `test`, `restore`, `dev`, or `local` marker.
+
+From `backend`, migrate or inspect the schema with:
+
+```bash
+UV_CACHE_DIR=/tmp/uv-cache uv run alembic upgrade head
+UV_CACHE_DIR=/tmp/uv-cache uv run alembic current
+UV_CACHE_DIR=/tmp/uv-cache uv run alembic check
+UV_CACHE_DIR=/tmp/uv-cache uv run alembic downgrade base
+```
+
+Run the destructive dump/restore acceptance check only against dedicated test-safe databases:
+
+```bash
+UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.verify_database_restore
+```
 
 ## Deployment target
 

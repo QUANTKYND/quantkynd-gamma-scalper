@@ -166,3 +166,13 @@ Avoid introducing large functions that would otherwise need comments. Split them
 - Dependencies update `docs/dependencies.md`.
 - New environment variables update `docs/environment.md` and `.env.example`.
 - Milestone status updates the relevant file under `docs/plan/`.
+
+## PostgreSQL persistence
+
+- Domain and port modules do not import SQLAlchemy or asyncpg.
+- One application-level unit of work owns one async session and the only commit or rollback decision.
+- Repository methods flush statements but never commit independently.
+- Immutable deterministic IDs permit an exact complete-record reinsert and reject different durable content as a semantic collision.
+- Point-in-time reads apply half-open market-validity intervals and, when supplied, half-open knowledge-validity intervals.
+- Ambiguous visible records fail closed; iterable or insertion order never selects a winner.
+- Alembic revisions are the only accepted schema-creation and schema-alteration path.

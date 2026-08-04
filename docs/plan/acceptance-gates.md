@@ -40,7 +40,7 @@
 
 ## Point-in-time data gate
 
-DATA-1.0 satisfies the semantic sub-gate when deterministic economic identity is separate from contract versions and provider mappings; market and knowledge clocks are explicit; append-only corrections and quality reassessments preserve earlier results; canonical Decimal/time hashing is stable; and focused no-future-leakage tests pass. This does not pass the full DATA-1 gate because database migrations, persistence, catalogue ingestion, session-calendar integration, and restore testing remain.
+DATA-1.0 satisfies the semantic sub-gate when deterministic economic identity is separate from contract versions and provider mappings; market and knowledge clocks are explicit; append-only corrections and quality reassessments preserve earlier results; canonical Decimal/time hashing is stable; and focused no-future-leakage tests pass. DATA-1.1 adds a narrower persistence sub-gate: catalogue, instrument/version, provider-mapping, and trading-session rows have migrated relational integrity; one unit of work owns transactions; two-clock reads and collisions fail closed; clean upgrade/downgrade/re-upgrade and drift checks pass; and real dump/restore equivalence is recorded. Provider ingestion and market-event persistence are still required for the full DATA-1 gate.
 
 - Economic contract identity is stable and trading metadata is validity-bounded.
 - Historical chain reconstruction is deterministic.

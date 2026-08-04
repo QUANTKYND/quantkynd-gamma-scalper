@@ -6,7 +6,7 @@ Create point-in-time, replayable, quality-aware options-market state. The system
 
 ## O0 — Domain contract
 
-Status: IMPLEMENTED by DATA-1.0. STRAT-1 and SIM-1 provide offline contract, pricing, selection, and simulation semantics. DATA-1.0 freezes provider-neutral economic identity, validity-bounded metadata, provider mapping, point-in-time clocks, append-only corrections, event identity, quality assessments, and deterministic chain selection. Persistence remains DATA-1 work.
+Status: ACTIVE. STRAT-1 and SIM-1 provide offline contract, pricing, selection, and simulation semantics. DATA-1.0 freezes provider-neutral economic identity, validity-bounded metadata, provider mapping, point-in-time clocks, append-only corrections, event identity, quality assessments, and deterministic chain selection. DATA-1.1 adds the Postgres/Alembic foundation for catalogue versions, instrument identities and versions, provider mappings, and trading sessions. Provider ingestion and market-event persistence remain later DATA-1 work.
 
 Define:
 
@@ -27,6 +27,8 @@ Market events separate exchange time, receipt time, availability time, and recor
 Provider sequence identity requires an explicit non-empty scope. Semantic identity indexes tolerate only completely equal duplicate records and reject conflicts. Correction graphs fail closed on missing or mismatched targets, self-reference, cycles, and ambiguous branches. Normalized quotes preserve finite zero prices for policy evaluation; zero does not imply quality eligibility.
 
 ## O1 — Postgres persistence
+
+DATA-1.1 status: FOUNDATION IMPLEMENTED. One async unit of work owns catalogue, instrument, provider-mapping, and trading-session repository transactions. Alembic revision `20260804_01` creates their relational schema with point-in-time indexes and integrity checks. Quote/trade/quality persistence, provider catalogue ingestion, retention, and production operations remain deferred.
 
 Add:
 

@@ -102,7 +102,7 @@ The existing RV implementation may remain under `quant/` during migration. New d
 
 STRAT-1 and SIM-1 implement the target `strategy`, `options`, `simulation`, `portfolio`, `hedging`, `execution`, and `attribution` boundaries as an offline deterministic research slice. These modules have no FastAPI, broker, Redis, or database dependencies. The simulation CLI coordinates pure analytics and publishes immutable local artifacts.
 
-DATA-1.0 adds persistence-independent domain types under `instruments` and `market_data`. `core.hashing` owns the canonical serializer and SHA-256 helper shared with simulation. The DATA-1.0 slice imports no provider SDK, API schema, database, Redis, or frontend type. Persistence adapters and catalogue ingestion remain later DATA-1 slices.
+DATA-1.0 adds persistence-independent domain types under `instruments` and `market_data`. `core.hashing` owns the canonical serializer and SHA-256 helper shared with simulation. DATA-1.1 adds persistence-independent catalogue, trading-session, repository, and unit-of-work contracts under `instruments`, with SQLAlchemy and asyncpg implementations isolated under `persistence.postgres`. Catalogue ingestion remains a later DATA-1 slice.
 
 ## Dependency direction
 
@@ -174,6 +174,14 @@ recorded_at/superseded_at bound system visibility
 Historical imports without defensible dissemination or receipt timestamps carry an explicit non-defensible availability basis. They may support market-time analysis, but do not silently satisfy a knowledge-time replay claim.
 
 Point-in-time reconstruction fails closed on structurally invalid inputs. Semantic version, provider-mapping, and normalized-event indexes reject conflicting records that share an ID. Correction edges are resolved only after their targets, economic contracts, event types, acyclic structure, and single-successor branches are validated. Representation validity preserves finite zero-price observations; a versioned quality assessment, not normalization, determines chain eligibility.
+
+## DATA-1.1 persistence boundary
+
+Postgres becomes durable truth only for the DATA-1.1 catalogue, instrument identity/version, provider-mapping, and trading-session records actually represented by the initial migration. Quote, trade, quality, chain, analytics, strategy, order, and ledger persistence remain deferred. Offline research and simulation do not construct a database engine and do not require database configuration.
+
+The infrastructure layer owns one lazy async engine factory, one SQLAlchemy metadata registry, explicit domain/row mappings, async repository adapters, and the Postgres unit of work. Each unit of work creates exactly one `AsyncSession`; repository calls never commit, and exit without an explicit successful commit rolls back. Immutable insertion uses the deterministic key as the conflict target, treats a complete-record repeat as idempotent, and raises a semantic collision when any durable field differs.
+
+Provider-key lookup intersects mapping and contract-version market intervals. A supplied `known_as_of` also intersects both records' recorded/superseded intervals. Session lookup applies the session identity and version knowledge interval. Queries use deterministic ordering and fail closed when more than one record is visible. Alembic revision `20260804_01` is the sole schema creation path.
 
 ## State ownership
 

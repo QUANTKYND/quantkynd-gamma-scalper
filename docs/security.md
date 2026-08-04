@@ -54,3 +54,11 @@ WebSocket denials and closes use stable internal codes and generic safe text. Th
 - Database migrations are reviewed and backed up.
 - Dependency changes receive security and license review.
 - Generated artifacts and secret scans run before release.
+
+## DATA-1.1 database safety
+
+- Database URLs are typed secrets and are never emitted in health, migration, or restore errors.
+- Postgres binds to localhost in the development Compose service and uses committed credentials only for isolated local test databases.
+- Restore verification requires distinct source and target URLs, rejects names without a test-safe marker, passes passwords through the child-process environment rather than arguments, suppresses PostgreSQL tool output, and removes its temporary dump automatically.
+- The restore target is the only schema the verifier clears; production-shaped database names are rejected before destructive work.
+- Dump and backup extensions are ignored, and no database service is required by broker, research, simulation, or unrelated unit-test imports.

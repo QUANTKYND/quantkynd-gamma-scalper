@@ -132,3 +132,21 @@ OpenAPI contract check
 ```
 
 Coverage is not a substitute for invariants. Critical money, order, risk, and reconciliation code requires branch and failure-path tests regardless of aggregate coverage.
+
+## DATA-1.1 database verification
+
+Pure mapping, domain, configuration, and restore-safety tests run without Postgres. PostgreSQL integration and migration tests read `DATABASE_URL`, require a test-safe database name, and skip when no URL is configured. They construct schema only through Alembic and cover immutable reinsertion/collision, transaction rollback, point-in-time cutoffs, ambiguity, foreign-key deletion protection, upgrade, downgrade, re-upgrade, fixture persistence, and metadata drift.
+
+With the repository Postgres service healthy and the two local URLs configured:
+
+```bash
+cd backend
+UV_CACHE_DIR=/tmp/uv-cache uv run python -m compileall -q app tests
+UV_CACHE_DIR=/tmp/uv-cache uv run pytest
+UV_CACHE_DIR=/tmp/uv-cache uv run alembic upgrade head
+UV_CACHE_DIR=/tmp/uv-cache uv run alembic current
+UV_CACHE_DIR=/tmp/uv-cache uv run alembic check
+UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.verify_database_restore
+```
+
+The restore verifier seeds through repositories and one unit of work, creates a custom-format no-owner/no-privilege dump, recreates only the test-safe target's `public` schema, restores it, and compares the Alembic revision, per-table row counts, canonical durable-row digest, provider-mapping read, and trading-session read. A successful `pg_restore` alone is not acceptance.

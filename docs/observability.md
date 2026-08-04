@@ -148,3 +148,9 @@ Warning:
 - P&L attribution.
 - Risk limits and kill switch.
 - Research runs and artifacts.
+
+## DATA-1.1 database signals
+
+The foundation provides a credential-masking `SELECT 1` health probe and sets bounded connection timeout, statement timeout, pool sizing, pool pre-ping, recycle interval, and a low-cardinality application name. Migration and restore commands return explicit success or failure; restore success includes revision equality, deterministic row counts, canonical digest equality, and representative-query equality without a DSN.
+
+Persistent database metrics, structured SQL tracing, slow-query dashboards, automated alerts, retry loops, and production backup scheduling remain later operational work. DATA-1.1 does not add logging or metrics dependencies and does not enable SQL echo by default.
