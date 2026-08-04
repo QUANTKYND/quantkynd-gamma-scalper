@@ -40,7 +40,7 @@ REQUIRED_SIMULATION_ARTIFACTS = (
 
 
 class SimulationManifest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
     run_id: str
     created_at: datetime

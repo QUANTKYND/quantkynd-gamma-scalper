@@ -15,7 +15,7 @@ from app.execution.models import ExecutionCostParameters
 
 
 class StrictFrozenModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
 
 class SimulationClockConfig(StrictFrozenModel):

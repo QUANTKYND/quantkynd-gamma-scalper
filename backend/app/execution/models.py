@@ -17,16 +17,14 @@ class ExecutionCostParameters:
     slippage_per_unit: Decimal
 
     def __post_init__(self) -> None:
-        if any(
-            value < 0
-            for value in (
-                self.fixed_cost_per_order,
-                self.proportional_notional_rate,
-                self.half_spread_per_unit,
-                self.slippage_per_unit,
-            )
-        ):
-            raise ValueError("execution costs must be non-negative")
+        values = (
+            self.fixed_cost_per_order,
+            self.proportional_notional_rate,
+            self.half_spread_per_unit,
+            self.slippage_per_unit,
+        )
+        if any(not value.is_finite() or value < 0 for value in values):
+            raise ValueError("execution costs must be finite and non-negative")
 
 
 @dataclass(frozen=True)
