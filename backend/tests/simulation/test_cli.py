@@ -33,6 +33,19 @@ def test_simulation_cli_writes_completed_run(tmp_path, capsys) -> None:
     assert output["policy"] == "no_hedge"
     assert output["reconciliation_residual"] == "0.00"
     assert Path(output["artifact_directory"]).is_dir()
+    assert {
+        "simulator_version",
+        "strategy_config_hash",
+        "market_config_hash",
+        "path_config_hash",
+        "path_hash",
+        "executable_market_state_hash",
+        "run_config_hash",
+        "policy_config_hash",
+        "option_cost_model_hash",
+        "futures_cost_model_hash",
+        "runtime_risk_hash",
+    } <= output.keys()
 
 
 def test_simulation_cli_rejects_unsupported_policy(tmp_path, capsys) -> None:
@@ -108,3 +121,38 @@ def test_reconciliation_failure_persists_failed_manifest(tmp_path, capsys, monke
     assert main(cli_args(tmp_path)) == 1
     assert "reconciliation_failure" in capsys.readouterr().err
     assert_failed_post_identity_run(tmp_path, "reconciliation_failure")
+
+
+def test_all_policies_share_non_policy_provenance(tmp_path, capsys) -> None:
+    policies = (
+        "no_hedge",
+        "fixed_interval",
+        "delta_threshold",
+        "constant_band",
+        "whalley_wilmott",
+    )
+    outputs = []
+    for policy in policies:
+        args = cli_args(tmp_path) + ["--seed", "29"]
+        args[args.index("no_hedge")] = policy
+        assert main(args) == 0
+        outputs.append(json.loads(capsys.readouterr().out))
+    shared_keys = (
+        "simulator_version",
+        "strategy_config_hash",
+        "market_config_hash",
+        "path_config_hash",
+        "path_hash",
+        "executable_market_state_hash",
+        "option_cost_model_hash",
+        "futures_cost_model_hash",
+        "runtime_risk_hash",
+        "seed",
+    )
+    assert all(
+        {key: output[key] for key in shared_keys}
+        == {key: outputs[0][key] for key in shared_keys}
+        for output in outputs[1:]
+    )
+    assert len({output["policy_config_hash"] for output in outputs}) == len(policies)
+    assert len({output["run_config_hash"] for output in outputs}) == len(policies)

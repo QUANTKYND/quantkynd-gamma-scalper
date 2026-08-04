@@ -82,6 +82,9 @@ def test_completed_run_has_every_artifact_and_is_immutable(tmp_path) -> None:
         lambda run_dir: write_simulation_artifacts(run_dir, base, strategy, market, path, result),
     )
     assert completed.status == "complete"
+    assert completed.executable_market_state_hash == result.executable_market_state_hash
+    assert completed.selected_expiry == result.call_contract.expiry
+    assert completed.selected_strike == result.call_contract.strike
     assert all((store.runs_dir / result.run_id / name).is_file() for name in REQUIRED_SIMULATION_ARTIFACTS)
     assert store.list_manifests()[0].run_id == result.run_id
     with pytest.raises(FileExistsError):
