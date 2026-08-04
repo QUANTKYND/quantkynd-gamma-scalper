@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 
 from app.schemas.market_data import LiveQuoteResponse, MarketDataStatusResponse
 
@@ -7,9 +7,9 @@ router = APIRouter(prefix="/market-data", tags=["market data"])
 
 
 @router.get("/status", response_model=MarketDataStatusResponse)
-def market_data_status(request: Request) -> MarketDataStatusResponse:
+def market_data_status(request: Request, instrument_key: str | None = Query(default=None)) -> MarketDataStatusResponse:
     coordinator = request.app.state.live_runtime.coordinator
-    status = coordinator.status()
+    status = coordinator.status(instrument_key)
     freshness_values = [coordinator.quote_store.freshness(key) for key in status.active_instrument_keys]
     if not freshness_values:
         feed_quality = "unknown"
@@ -25,6 +25,7 @@ def market_data_status(request: Request) -> MarketDataStatusResponse:
         subscription_state=status.subscription_state,
         feed_quality=feed_quality,
         market_status=status.market_status,
+        segment_statuses=status.segment_statuses,
         active_instrument_keys=list(status.active_instrument_keys),
         connected_at=status.connected_at,
         last_message_at=status.last_message_at,
@@ -61,7 +62,7 @@ def quote_response(coordinator, instrument_key: str) -> LiveQuoteResponse:
             provider_message_at=None,
             received_at=None,
             processed_at=None,
-            market_status=coordinator.status().market_status,
+            market_status=coordinator.market_status(instrument_key),
             sequence=None,
         )
     change = quote.ltp - quote.previous_close if quote.previous_close else None
@@ -79,6 +80,6 @@ def quote_response(coordinator, instrument_key: str) -> LiveQuoteResponse:
         provider_message_at=quote.provider_message_at,
         received_at=quote.received_at,
         processed_at=quote.processed_at,
-        market_status=quote.market_status,
+        market_status=coordinator.market_status(instrument_key),
         sequence=quote.sequence,
     )

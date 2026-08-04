@@ -87,6 +87,10 @@ const DashboardData = ({ latest, features, backtest, runs, history, market }: Da
   const status = market?.status
   const absoluteChange = quote?.ltp != null && quote.previous_close != null ? quote.ltp - quote.previous_close : null
   const percentageChange = absoluteChange != null && quote?.previous_close ? absoluteChange / quote.previous_close : null
+  const socketUnavailable = market?.socketState === 'closed' || market?.socketState === 'failed'
+  const connecting = !market || market.socketState === 'connecting'
+  const awaitingSnapshot = market?.socketState === 'open' && (!quote || quote.status === 'awaiting_first_tick')
+  const liveStale = market?.socketState === 'open' && (quote?.freshness === 'stale' || status?.transport_state === 'reconnecting')
 
   return (
     <Stack spacing={2.5}>
@@ -104,7 +108,7 @@ const DashboardData = ({ latest, features, backtest, runs, history, market }: Da
           <Grid size={{ xs: 6, md: 2 }}><Status label="Provider transport" value={status?.transport_state ?? 'connecting'} /></Grid>
           <Grid size={{ xs: 6, md: 2 }}><Status label="Subscription" value={status?.subscription_state ?? 'subscribing'} /></Grid>
           <Grid size={{ xs: 6, md: 2 }}><Status label="Feed quality" value={quote?.freshness ?? latest.live.freshness} /></Grid>
-          <Grid size={{ xs: 6, md: 2 }}><Status label="Market" value={quote?.market_status ?? status?.market_status ?? 'unknown'} /></Grid>
+          <Grid size={{ xs: 6, md: 2 }}><Status label="Market" value={status?.market_status ?? quote?.market_status ?? 'unknown'} /></Grid>
           <Grid size={{ xs: 6, md: 2 }}><Status label="Last tick" value={dateTime(quote?.last_trade_at)} /></Grid>
         </Grid>
         <Grid container spacing={2} sx={{ mt: 1 }}>
@@ -116,8 +120,12 @@ const DashboardData = ({ latest, features, backtest, runs, history, market }: Da
         </Grid>
       </Paper>
 
-      {latest.live.is_provisional && <Alert severity={latest.live.freshness === 'stale' ? 'warning' : 'info'}>{latest.live.freshness === 'stale' ? `Live estimate stale. Last received at ${dateTime(latest.live.received_at)}.` : 'Uses current LTP as an unfinished session-close proxy.'}</Alert>}
-      {!market && <Alert severity="warning">Historical data loaded. Live feed unavailable.</Alert>}
+      {connecting && <Alert severity="info">Connecting to live feed</Alert>}
+      {awaitingSnapshot && <Alert severity="info">Feed connected · awaiting first market snapshot</Alert>}
+      {socketUnavailable && <Alert severity="warning">Historical data loaded. Live feed unavailable.</Alert>}
+      {liveStale && <Alert severity="warning">Live estimate stale. Last received at {dateTime(quote?.received_at)}.</Alert>}
+      {market?.socketState === 'open' && quote?.freshness === 'fresh' && <Alert severity="success">Live feed fresh</Alert>}
+      {latest.live.is_provisional && !liveStale && <Alert severity="info">Uses current LTP as an unfinished session-close proxy.</Alert>}
       <RvSummaryCards cards={cards} />
       <Paper variant="outlined" sx={panelSx}><RvLineChart title="Close-to-close volatility structure" subtitle="Final point is explicitly marked when provisional" points={features.points} mode="overview" /></Paper>
       <Grid container spacing={2}>

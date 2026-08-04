@@ -166,6 +166,8 @@ Postgres remains the durable truth for replay and audit.
 
 The selectable close-to-close RV workspace establishes the provider-neutral read protocols, one-process Upstox LTPC multiplexer, freshness state, browser gateway, and provisional daily-close overlay without options, Postgres, or Redis. This precursor does not satisfy O9 or the full live read-only acceptance gate because it has no durable quote truth, chain, Greeks, IV surface, or restart rebuild.
 
+LIVE-RV-1.1 hardens this precursor with per-instrument accepted sequences, a concurrent subscription state machine, explicit backend and browser WebSocket lifecycle, segment-specific status, India-local historical ranges, and finalized-history rollover resync. These remain process-local read-only facilities and do not satisfy durable O9 recovery.
+
 ## O10 — Operator workspaces
 
 Dashboard panels:

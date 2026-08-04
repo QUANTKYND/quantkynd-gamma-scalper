@@ -4,7 +4,7 @@ import math
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from app.market_data.models import LiveQuoteState
+from app.market_data.models import LiveQuoteCandidate
 
 
 def normalize_feed_quotes(
@@ -12,17 +12,15 @@ def normalize_feed_quotes(
     *,
     requested_keys: set[str],
     received_at: datetime,
-    first_sequence: int,
-) -> tuple[LiveQuoteState, ...]:
+) -> tuple[LiveQuoteCandidate, ...]:
     if not isinstance(payload, dict):
         return ()
     provider_at = _epoch_time(payload.get("currentTs") or payload.get("current_ts")) or received_at
-    market_status = normalize_market_status(payload)
     feeds = payload.get("feeds")
     if not isinstance(feeds, dict):
         return ()
-    quotes: list[LiveQuoteState] = []
-    for offset, (instrument_key, feed) in enumerate(feeds.items()):
+    quotes: list[LiveQuoteCandidate] = []
+    for instrument_key, feed in feeds.items():
         if instrument_key not in requested_keys or not isinstance(feed, dict):
             continue
         ltpc = _ltpc(feed)
@@ -33,7 +31,7 @@ def normalize_feed_quotes(
         if ltp is None or last_trade_at is None or last_trade_at > received_at + timedelta(minutes=5):
             continue
         quotes.append(
-            LiveQuoteState(
+            LiveQuoteCandidate(
                 instrument_key=instrument_key,
                 ltp=ltp,
                 previous_close=_positive_float(ltpc.get("cp")),
@@ -42,8 +40,6 @@ def normalize_feed_quotes(
                 provider_message_at=provider_at,
                 received_at=received_at,
                 processed_at=datetime.now(UTC),
-                market_status=market_status,
-                sequence=first_sequence + offset,
             )
         )
     return tuple(quotes)
@@ -61,21 +57,29 @@ def _ltpc(feed: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def normalize_market_status(payload: Any) -> str | None:
+def normalize_segment_statuses(payload: Any) -> dict[str, str]:
     if not isinstance(payload, dict):
-        return None
+        return {}
     info = payload.get("marketInfo") or payload.get("market_info")
     if not isinstance(info, dict):
-        return None
+        return {}
     statuses = info.get("segmentStatus") or info.get("segment_status")
     if not isinstance(statuses, dict) or not statuses:
-        return None
-    values = {str(value).lower() for value in statuses.values()}
-    if any("open" in value and "pre" not in value for value in values):
+        return {}
+    return {str(segment): _normalize_market_status(value) for segment, value in statuses.items()}
+
+
+def market_status_for_segment(segment_statuses: dict[str, str], segment: str) -> str:
+    return segment_statuses.get(segment, "unknown")
+
+
+def _normalize_market_status(value: Any) -> str:
+    normalized = str(value).lower()
+    if "open" in normalized and "pre" not in normalized:
         return "open"
-    if any("pre" in value for value in values):
+    if "pre" in normalized:
         return "pre_open"
-    if any("close" in value for value in values):
+    if "close" in normalized:
         return "closed"
     return "unknown"
 

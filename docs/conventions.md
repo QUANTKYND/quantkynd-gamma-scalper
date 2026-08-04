@@ -40,6 +40,7 @@ export function useMountEffect(effect: () => void | (() => void)) {
 - Permit the direct import only in the shared hook implementation.
 - Keep RTK Query subscriptions and polling in API slices and middleware.
 - Keep WebSocket lifecycle in a shared external-store or middleware boundary, not page components.
+- ESLint `no-restricted-imports` rejects named `useEffect` imports from React in TypeScript application and feature files. Only `frontend/src/shared/hooks/useMountEffect.ts` has a targeted exception.
 
 ## No new code comments
 

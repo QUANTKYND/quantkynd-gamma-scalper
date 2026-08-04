@@ -29,6 +29,7 @@ Completed:
 - FastAPI research API and React monitoring dashboard.
 - RV-1 and RV-1.1 acceptance and hardening.
 - LIVE-RV-1 selectable Upstox historical closes and provisional live close-to-close overlay.
+- LIVE-RV-1.1 accepted-quote sequencing, subscription concurrency, WebSocket lifecycle, segment status, and rollover hardening.
 
 Not yet implemented:
 

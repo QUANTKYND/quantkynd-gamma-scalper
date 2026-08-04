@@ -27,6 +27,8 @@
 
 LIVE-RV-1 is read-only. Its provider protocols expose instrument search, instrument resolution, historical closes, and live subscription lifecycle only. No order client, order procedure, portfolio write, or execution route exists.
 
+WebSocket denials and closes use stable internal codes and generic safe text. They never include access tokens, authorized provider URLs, OAuth codes, raw SDK errors, or provider response bodies. Browser socket lifecycle state contains only the application close code and UTC close time.
+
 ## Data safety
 
 - Research papers and datasets are included only when redistribution is permitted.

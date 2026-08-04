@@ -100,6 +100,8 @@ npm run dev
 
 The realized-volatility workspace can select NSE/BSE indices and equities from Upstox. Historical RV and all forecast evaluation use finalized daily candles only. During a later exchange session, an LTPC quote may create one visibly provisional feature point and update the latest cards; it never changes the finalized dataset hash or persisted research runs.
 
+Live quote sequences are process-local and monotonic per instrument. Concurrent browser subscriptions share one upstream readiness result. The browser displays explicit connecting, open, failed, and closed socket state, retains the last live state as stale after failure, and resynchronizes finalized RV state when the India exchange date rolls over.
+
 Copy `backend/.env.example`, configure Upstox OAuth, authenticate through the existing login control, and run the read-only provider check from `backend`:
 
 ```bash

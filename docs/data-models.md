@@ -181,6 +181,8 @@ quality_flags
 
 LIVE-RV-1 keeps a bounded non-durable `LiveQuoteState` with LTP, previous close, last-trade quantity, provider message time, last-trade time, receipt time, processing time, market status, and process-local sequence. Provider time and receipt time remain distinct.
 
+The process-local sequence is allocated after validation and increases independently for each instrument only when its quote is accepted. Invalid provider observations consume no accepted-quote sequence. Provider market status is retained as `segment_statuses`; an instrument derives its displayed state from its own `NSE_INDEX`, `BSE_INDEX`, `NSE_EQ`, or `BSE_EQ` segment.
+
 ### `OptionQuote`
 
 ```text

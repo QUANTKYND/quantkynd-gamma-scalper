@@ -42,11 +42,24 @@ class LiveQuoteState:
 
 
 @dataclass(frozen=True)
+class LiveQuoteCandidate:
+    instrument_key: str
+    ltp: float
+    previous_close: float | None
+    last_trade_quantity: int | None
+    last_trade_at: datetime
+    provider_message_at: datetime
+    received_at: datetime
+    processed_at: datetime
+
+
+@dataclass(frozen=True)
 class MarketDataStatus:
     authentication_state: str
     transport_state: TransportState
     subscription_state: SubscriptionState
     market_status: str | None
+    segment_statuses: dict[str, str]
     active_instrument_keys: tuple[str, ...]
     connected_at: datetime | None
     last_message_at: datetime | None

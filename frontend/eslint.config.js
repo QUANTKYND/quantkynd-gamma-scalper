@@ -18,5 +18,26 @@ export default defineConfig([
     languageOptions: {
       globals: globals.browser,
     },
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'react',
+              importNames: ['useEffect'],
+              message: 'Direct useEffect is banned. Use render derivation, RTK Query, event handlers, key resets, or useMountEffect.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ['src/shared/hooks/useMountEffect.ts'],
+    rules: {
+      'no-restricted-imports': 'off',
+      'react-hooks/exhaustive-deps': 'off',
+    },
   },
 ])

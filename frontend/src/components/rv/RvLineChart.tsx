@@ -52,6 +52,7 @@ type ChartTooltipProps = {
 const compactDate = (value: string): string => new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' }).format(new Date(`${value}T00:00:00`))
 const percent = (value: number): string => `${(value * 100).toFixed(1)}%`
 const priceText = (value: number): string => value.toLocaleString('en-IN', { maximumFractionDigits: 0 })
+const priceTooltipText = (value: number): string => value.toFixed(2)
 
 const overviewData = (points: RVFeatureRow[]): ChartDatum[] => points.map((point) => {
   const twentyOne = estimateFor(point.estimates, 21)?.annualized_volatility
@@ -105,7 +106,7 @@ const ChartTooltip = ({ active, label, payload, mode }: ChartTooltipProps): Reac
           {datum?.provisional && <Typography variant="caption" color="info.main">Provisional unfinished-session point</Typography>}
           {payload.map((entry) => {
             if (entry.value == null || entry.name == null) return null
-            const value = entry.name === 'Price' ? priceText(Number(entry.value)) : percent(Number(entry.value))
+            const value = entry.name === 'Price' || entry.name === 'Provisional price' ? priceTooltipText(Number(entry.value)) : percent(Number(entry.value))
             return <Typography key={entry.name} variant="body2" sx={{ color: entry.color }}>{entry.name}: {value}</Typography>
           })}
         </Stack>

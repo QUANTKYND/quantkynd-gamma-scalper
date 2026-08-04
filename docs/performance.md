@@ -8,6 +8,8 @@ Redis is introduced at Live-1 or earlier only when a measured cross-process need
 
 LIVE-RV-1 remains one backend process and intentionally uses bounded in-memory latest quote and finalized-snapshot stores. It supports at most 50 active instrument keys, caches at most 50 finalized snapshots for 15 minutes, coalesces browser quote delivery to 250 ms, and recomputes the provisional RV view no faster than 1000 ms. Redis remains deferred until a multi-process or recovery requirement exists.
 
+Status transitions bypass quote coalescing and emit only when transport, subscription, selected-segment market status, or freshness changes. The backend concurrently waits for browser disconnects without sending unchanged one-second status events. Frontend quote envelopes are coalesced to 250 ms; lifecycle and resync envelopes apply immediately.
+
 Use Redis for:
 
 - Latest accepted underlying and option quote state.

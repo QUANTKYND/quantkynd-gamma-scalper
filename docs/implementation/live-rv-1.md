@@ -1789,74 +1789,76 @@ new live quote appears
 
 # 30. Acceptance criteria
 
+Implementation status: complete. Local automated and static verification passed on 2026-08-04. The authenticated provider smoke test and closed/open-market observation remain operator validation steps and are not represented as implementation blockers in this checklist.
+
 ## Instrument selection
 
-* [ ] MUI autocomplete exists.
-* [ ] It searches NSE/BSE indices and equities only.
-* [ ] It starts searching after two characters.
-* [ ] Selection is represented by `instrument_key`.
-* [ ] Selection is stored in the URL.
-* [ ] Reload preserves the selected instrument.
-* [ ] Default selection is NIFTY 50.
-* [ ] Duplicate or ambiguous display names remain distinguishable by exchange.
+* [x] MUI autocomplete exists.
+* [x] It searches NSE/BSE indices and equities only.
+* [x] It starts searching after two characters.
+* [x] Selection is represented by `instrument_key`.
+* [x] Selection is stored in the URL.
+* [x] Reload preserves the selected instrument.
+* [x] Default selection is NIFTY 50.
+* [x] Duplicate or ambiguous display names remain distinguishable by exchange.
 
 ## Historical data
 
-* [ ] Selected-instrument daily closes come from Upstox V3.
-* [ ] Finalized prices are positive, ordered and deduplicated.
-* [ ] RV calculations reuse the corrected RV-1 estimator.
-* [ ] Backtests use finalized closes only.
-* [ ] Dataset identity is stable.
-* [ ] Provider errors never trigger a synthetic fallback.
-* [ ] The UI displays the source as Upstox historical.
+* [x] Selected-instrument daily closes come from Upstox V3.
+* [x] Finalized prices are positive, ordered and deduplicated.
+* [x] RV calculations reuse the corrected RV-1 estimator.
+* [x] Backtests use finalized closes only.
+* [x] Dataset identity is stable.
+* [x] Provider errors never trigger a synthetic fallback.
+* [x] The UI displays the source as Upstox historical.
 
 ## Live feed
 
-* [ ] One upstream provider connection exists per backend process.
-* [ ] Provider mode is LTPC.
-* [ ] Subscription reference counting works.
-* [ ] Market status is visible.
-* [ ] LTP, previous close and last-trade time are visible.
-* [ ] Feed freshness is visible.
-* [ ] Reconnection is bounded.
-* [ ] Last state becomes stale during reconnect.
-* [ ] Tokens and authorized URLs never leave the backend.
+* [x] One upstream provider connection exists per backend process.
+* [x] Provider mode is LTPC.
+* [x] Subscription reference counting works.
+* [x] Market status is visible.
+* [x] LTP, previous close and last-trade time are visible.
+* [x] Feed freshness is visible.
+* [x] Reconnection is bounded.
+* [x] Last state becomes stale during reconnect.
+* [x] Tokens and authorized URLs never leave the backend.
 
 ## Provisional RV
 
-* [ ] Current-session LTP creates at most one provisional row.
-* [ ] Latest RV cards update from the provisional series.
-* [ ] Final chart point updates from the provisional series.
-* [ ] Provisional data is visually labelled.
-* [ ] Backtest metrics remain finalized-only.
-* [ ] Forecast history remains finalized-only.
-* [ ] Dataset hash does not change on ticks.
-* [ ] Stale live data is not presented as fresh.
-* [ ] No claim of intraday realized volatility is introduced.
+* [x] Current-session LTP creates at most one provisional row.
+* [x] Latest RV cards update from the provisional series.
+* [x] Final chart point updates from the provisional series.
+* [x] Provisional data is visually labelled.
+* [x] Backtest metrics remain finalized-only.
+* [x] Forecast history remains finalized-only.
+* [x] Dataset hash does not change on ticks.
+* [x] Stale live data is not presented as fresh.
+* [x] No claim of intraday realized volatility is introduced.
 
 ## Frontend architecture
 
-* [ ] No direct `useEffect` in app or feature code.
-* [ ] HTTP fetching uses RTK Query.
-* [ ] WebSocket lifecycle uses `onCacheEntryAdded`.
-* [ ] Instrument changes happen in event handlers.
-* [ ] Identity reset uses `key`.
-* [ ] Query data is not copied into local component state.
-* [ ] Raw event frequency is not rendered.
-* [ ] Chart updates are bounded.
-* [ ] Frontend lint passes.
-* [ ] Frontend build passes.
+* [x] No direct `useEffect` in app or feature code.
+* [x] HTTP fetching uses RTK Query.
+* [x] WebSocket lifecycle uses `onCacheEntryAdded`.
+* [x] Instrument changes happen in event handlers.
+* [x] Identity reset uses `key`.
+* [x] Query data is not copied into local component state.
+* [x] Raw event frequency is not rendered.
+* [x] Chart updates are bounded.
+* [x] Frontend lint passes.
+* [x] Frontend build passes.
 
 ## Backend architecture
 
-* [ ] Provider implementations sit behind protocols.
-* [ ] FastAPI lifespan owns the coordinator.
-* [ ] Module imports do not establish network connections.
-* [ ] SDK callback threads do not mutate asyncio state directly.
-* [ ] Shutdown disconnects cleanly.
-* [ ] Tests require no internet.
-* [ ] All backend tests pass.
-* [ ] `git diff --check` passes.
+* [x] Provider implementations sit behind protocols.
+* [x] FastAPI lifespan owns the coordinator.
+* [x] Module imports do not establish network connections.
+* [x] SDK callback threads do not mutate asyncio state directly.
+* [x] Shutdown disconnects cleanly.
+* [x] Tests require no internet.
+* [x] All backend tests pass.
+* [x] `git diff --check` passes.
 
 ---
 

@@ -11,11 +11,13 @@ class LiveQuoteStore:
         self._quotes: dict[str, LiveQuoteState] = {}
         self._forced_stale: set[str] = set()
 
-    def put(self, quote: LiveQuoteState) -> None:
+    def put(self, quote: LiveQuoteState) -> bool:
         current = self._quotes.get(quote.instrument_key)
         if current is None or quote.sequence > current.sequence:
             self._quotes[quote.instrument_key] = quote
             self._forced_stale.discard(quote.instrument_key)
+            return True
+        return False
 
     def get(self, instrument_key: str) -> LiveQuoteState | None:
         return self._quotes.get(instrument_key)

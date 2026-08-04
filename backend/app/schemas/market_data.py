@@ -15,6 +15,7 @@ class MarketDataStatusResponse(ApiModel):
     subscription_state: str
     feed_quality: str
     market_status: str | None
+    segment_statuses: dict[str, str]
     active_instrument_keys: list[str]
     connected_at: datetime | None
     last_message_at: datetime | None

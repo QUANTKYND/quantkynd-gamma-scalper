@@ -73,10 +73,13 @@ Use generated cases for invariants:
 - Kill-switch engagement.
 - End-of-day flatten or carry failure.
 
+LIVE-RV-1.1 deterministically tests multi-instrument accepted-quote sequencing, invalid quote rejection, shared concurrent subscription readiness, failure cleanup and retry, in-flight capacity, WebSocket denial and close behavior, initial event ordering, disconnect cleanup, quote coalescing, unchanged-status silence, segment-specific status, India exchange dates, and finalized-history rollover.
+
 ## Frontend tests
 
 - RTK Query loading, error, stale, and empty states.
 - No direct `useEffect` import in app and feature code.
+- ESLint rejects direct `useEffect` imports outside `shared/hooks/useMountEffect.ts`.
 - User behavior through event handlers.
 - Key-based reset behavior.
 - `useMountEffect` only for approved external synchronization.
