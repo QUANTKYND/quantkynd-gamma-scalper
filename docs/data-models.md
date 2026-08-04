@@ -144,7 +144,7 @@ recorded_at
 superseded_at
 ```
 
-`valid_from` is inclusive and `valid_until` is exclusive in market effective time. `recorded_at` is the time QuantKYND persisted the version. `superseded_at` is the exclusive knowledge/system-time boundary after which a replacement is authoritative. Runtime timestamps do not participate in the deterministic version ID; validity and trading metadata do.
+`valid_from` is inclusive and `valid_until` is exclusive in market effective time. The domain compatibility fields expose the knowledge record's `recorded_at`; `superseded_at` is derived compatibility state and is never mutated or persisted on the semantic row. Runtime timestamps do not participate in the deterministic version ID; validity and trading metadata do.
 
 ### `ProviderContractMapping`
 
@@ -204,7 +204,7 @@ availability_basis
 - `received_at` is the physical receipt time when available and remains distinct from provider time.
 - `available_at` is the earliest time the observation was eligible to influence QuantKYND. Live events normally use receipt time. It never precedes a present `received_at`.
 - `recorded_at` is when QuantKYND persisted the normalized immutable record and never precedes `available_at`.
-- `superseded_at`, where used for catalogue versions and mappings, is the exclusive system-time boundary of replacement. Market-event corrections instead remain append-only and identify the prior event with `supersedes_event_id`.
+- Catalogue, instrument-version, mapping, and session corrections use immutable durable records with `supersedes_record_id`. Any compatibility `superseded_at` value is derived from a visible successor and is not a durable mutable field. Market-event corrections remain append-only and identify the prior event with `supersedes_event_id`.
 
 All domain timestamps are timezone-aware and normalized to UTC. NSE sessions are interpreted in `Asia/Kolkata`.
 
@@ -686,8 +686,12 @@ SIM-1.2.1 uses simulator behavior version `sim-1.2`, simulation-market schema ve
 
 ## DATA-1.1 durable foundation
 
-Alembic revision `20260804_01` introduces nine application tables. `market_instruments` is the common registry for `underlying_instruments`, `futures_contracts`, and `option_contracts`; subtype rows use a composite foreign key and a kind check so the durable subtype agrees with the registry. Futures and options reference an underlying. No foreign key uses cascade deletion.
+Revision `20260804_01` introduces the nine semantic application tables. Revision `20260804_02` adds `catalogue_version_records`, `instrument_version_records`, `provider_mapping_records`, and `trading_session_version_records`, for thirteen application tables total. The follow-up preserves every semantic ID while moving knowledge time into append-only records.
 
-`catalogue_versions` stores immutable catalogue identity, source hash, schema version, half-open effective interval, publication and recording times, and row count. `instrument_versions` references both the registry and catalogue and stores half-open market validity plus half-open recorded/superseded knowledge visibility. `provider_contract_mappings` references an instrument version and carries the same two-clock boundaries. `trading_sessions` provides the exchange/date/kind identity and `trading_session_versions` contains the UTC schedule, `Asia/Kolkata` interpretation, status, and knowledge-time interval.
+Each temporal record contains `record_id`, its semantic ID, non-empty `scope_id`, `recorded_at`, optional immutable `supersedes_record_id`, and optional source provenance. `record_id` is deterministic over those fields. The predecessor is a non-cascading self-reference, and a partial unique index on non-null predecessor IDs enforces one direct successor. Multiple records may share one semantic ID. Exact record reinsertion is idempotent; conflicting durable content under one record ID raises `SemanticCollisionError`.
 
-Deterministic SHA-256 identities use bounded non-empty text. Strike, multiplier, and tick size use `NUMERIC(38,18)` and remain exact `Decimal` values. Checks enforce valid enum values, positive trade increments and contract numerics, non-negative catalogue counts, valid intervals, and session ordering. A deterministic ID is not a mutable row key: an exact complete-record repeat is idempotent, while different recorded or semantic content under the same ID is a `SemanticCollisionError`.
+The application writes successors only after locking the predecessor and checking same-table existence, equal entity scope, strict knowledge-time increase, and successor absence. Concurrent competitors yield one commit and one `TemporalSupersessionConflictError`. Read-time graph validation remains mandatory for corruption introduced outside accepted writers. Missing targets, self-reference, cross-scope edges, non-increasing time, cycles, and branches fail closed through `InvalidTemporalGraphError`; multiple eligible leaves raise `AmbiguousPointInTimeResultError`.
+
+Revision `20260804_02` creates one deterministic root record for every legacy semantic row. It aborts before schema changes if any legacy instrument, mapping, or session row has non-null `superseded_at`; the timestamp alone cannot identify a successor and is never discarded or converted into an invented edge. Downgrade to `20260804_01` is permitted only while every semantic row has exactly one root record and no successor history.
+
+`market_instruments` remains the common registry for instrument subtypes. Futures and options reference an underlying, and no foreign key cascades deletion. Strike, multiplier, and tick size use `NUMERIC(38,18)` and remain exact `Decimal` values.

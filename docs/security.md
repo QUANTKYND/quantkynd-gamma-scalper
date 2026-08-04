@@ -59,6 +59,9 @@ WebSocket denials and closes use stable internal codes and generic safe text. Th
 
 - Database URLs are typed secrets and are never emitted in health, migration, or restore errors.
 - Postgres binds to localhost in the development Compose service and uses committed credentials only for isolated local test databases.
-- Restore verification requires distinct source and target URLs, rejects names without a test-safe marker, passes passwords through the child-process environment rather than arguments, suppresses PostgreSQL tool output, and removes its temporary dump automatically.
-- The restore target is the only schema the verifier clears; production-shaped database names are rejected before destructive work.
+- Destructive tests default to denied. They require an explicit opt-in, an exact configured database name equal to `current_database()`, a loopback host or separate non-local override, and a matching purpose-specific sentinel in `quantkynd_control`.
+- The sentinel is created only by an explicit bootstrap command, never by destructive verification. Missing, malformed, wrong-name, wrong-purpose, wrong-version, or wrong-owner sentinel data fails closed.
+- A stable PostgreSQL advisory lock is held before sentinel revalidation and destructive SQL. Concurrent destructive runs against one database are refused.
+- Restore verification compares configured endpoints plus connected database/server identity, refuses a source/target alias to the same physical database, passes passwords only through the child environment, suppresses tool output, and removes its temporary dump automatically.
+- Only the verified restore target's `public` schema is replaced. The protected control schema survives and is revalidated after restore.
 - Dump and backup extensions are ignored, and no database service is required by broker, research, simulation, or unrelated unit-test imports.

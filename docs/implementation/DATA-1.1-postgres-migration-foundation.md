@@ -928,7 +928,44 @@ Return:
 
 ---
 
-## Implementation evidence — 2026-08-04
+## Review-correction design — 2026-08-04
+
+This addendum supersedes the original mutable knowledge-interval design while preserving revision `20260804_01` as reviewed history.
+
+### Semantic and durable temporal identity
+
+The four semantic tables keep deterministic catalogue-version, instrument-version, mapping, and session-version IDs. Revision `20260804_02` adds one matching `*_records` table per entity. A durable record ID hashes the entity kind, semantic ID, non-empty entity scope, UTC `recorded_at`, immutable predecessor reference, and source provenance used for idempotency. Multiple knowledge records may share a semantic ID. Exact record reinsertion is idempotent; conflicting content under one record ID raises `SemanticCollisionError`.
+
+Every `supersedes_record_id` is a non-cascading self-table foreign key. A partial unique index on non-null predecessor IDs permits at most one direct successor. Before inserting a successor, the repository locks the already-existing predecessor with `SELECT ... FOR UPDATE` and, in that transaction, checks equal entity scope, a strictly later `recorded_at`, and successor absence. Concurrent competitors produce one commit and one `TemporalSupersessionConflictError`. Accepted writes cannot form cycles because every edge targets an existing strictly earlier record, but reads still reject self-reference, missing targets, cross-scope edges, non-increasing time, branches, and cycles.
+
+### Point-in-time resolution order
+
+Each unit of work uses one repeatable-read database transaction snapshot. A query selects records at or before `known_as_of`; a current query uses all committed rows visible in that snapshot. It validates the visible graph, then evaluates every semantic object's half-open market interval at `market_as_of`. A visible successor hides its predecessor only when that successor is market-eligible. No eligible leaf returns not found; multiple leaves raise `AmbiguousPointInTimeResultError`; successful results use deterministic record ordering.
+
+Sequential open-ended catalogue A/B ingestion uses the same rule. Before B is known, A resolves. After B is known but before B is effective, B is ineligible and A remains visible. Once B is both known and market-effective, B hides A. Earlier knowledge cutoffs remain reproducible without closing A in place.
+
+### Migration precondition
+
+Revision `20260804_02` creates one deterministic root record for every existing semantic row and preserves its semantic ID. Before any schema change, it checks the legacy instrument-version, provider-mapping, and session-version tables. Any non-null `superseded_at` aborts with a precise error because that timestamp alone cannot identify an unambiguous successor. The migration never discards it or invents a successor. Downgrade to `20260804_01` is refused after append-only successor history exists or when one semantic ID has multiple durable records, because that history is not losslessly representable in the original schema.
+
+### Destructive database contract
+
+Destructive integration and restore operations default to denied and require all of the following:
+
+- `DATABASE_ALLOW_DESTRUCTIVE_TEST_OPERATIONS=true`;
+- exact integration and restore database names matching both the URL and `SELECT current_database()`;
+- loopback/local Docker hosting unless the separately documented non-local override is true;
+- one pre-existing purpose-specific `quantkynd_control.disposable_database_sentinel` row outside `public`;
+- a stable PostgreSQL advisory lock acquired before the sentinel is rechecked and before destructive SQL;
+- distinct configured endpoints and distinct connected physical source/target database identity.
+
+The sentinel records exact database name, `integration` or `restore` purpose, schema marker, creation timestamp, and fixed ownership marker. Only the separate bootstrap CLI creates it. Verification never creates or repairs it. It survives public-schema replacement and is checked again afterward. Missing or mismatched configuration, sentinel data, lock ownership, or source/target separation fails closed without printing DSNs, passwords, subprocess environments, or PostgreSQL tool output.
+
+### Unit-of-work finality
+
+One unit of work represents exactly one transaction. Successful commit, explicit rollback, and commit failure finalize it. Later repository access, commit, or rollback raises `UnitOfWorkStateError`, including through repository references captured before finalization. Context exit closes the session and rolls back only an unfinished transaction.
+
+## Original implementation evidence — 2026-08-04
 
 ### Provenance
 

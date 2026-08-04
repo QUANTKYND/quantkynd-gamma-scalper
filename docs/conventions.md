@@ -170,9 +170,11 @@ Avoid introducing large functions that would otherwise need comments. Split them
 ## PostgreSQL persistence
 
 - Domain and port modules do not import SQLAlchemy or asyncpg.
-- One application-level unit of work owns one async session and the only commit or rollback decision.
+- One application-level unit of work owns one async session and exactly one transaction. Commit, rollback, and failed commit finalize it; captured repositories reject later access.
 - Repository methods flush statements but never commit independently.
-- Immutable deterministic IDs permit an exact complete-record reinsert and reject different durable content as a semantic collision.
-- Point-in-time reads apply half-open market-validity intervals and, when supplied, half-open knowledge-validity intervals.
+- Semantic IDs identify provider-neutral or provider-mapping content. Durable temporal record IDs additionally include knowledge time, source provenance, and the immutable predecessor reference.
+- Temporal correction writes append a successor after locking its existing predecessor. They require equal entity scope, a strictly later `recorded_at`, and no existing direct successor.
+- Immutable deterministic record IDs permit an exact complete-record reinsert and reject different durable content as a semantic collision.
+- Point-in-time reads use one transaction snapshot, validate the visible supersession graph, apply half-open market validity, and hide a predecessor only when its visible successor is market-eligible for the query.
 - Ambiguous visible records fail closed; iterable or insertion order never selects a winner.
 - Alembic revisions are the only accepted schema-creation and schema-alteration path.

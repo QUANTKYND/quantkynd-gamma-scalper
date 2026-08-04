@@ -166,7 +166,7 @@ DATA-1 uses bitemporal selection rather than one overloaded `as_of` timestamp:
 ```text
 exchange_timestamp ≤ market_as_of
 available_at ≤ known_as_of
-recorded_at/superseded_at bound system visibility
+recorded_at and append-only successor edges bound system visibility
 ```
 
 `market_as_of` represents market effective time. `known_as_of` represents the information QuantKYND could use at a decision. Catalogue versions and provider mappings must pass both their effective-time and system-time intervals. Event corrections and quality re-evaluations append new records, so an earlier knowledge cutoff continues to reproduce the earlier result.
@@ -179,9 +179,11 @@ Point-in-time reconstruction fails closed on structurally invalid inputs. Semant
 
 Postgres becomes durable truth only for the DATA-1.1 catalogue, instrument identity/version, provider-mapping, and trading-session records actually represented by the initial migration. Quote, trade, quality, chain, analytics, strategy, order, and ledger persistence remain deferred. Offline research and simulation do not construct a database engine and do not require database configuration.
 
-The infrastructure layer owns one lazy async engine factory, one SQLAlchemy metadata registry, explicit domain/row mappings, async repository adapters, and the Postgres unit of work. Each unit of work creates exactly one `AsyncSession`; repository calls never commit, and exit without an explicit successful commit rolls back. Immutable insertion uses the deterministic key as the conflict target, treats a complete-record repeat as idempotent, and raises a semantic collision when any durable field differs.
+The infrastructure layer owns one lazy async engine factory, one SQLAlchemy metadata registry, explicit domain/row mappings, async repository adapters, and the Postgres unit of work. Each unit of work creates exactly one `AsyncSession` and one repeatable-read transaction snapshot. Repository calls never commit. Commit, rollback, or failed commit finalizes the unit; exit without commit rolls back; context exit closes the session. Immutable insertion uses the deterministic key as the conflict target, treats a complete-record repeat as idempotent, and raises a semantic collision when any durable field differs.
 
-Provider-key lookup intersects mapping and contract-version market intervals. A supplied `known_as_of` also intersects both records' recorded/superseded intervals. Session lookup applies the session identity and version knowledge interval. Queries use deterministic ordering and fail closed when more than one record is visible. Alembic revision `20260804_01` is the sole schema creation path.
+Revision `20260804_02` separates semantic tables from immutable catalogue, instrument-version, provider-mapping, and session-version temporal record tables. Each record has a deterministic record ID, knowledge timestamp, scope, provenance, and optional self-table predecessor reference. A partial unique index permits at most one direct successor. Repositories lock the predecessor before validating existence, scope, strict time ordering, and successor absence. Read paths defensively reject missing targets, cross-scope edges, non-increasing time, branches, and cycles.
+
+For a point-in-time query, one transaction snapshot supplies all committed rows. `known_as_of` filters record knowledge time when present; current reads use every row visible in that snapshot. Market eligibility is evaluated independently. A visible successor hides its predecessor only when that successor is also market-eligible. Zero leaves means not found and multiple leaves raise an explicit ambiguity error. This rule lets sequential open-ended catalogue A/B records return A before B is known, A after B is known but before B is market-effective, and B only after both cutoffs admit it.
 
 ## State ownership
 

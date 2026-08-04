@@ -95,6 +95,10 @@ DATABASE_STATEMENT_TIMEOUT_MS
 DATABASE_APPLICATION_NAME
 DATABASE_ECHO
 DATABASE_RESTORE_TEST_URL
+DATABASE_ALLOW_DESTRUCTIVE_TEST_OPERATIONS
+DATABASE_EXPECTED_INTEGRATION_TEST_NAME
+DATABASE_EXPECTED_RESTORE_TEST_NAME
+DATABASE_ALLOW_NONLOCAL_DESTRUCTIVE_OPERATIONS
 REDIS_URL
 REDIS_KEY_PREFIX
 ARTIFACT_ROOT
@@ -177,9 +181,22 @@ Use local-only values matching `docker-compose.yaml` in `backend/.env`:
 ```text
 DATABASE_URL=postgresql+asyncpg://quantkynd:quantkynd_local@localhost:5432/quantkynd_test
 DATABASE_RESTORE_TEST_URL=postgresql+asyncpg://quantkynd:quantkynd_local@localhost:5432/quantkynd_restore
+DATABASE_ALLOW_DESTRUCTIVE_TEST_OPERATIONS=true
+DATABASE_EXPECTED_INTEGRATION_TEST_NAME=quantkynd_test
+DATABASE_EXPECTED_RESTORE_TEST_NAME=quantkynd_restore
+DATABASE_ALLOW_NONLOCAL_DESTRUCTIVE_OPERATIONS=false
 ```
 
-Both variables are optional until a database-backed command is invoked. Application URLs must use `postgresql+asyncpg`. The restore verifier refuses equal source and target databases and requires both database names to contain an explicit `test`, `restore`, `dev`, or `local` marker.
+Database URLs are optional until a database-backed command is invoked. Application URLs must use `postgresql+asyncpg`. Every destructive test requires the explicit opt-in, an exact expected database name matching `SELECT current_database()`, and a verified disposable sentinel. Substring markers are not accepted. Loopback is the default; a non-local host also requires `DATABASE_ALLOW_NONLOCAL_DESTRUCTIVE_OPERATIONS=true` and carries the risk of destroying a remotely hosted database.
+
+Bootstrap the two sentinels separately before destructive tests. Verification never creates them:
+
+```bash
+UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.bootstrap_disposable_database --purpose integration
+UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.bootstrap_disposable_database --purpose restore
+```
+
+The bootstrap creates one row in `quantkynd_control.disposable_database_sentinel` with the exact database name, `integration` or `restore` purpose, schema marker, creation timestamp, and fixed QuantKYND ownership marker. The control schema is outside `public` and survives public-schema replacement.
 
 From `backend`, migrate or inspect the schema with:
 
@@ -190,7 +207,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run alembic check
 UV_CACHE_DIR=/tmp/uv-cache uv run alembic downgrade base
 ```
 
-Run the destructive dump/restore acceptance check only against dedicated test-safe databases:
+Run the destructive dump/restore acceptance check only after both dedicated databases satisfy that contract. `pg_dump` and `pg_restore` must be genuine client tools compatible with the server:
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.verify_database_restore

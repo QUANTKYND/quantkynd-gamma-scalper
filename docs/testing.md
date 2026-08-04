@@ -135,7 +135,9 @@ Coverage is not a substitute for invariants. Critical money, order, risk, and re
 
 ## DATA-1.1 database verification
 
-Pure mapping, domain, configuration, and restore-safety tests run without Postgres. PostgreSQL integration and migration tests read `DATABASE_URL`, require a test-safe database name, and skip when no URL is configured. They construct schema only through Alembic and cover immutable reinsertion/collision, transaction rollback, point-in-time cutoffs, ambiguity, foreign-key deletion protection, upgrade, downgrade, re-upgrade, fixture persistence, and metadata drift.
+Pure mapping, temporal-graph, configuration, unit-of-work, and restore-safety tests run without Postgres. PostgreSQL tests require the explicit destructive opt-in, exact expected integration database name, matching sentinel, and advisory lock. If the contract is absent they skip with the missing requirements named; a final DATA-1.1 acceptance run requires zero skipped PostgreSQL tests.
+
+Real tests cover deterministic root migration, refusal of legacy non-null `superseded_at`, upgrade to `20260804_02`, downgrade to `20260804_01`, downgrade to base, re-upgrade, metadata drift, exact reinsertion and collision, predecessor locking, competing-successor serialization, strict successor scope/time, single-snapshot current reads, unit-of-work finality, rollback, sentinel mismatch/missing behavior, sentinel survival outside `public`, and advisory-lock contention.
 
 With the repository Postgres service healthy and the two local URLs configured:
 
@@ -149,4 +151,4 @@ UV_CACHE_DIR=/tmp/uv-cache uv run alembic check
 UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.verify_database_restore
 ```
 
-The restore verifier seeds through repositories and one unit of work, creates a custom-format no-owner/no-privilege dump, recreates only the test-safe target's `public` schema, restores it, and compares the Alembic revision, per-table row counts, canonical durable-row digest, provider-mapping read, and trading-session read. A successful `pg_restore` alone is not acceptance.
+The restore verifier holds verified source and target advisory locks, seeds append-only histories through repositories, creates a custom-format public-schema-only no-owner/no-privilege dump, drops only the verified target's `public` schema, restores it, and rechecks the protected target sentinel. It compares the Alembic revision, all thirteen table counts, canonical durable-row digest, semantic and record IDs, and historical/current provider-mapping, trading-session, and catalogue A/B reads. A successful `pg_restore` alone is not acceptance.
