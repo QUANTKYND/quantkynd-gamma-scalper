@@ -56,6 +56,7 @@ def manifest(root: Path, result, strategy, market, path) -> SimulationManifest:
         option_cost_model_hash=stable_hash(run_config.option_cost_model),
         futures_cost_model_hash=stable_hash(run_config.futures_cost_model),
         runtime_risk_hash=stable_hash(run_config.runtime_risk_inputs),
+        entry_assumptions=run_config.entry_assumptions.model_dump(mode="json"),
         run_config_hash=simulation_run_config_hash(run_config),
         simulation_clock_config=market.clock.model_dump(mode="json"),
         selected_expiry=result.call_contract.expiry,

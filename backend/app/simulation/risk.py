@@ -3,10 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from app.execution.costs import money
 from app.execution.models import SimulatedFill
+from app.options.selection import SyntheticOptionPair
 from app.strategy.models import RiskPolicyConfig
+
+if TYPE_CHECKING:
+    from app.simulation.results import OptionValuationRecord
 
 
 @dataclass(frozen=True)
@@ -14,8 +19,8 @@ class SimulationRiskDecision:
     timestamp: datetime
     session_date: date
     rule_id: str
-    observed_value: float | Decimal | bool
-    configured_limit: float | Decimal | bool
+    observed_value: float | Decimal | bool | int | str
+    configured_limit: float | Decimal | bool | int | str
     decision: str
     reason_code: str
     position_pnl_from_entry: Decimal
@@ -81,25 +86,109 @@ def entry_risk_decisions(
     timestamp: datetime,
     session_date: date,
     premium_at_risk: Decimal,
+    absolute_daily_theta: Decimal,
+    selected: SyntheticOptionPair,
     policy: RiskPolicyConfig,
+    require_quote_quality: bool,
+    require_liquidity: bool,
 ) -> tuple[SimulationRiskDecision, ...]:
-    limit = money(Decimal(str(policy.starting_nav_inr)) * Decimal(str(policy.maximum_premium_at_risk_fraction)))
-    breached = premium_at_risk > limit
-    return (
+    premium_limit = money(
+        Decimal(str(policy.starting_nav_inr))
+        * Decimal(str(policy.maximum_premium_at_risk_fraction))
+    )
+    theta_limit = money(
+        Decimal(str(policy.starting_nav_inr))
+        * Decimal(str(policy.maximum_daily_theta_fraction))
+    )
+    integrity = (
+        selected.call.strike == selected.put.strike
+        and selected.call.expiry == selected.put.expiry
+        and selected.call.multiplier == selected.put.multiplier
+    )
+    rules = (
+        (
+            "maximum_premium_at_risk",
+            premium_at_risk,
+            premium_limit,
+            premium_at_risk <= premium_limit,
+            "premium_at_risk",
+        ),
+        (
+            "option_spread_quality",
+            selected.combined_relative_spread,
+            policy.maximum_option_relative_spread,
+            not require_quote_quality
+            or selected.combined_relative_spread <= policy.maximum_option_relative_spread,
+            "option_spread",
+        ),
+        (
+            "option_volume_quality",
+            selected.combined_volume,
+            1,
+            not require_liquidity or selected.combined_volume > 0,
+            "option_volume",
+        ),
+        (
+            "option_open_interest_quality",
+            selected.combined_open_interest,
+            1,
+            not require_liquidity or selected.combined_open_interest > 0,
+            "option_open_interest",
+        ),
+        (
+            "matched_straddle_integrity",
+            integrity,
+            True,
+            integrity,
+            "matched_straddle_integrity",
+        ),
+        (
+            "maximum_daily_theta",
+            absolute_daily_theta,
+            theta_limit,
+            absolute_daily_theta <= theta_limit,
+            "daily_theta",
+        ),
+    )
+    decisions = tuple(
         SimulationRiskDecision(
             timestamp,
             session_date,
-            "maximum_premium_at_risk",
-            premium_at_risk,
+            rule_id,
+            observed,
             limit,
-            "reject" if breached else "approve",
-            "premium_at_risk_breached" if breached else "premium_at_risk_within_limit",
+            "approve" if approved else "reject",
+            f"{reason}_within_limit" if approved else f"{reason}_breached",
+            Decimal("0.00"),
+            Decimal("0.00"),
+            0,
+            0,
+        )
+        for rule_id, observed, limit, approved, reason in rules
+    )
+    return decisions + (
+        SimulationRiskDecision(
+            timestamp,
+            session_date,
+            "minimum_expected_net_edge",
+            "not_available_in_sim_1",
+            policy.minimum_expected_net_edge_fraction,
+            "not_evaluated",
+            "deferred_to_edge_1",
             Decimal("0.00"),
             Decimal("0.00"),
             0,
             0,
         ),
     )
+
+
+def absolute_daily_theta(
+    valuations: tuple[OptionValuationRecord, ...],
+    trading_periods_per_year: int,
+) -> Decimal:
+    annual_theta = sum(record.portfolio_theta_per_year for record in valuations)
+    return money(Decimal(str(abs(annual_theta) / trading_periods_per_year)))
 
 
 def option_entry_premium_at_risk(fills: tuple[SimulatedFill, ...]) -> Decimal:

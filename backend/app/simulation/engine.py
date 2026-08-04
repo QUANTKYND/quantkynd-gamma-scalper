@@ -17,6 +17,7 @@ from app.simulation.clock import SimulationExpiry, expiry_for_remaining_sessions
 from app.simulation.config import (
     CostModelConfig,
     RuntimeRiskInputs,
+    SimulationEntryAssumptions,
     SimulationMarketConfig,
     SimulationRunConfig,
     simulation_market_config_hash,
@@ -27,6 +28,7 @@ from app.simulation.events import SimulationEvent
 from app.simulation.paths import GeneratedPath
 from app.simulation.results import OptionValuationRecord, SimulationResult
 from app.simulation.risk import (
+    absolute_daily_theta,
     entry_risk_decisions,
     initialize_risk_state,
     mark_risk_state,
@@ -105,11 +107,16 @@ def run_simulation(
         initial.timestamp,
         initial.session_date or initial.timestamp.date(),
         option_entry_premium_at_risk(entry_fills),
+        absolute_daily_theta(entry_values, market.clock.trading_periods_per_year),
+        selected,
         strategy.risk,
+        strategy.expiry.require_quote_quality,
+        strategy.expiry.require_liquidity,
     )
     risk_records.extend(entry_risks)
     if any(item.decision == "reject" for item in entry_risks):
-        raise ValueError("premium_at_risk_breached")
+        rejection = next(item.reason_code for item in entry_risks if item.decision == "reject")
+        raise ValueError(rejection)
     for intent, fill in zip(entry_intents, entry_fills, strict=True):
         ledger.record_fill(fill, "option_entry", position_id)
         intents.append(intent)
@@ -457,6 +464,9 @@ def build_simulation_run_config(
         option_cost_model=CostModelConfig.from_parameters(option_costs),
         futures_cost_model=CostModelConfig.from_parameters(futures_costs),
         runtime_risk_inputs=RuntimeRiskInputs(manual_kill_switch_engaged=manual_kill_switch_engaged),
+        entry_assumptions=SimulationEntryAssumptions(
+            edge_gate_mode="not_evaluated_hedge_policy_benchmark"
+        ),
         accounting_tolerance=accounting_tolerance,
         quantity_rounding="nearest_integer_half_even",
     )

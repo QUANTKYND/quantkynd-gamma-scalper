@@ -60,6 +60,7 @@ class SimulationManifest(BaseModel):
     option_cost_model_hash: str
     futures_cost_model_hash: str
     runtime_risk_hash: str
+    entry_assumptions: dict[str, object]
     run_config_hash: str
     simulation_clock_config: dict[str, object]
     selected_expiry: date

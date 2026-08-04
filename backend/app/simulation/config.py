@@ -94,6 +94,10 @@ class RuntimeRiskInputs(StrictFrozenModel):
     manual_kill_switch_engaged: bool
 
 
+class SimulationEntryAssumptions(StrictFrozenModel):
+    edge_gate_mode: Literal["not_evaluated_hedge_policy_benchmark"]
+
+
 class SimulationRunConfig(StrictFrozenModel):
     schema_version: Literal[1]
     simulator_version: str
@@ -106,6 +110,7 @@ class SimulationRunConfig(StrictFrozenModel):
     option_cost_model: CostModelConfig
     futures_cost_model: CostModelConfig
     runtime_risk_inputs: RuntimeRiskInputs
+    entry_assumptions: SimulationEntryAssumptions
     accounting_tolerance: Decimal = Field(gt=0)
     quantity_rounding: Literal["nearest_integer_half_even"]
 
