@@ -14,4 +14,6 @@ The default reconciliation tolerance is INR 0.01. A larger residual fails the ru
 
 Entry premium at risk is the absolute reference notional of both long option fills plus their configured entry transaction costs. Each reference notional is `unit price × quantity × option multiplier`. Risk approval occurs before either entry fill is journaled as an open position.
 
-Position P&L is measured from the post-entry portfolio value and persists across sessions. Session P&L is measured from the first mark of each session and resets at the session boundary. The per-session hedge count resets with session P&L; total hedge count remains cumulative.
+Position P&L is current portfolio value minus starting NAV immediately before entry. Entry spread, slippage, fixed cost, and proportional cost therefore appear immediately in position and first-session P&L. Position P&L remains cumulative across sessions.
+
+Session P&L is current portfolio value minus the prior session's final marked value. The first mark of a new session therefore includes the full overnight gain or loss. The per-session hedge count resets at that transition; total hedge count remains cumulative.

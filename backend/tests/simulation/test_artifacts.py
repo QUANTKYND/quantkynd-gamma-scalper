@@ -1,5 +1,5 @@
 import csv
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -16,6 +16,8 @@ from app.simulation.config import (
 )
 from app.simulation.paths import GBMPathConfig, generate_gbm_path
 from app.simulation.run_store import SimulationRunStore
+from app.simulation.market import MarketState
+from app.simulation.state_builder import executable_market_state_hash
 from app.strategy.config import load_strategy_config
 from app.strategy.hashing import strategy_config_hash
 from tests.simulation.support import sessions_for_path
@@ -109,6 +111,26 @@ def test_completed_run_has_every_artifact_and_is_immutable(tmp_path) -> None:
     } <= hedge_columns
     assert {"position_pnl_from_entry", "session_pnl", "session_hedge_count", "total_hedge_count"} <= risk_columns
     assert {"unit_price", "unit_delta", "market_value", "portfolio_delta"} <= valuation_columns
+    with (run_dir / "market-states.csv").open() as stream:
+        persisted_states = tuple(
+            MarketState(
+                timestamp=datetime.fromisoformat(row["timestamp"]),
+                session_index=int(row["session_index"]),
+                step_index=int(row["step_index"]),
+                spot=float(row["spot"]),
+                futures_price=float(row["futures_price"]),
+                risk_free_rate=float(row["risk_free_rate"]),
+                dividend_yield=float(row["dividend_yield"]),
+                implied_volatility=float(row["implied_volatility"]),
+                time_to_expiry_years=float(row["time_to_expiry_years"]),
+                futures_time_to_expiry_years=float(row["futures_time_to_expiry_years"]),
+                step_year_fraction=float(row["step_year_fraction"]),
+                session_date=date.fromisoformat(row["session_date"]),
+                local_timestamp=datetime.fromisoformat(row["local_timestamp"]),
+            )
+            for row in csv.DictReader(stream)
+        )
+    assert executable_market_state_hash(persisted_states) == completed.executable_market_state_hash
 
 
 def test_failed_run_persists_manifest_and_temp_is_not_listed(tmp_path) -> None:

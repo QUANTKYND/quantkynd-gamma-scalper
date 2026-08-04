@@ -10,7 +10,9 @@
 ## Deterministic option engine gate
 
 - Strategy, simulation-market, path, policy, cost, runtime-risk, and accounting inputs are explicit and hashed.
+- Underlying-path and executable market-state hashes are distinct, stable, and reproducible from persisted artifacts.
 - Expiry dates and year fractions derive from one session clock.
+- Every executable timestamp and step fraction validates against the configured weekday session clock.
 - Reference pricing tests pass.
 - Put-call parity passes.
 - IV round trips pass over the approved domain.
@@ -24,6 +26,9 @@
 - Exit and risk evaluation precede any same-timestamp routine hedge.
 - Premium risk includes contract multipliers and configured entry costs before fills are journaled.
 - Position P&L, session P&L, session hedge count, and total hedge count retain distinct semantics.
+- Entry costs are included in position and first-session P&L; overnight gaps are included in new-session P&L.
+- Spread, liquidity, matched-contract, and daily-theta entry gates execute before fills; expected edge is explicitly deferred to EDGE-1.
+- A post-policy absolute-delta breach forces a reducing hedge or exits deterministically if contract granularity cannot satisfy the cap.
 - Pre-hedge trigger delta and post-hedge residual delta are separately recorded and summarized.
 - Ledger reconciles to machine or accounting tolerance.
 - Frictionless higher-frequency hedging reduces hedge error in controlled cases.
@@ -31,6 +36,7 @@
 - Cost increases affect band width in the expected direction for the baseline formula.
 - Policies receive identical paths and information.
 - P&L attribution sums to terminal P&L.
+- Post-identity selection, engine, and reconciliation failures persist immutable failed manifests.
 
 ## Point-in-time data gate
 

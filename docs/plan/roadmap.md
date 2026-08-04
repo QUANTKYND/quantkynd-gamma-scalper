@@ -18,8 +18,8 @@
 | LIVE-RV-1 | COMPLETE | Selectable Upstox index/equity history and a clearly provisional LTPC close-to-close overlay; read-only precursor, not the full LIVE-1 gate. |
 | LIVE-RV-1.1 | COMPLETE | Accepted quote sequences, concurrent subscriptions, WebSocket lifecycle, segment status, and finalized rollover are hardened with deterministic evidence. |
 | Strategy Contract v1 | COMPLETE | Frozen NIFTY long-straddle contract, typed risk limits, and stable behavioral hash. |
-| SIM-1 deterministic option engine | COMPLETE | Contract-driven Black–Scholes, explicit valuation units, hardened IV outcomes, shared expiry time, and numerical boundaries. |
-| SIM-2 hedge simulator | COMPLETE | Configured market mechanics, session-aware risk, timed delta metrics, five policies, exact ledger, attribution, and full-spec immutable runs. |
+| SIM-1 deterministic option engine | COMPLETE | Contract-driven Black–Scholes, separate path/executable-state provenance, strict clock and finite inputs, explicit valuation units, and hardened IV outcomes. |
+| SIM-2 hedge simulator | COMPLETE | Contract-owned maturities, executable entry and delta risk, correct P&L references, five policies, exact ledger, attribution, failed manifests, and full provenance. |
 | DATA-1 point-in-time options model | READY | Instruments, sessions, contracts, quotes, chains, storage, and quality. |
 | OPTIONS-1 IV surface | BLOCKED by DATA-1 | Market-derived IV, Greeks, surface, and diagnostics. |
 | EDGE-1 gamma opportunity engine | BLOCKED by OPTIONS-1 | Physical versus implied variance and net edge decomposition. |

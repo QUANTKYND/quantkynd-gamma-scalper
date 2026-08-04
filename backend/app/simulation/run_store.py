@@ -65,8 +65,9 @@ class SimulationRunStore:
         write_manifest(temp_dir / "manifest.json", running)
         try:
             manifest_updates = write_artifacts(temp_dir) or {}
-            completed = running.model_copy(
-                update={
+            completed = SimulationManifest.model_validate(
+                {
+                    **running.model_dump(mode="python"),
                     **manifest_updates,
                     "status": "complete",
                     "completed_at": datetime.now(UTC),

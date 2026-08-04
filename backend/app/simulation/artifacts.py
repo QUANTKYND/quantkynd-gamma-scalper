@@ -3,14 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from app.simulation.config import SimulationMarketConfig
 from app.simulation.metrics import summarize
@@ -74,6 +74,17 @@ class SimulationManifest(BaseModel):
     git_commit: str | None
     artifact_directory: str
     failure_reason: str | None
+
+    @model_validator(mode="after")
+    def validate_completed_provenance(self) -> SimulationManifest:
+        completed_values = (
+            self.selected_expiry,
+            self.selected_strike,
+            self.executable_market_state_hash,
+        )
+        if self.status == "complete" and any(value is None for value in completed_values):
+            raise ValueError("completed simulation manifest requires selected contract and state hash")
+        return self
 
 
 def stable_payload_hash(payload: object) -> str:
@@ -174,7 +185,7 @@ def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:
 
 def _json_value(value):
     if isinstance(value, datetime):
-        return value.astimezone(UTC).isoformat()
+        return value.isoformat()
     if isinstance(value, Decimal):
         return str(value)
     if isinstance(value, tuple):
