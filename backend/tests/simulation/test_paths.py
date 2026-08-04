@@ -52,17 +52,20 @@ def test_user_path_validation() -> None:
 
 
 def test_piecewise_regimes_are_deterministic_and_cover_steps() -> None:
+    simulation_sessions = sessions()
     config = PiecewisePathConfig(
         24000,
         0.03,
         (VolatilityRegime(1, 2, 0.1), VolatilityRegime(3, 5, 0.4)),
         5,
-        1 / 252,
+        simulation_sessions[1].year_fraction_from_previous,
         17,
     )
-    assert generate_piecewise_path(config, sessions()) == generate_piecewise_path(config, sessions())
+    assert generate_piecewise_path(config, simulation_sessions) == generate_piecewise_path(
+        config, simulation_sessions
+    )
     with pytest.raises(ValueError):
         generate_piecewise_path(
             replace(config, volatility_regimes=(VolatilityRegime(1, 4, 0.2),)),
-            sessions(),
+            simulation_sessions,
         )

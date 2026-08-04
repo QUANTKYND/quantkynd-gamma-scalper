@@ -199,3 +199,14 @@ def _hold(
         total_hedge_count=0,
         reason_code=reason,
     )
+
+
+def force_delta_reduction(state: HedgePolicyState, policy_id: str) -> HedgeDecision:
+    return _trade_to_target(
+        state,
+        policy_id,
+        0.0,
+        -0.0,
+        0.0,
+        "absolute_delta_forced_hedge",
+    )

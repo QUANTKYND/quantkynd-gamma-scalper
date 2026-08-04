@@ -68,6 +68,9 @@ def test_engine_uses_futures_multiplier_and_delta_per_contract() -> None:
 
 def test_market_behavior_changes_run_identity() -> None:
     strategy, market, path = inputs()
+    strategy = strategy.model_copy(
+        update={"risk": strategy.risk.model_copy(update={"maximum_daily_theta_fraction": 1.0})}
+    )
     base = run_simulation(strategy, market, path, "no_hedge", ZERO, ZERO)
     options = market.options.model_copy(update={"multiplier": 25})
     changed = market.model_copy(update={"options": options})

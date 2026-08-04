@@ -23,8 +23,15 @@ def inputs():
     return strategy, market, path
 
 
+def relaxed_delta_limit(strategy):
+    return strategy.model_copy(
+        update={"risk": strategy.risk.model_copy(update={"maximum_absolute_delta_units": 10.0})}
+    )
+
+
 def test_engine_is_deterministic_and_reconciles() -> None:
     strategy, market, path = inputs()
+    strategy = relaxed_delta_limit(strategy)
     first = run_simulation(strategy, market, path, "constant_band", ZERO, ZERO)
     second = run_simulation(strategy, market, path, "constant_band", ZERO, ZERO)
     assert first == second
@@ -79,6 +86,7 @@ def test_future_path_changes_do_not_change_earlier_decisions() -> None:
 
 def test_frictionless_hedging_reduces_delta_error_on_controlled_path() -> None:
     strategy, market, path = inputs()
+    strategy = relaxed_delta_limit(strategy)
     shocked_points = path.points[:1] + tuple(
         replace(point, spot=point.spot * 1.5)
         for point in path.points[1:]
@@ -96,6 +104,7 @@ def test_frictionless_hedging_reduces_delta_error_on_controlled_path() -> None:
 
 def test_hold_decisions_preserve_timed_delta_and_summary_uses_each_timing() -> None:
     strategy, market, path = inputs()
+    strategy = relaxed_delta_limit(strategy)
     result = run_simulation(strategy, market, path, "no_hedge", ZERO, ZERO)
     assert result.hedge_decisions
     assert all(
@@ -115,6 +124,7 @@ def test_hold_decisions_preserve_timed_delta_and_summary_uses_each_timing() -> N
 
 def test_decision_event_records_aligned_before_and_after_state() -> None:
     strategy, market, path = inputs()
+    strategy = relaxed_delta_limit(strategy)
     costs = ExecutionCostParameters(Decimal("5"), Decimal("0"), Decimal("0.25"), Decimal("0"))
     result = run_simulation(strategy, market, path, "fixed_interval", ZERO, costs)
     events = [event for event in result.events if event.event_type == "decision_completed"]
@@ -129,6 +139,7 @@ def test_decision_event_records_aligned_before_and_after_state() -> None:
 
 def test_more_trading_increases_modeled_costs() -> None:
     strategy, market, path = inputs()
+    strategy = relaxed_delta_limit(strategy)
     shocked_points = path.points[:1] + tuple(
         replace(point, spot=point.spot * 1.5)
         for point in path.points[1:]

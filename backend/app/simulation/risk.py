@@ -259,3 +259,25 @@ def state_risk_decisions(
         )
         for rule_id, observed, limit, breached, reason in rules
     )
+
+
+def post_hedge_delta_risk_decision(
+    timestamp: datetime,
+    risk_state: SimulationRiskState,
+    residual_delta: float,
+    limit: float,
+    disposition: str,
+) -> SimulationRiskDecision:
+    return SimulationRiskDecision(
+        timestamp,
+        risk_state.current_session_date,
+        "maximum_absolute_delta_post_fill",
+        abs(residual_delta),
+        limit,
+        "pass" if disposition == "within_limit" else "override" if disposition == "forced_hedge" else "exit",
+        f"absolute_delta_{disposition}",
+        risk_state.position_pnl_from_entry,
+        risk_state.session_pnl,
+        risk_state.hedges_in_current_session,
+        risk_state.total_hedges,
+    )

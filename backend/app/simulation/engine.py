@@ -9,7 +9,7 @@ from app.execution.costs import money
 from app.execution.fills import simulate_fill
 from app.execution.models import ExecutionCostParameters, OrderIntent, SimulatedFill
 from app.hedging.models import HedgeDecision, HedgePolicyState
-from app.hedging.policies import build_hedge_policy
+from app.hedging.policies import build_hedge_policy, force_delta_reduction
 from app.options.black_scholes import value
 from app.options.selection import continuous_forward, select_expiry, select_straddle, synthetic_chain
 from app.portfolio.ledger import PortfolioLedger
@@ -33,6 +33,7 @@ from app.simulation.risk import (
     initialize_risk_state,
     mark_risk_state,
     option_entry_premium_at_risk,
+    post_hedge_delta_risk_decision,
     record_risk_hedge,
     state_risk_decisions,
 )
@@ -176,21 +177,104 @@ def run_simulation(
                 )
             )
             break
-        decision = policy.decide(
-            HedgePolicyState(
-                state.timestamp,
-                state.step_index,
-                state.session_index,
-                option_delta,
-                hedge_delta,
-                net_delta,
-                option_gamma,
-                state.spot,
-                state.time_to_expiry_years,
-                market.futures.delta_per_contract,
-                state.risk_free_rate,
-            )
+        policy_state = HedgePolicyState(
+            state.timestamp,
+            state.step_index,
+            state.session_index,
+            option_delta,
+            hedge_delta,
+            net_delta,
+            option_gamma,
+            state.spot,
+            state.time_to_expiry_years,
+            market.futures.delta_per_contract,
+            state.risk_free_rate,
         )
+        decision = policy.decide(policy_state)
+        forced_delta_control = False
+        if abs(decision.net_delta_after_fill) > strategy.risk.maximum_absolute_delta_units:
+            forced = force_delta_reduction(policy_state, policy_id)
+            forced_reduces_delta = (
+                forced.rounded_requested_futures_quantity != 0
+                and abs(forced.net_delta_after_fill) < abs(net_delta)
+            )
+            if (
+                not forced_reduces_delta
+                or abs(forced.net_delta_after_fill) > strategy.risk.maximum_absolute_delta_units
+            ):
+                exit_reason = "absolute_delta_unhedgeable"
+                risk_records.append(
+                    post_hedge_delta_risk_decision(
+                        state.timestamp,
+                        risk_state,
+                        forced.net_delta_after_fill,
+                        strategy.risk.maximum_absolute_delta_units,
+                        "unhedgeable",
+                    )
+                )
+                failed_decision = replace(
+                    forced,
+                    action="hold",
+                    rounded_requested_futures_quantity=0,
+                    executed_futures_quantity=0,
+                    option_delta_after_fill=option_delta,
+                    hedge_delta_after_fill=hedge_delta,
+                    net_delta_after_fill=net_delta,
+                    quantity_rounding_residual_delta=net_delta,
+                    portfolio_value_before_fill=ledger.portfolio_value(),
+                    portfolio_value_after_fill=ledger.portfolio_value(),
+                    session_hedge_count=risk_state.hedges_in_current_session,
+                    total_hedge_count=risk_state.total_hedges,
+                    reason_code="absolute_delta_unhedgeable",
+                )
+                decisions.append(failed_decision)
+                events.append(
+                    SimulationEvent(
+                        len(events) + 1,
+                        state.timestamp,
+                        "decision_completed",
+                        position_id,
+                        {
+                            "option_delta_before_decision": option_delta,
+                            "hedge_delta_before_decision": hedge_delta,
+                            "net_delta_before_decision": net_delta,
+                            "continuous_target_futures_quantity": forced.continuous_target_futures_quantity,
+                            "rounded_requested_futures_quantity": 0,
+                            "executed_futures_quantity": 0,
+                            "option_delta_after_fill": option_delta,
+                            "hedge_delta_after_fill": hedge_delta,
+                            "net_delta_after_fill": net_delta,
+                            "portfolio_value_before_fill": str(ledger.portfolio_value()),
+                            "portfolio_value_after_fill": str(ledger.portfolio_value()),
+                            "action": "hold",
+                        },
+                    )
+                )
+                events.append(
+                    SimulationEvent(
+                        len(events) + 1,
+                        state.timestamp,
+                        "risk_control_failed",
+                        position_id,
+                        {
+                            "reason_code": "absolute_delta_unhedgeable",
+                            "net_delta_before_decision": net_delta,
+                            "predicted_residual_delta": forced.net_delta_after_fill,
+                        },
+                    )
+                )
+                events.append(
+                    SimulationEvent(
+                        len(events) + 1,
+                        state.timestamp,
+                        "exit_required",
+                        position_id,
+                        {"exit_reason": exit_reason, "net_delta": net_delta},
+                    )
+                )
+                break
+            decision = forced
+            forced_delta_control = True
         portfolio_value_before_fill = ledger.portfolio_value()
         executed_quantity = 0
         if decision.rounded_requested_futures_quantity:
@@ -226,6 +310,15 @@ def run_simulation(
             portfolio_value_after_fill=portfolio_value_after_fill,
             session_hedge_count=risk_state.hedges_in_current_session,
             total_hedge_count=risk_state.total_hedges,
+        )
+        risk_records.append(
+            post_hedge_delta_risk_decision(
+                state.timestamp,
+                risk_state,
+                net_delta_after_fill,
+                strategy.risk.maximum_absolute_delta_units,
+                "forced_hedge" if forced_delta_control else "within_limit",
+            )
         )
         decisions.append(decision)
         events.append(
@@ -320,7 +413,7 @@ def run_simulation(
         futures_id,
         market.futures.multiplier,
         market.futures.delta_per_contract,
-        tuple(processed_states),
+        tuple(executable_states),
         tuple(valuations),
         tuple(decisions),
         tuple(risk_records),

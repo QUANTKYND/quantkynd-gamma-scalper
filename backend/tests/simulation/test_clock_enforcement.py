@@ -51,6 +51,11 @@ def test_non_utc_timestamp_cannot_silently_derive_exchange_date() -> None:
 
 def test_friday_to_monday_path_passes_engine_clock_validation() -> None:
     strategy, market, path = inputs()
+    strategy = strategy.model_copy(
+        update={
+            "risk": strategy.risk.model_copy(update={"maximum_absolute_delta_units": 10.0})
+        }
+    )
     result = run_simulation(strategy, market, path, "no_hedge", ZERO, ZERO)
     dates = {state.session_date for state in result.market_states}
     assert date(2026, 1, 2) in dates
