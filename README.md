@@ -85,8 +85,8 @@ forecast-history.csv
 features.csv
 ```
 
-`GET /rv/backtest/runs` reads these manifests. If no persisted manifests exist,
-it returns an empty list.
+`GET /api/v1/rv/backtest/runs` reads these manifests. If no persisted manifests
+exist, it returns an empty list.
 
 ## Dashboard
 

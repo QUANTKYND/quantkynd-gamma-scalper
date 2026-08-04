@@ -278,6 +278,10 @@ def backtest_rv_forecast(
     _validate_positive_int(periods_per_year, "periods_per_year")
     stride = horizon_sessions if metric_stride is None else metric_stride
     _validate_positive_int(stride, "metric_stride")
+    if stride < horizon_sessions:
+        raise ValueError(
+            "metric_stride must be at least horizon_sessions for non-overlapping evaluation"
+        )
 
     target = make_forward_variance_target(
         prices,

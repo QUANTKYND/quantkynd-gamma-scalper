@@ -103,7 +103,7 @@ class RVRunStore:
         self,
         *,
         base_manifest: RVRunManifest,
-        write_artifacts: Callable[[Path], None],
+        write_artifacts: Callable[[Path], RVRunManifest | dict[str, Any] | None],
     ) -> RVRunManifest:
         """Write a running manifest, artifacts, and final manifest atomically."""
 
@@ -127,15 +127,27 @@ class RVRunStore:
         self._write_manifest(temp_dir, running_manifest)
 
         try:
-            write_artifacts(temp_dir)
-            completed = running_manifest.model_copy(
-                update={
-                    "status": "complete",
-                    "completed_at": datetime.now(UTC),
-                    "artifact_directory": str(final_dir),
-                    "failure_reason": None,
-                }
-            )
+            artifact_updates = write_artifacts(temp_dir)
+            if isinstance(artifact_updates, RVRunManifest):
+                completed = artifact_updates.model_copy(
+                    update={
+                        "status": "complete",
+                        "completed_at": datetime.now(UTC),
+                        "artifact_directory": str(final_dir),
+                        "failure_reason": None,
+                    }
+                )
+            else:
+                manifest_updates = artifact_updates if isinstance(artifact_updates, dict) else {}
+                completed = running_manifest.model_copy(
+                    update={
+                        **manifest_updates,
+                        "status": "complete",
+                        "completed_at": datetime.now(UTC),
+                        "artifact_directory": str(final_dir),
+                        "failure_reason": None,
+                    }
+                )
             self._write_manifest(temp_dir, completed)
             os.replace(temp_dir, final_dir)
             return completed

@@ -44,7 +44,7 @@ const RvDashboard = (): React.ReactElement => {
   const sixtyThreeSession = estimateFor(latest.estimates, 63)
   const cards: SummaryCard[] = [
     { label: '1-session annualized volatility', value: pct(oneSession?.annualized_volatility), sublabel: `As of ${latest.as_of}`, tone: 'neutral' },
-    { label: '5-session annualized volatility', value: pct(fiveSession?.annualized_volatility), sublabel: `${backtest.horizon_sessions}-session forecast horizon`, tone: 'accent' },
+    { label: '5-session annualized volatility', value: pct(fiveSession?.annualized_volatility), sublabel: 'Trailing 5 completed sessions', tone: 'accent' },
     { label: '21-session annualized volatility', value: pct(twentyOneSession?.annualized_volatility), sublabel: 'Close-to-close estimator', tone: 'accent' },
     { label: '63-session annualized volatility', value: pct(sixtyThreeSession?.annualized_volatility), sublabel: 'Daily close fallback', tone: 'neutral' },
     { label: '5D / 21D annualized variance ratio', value: numberText(latest.variance_ratio_5_21), sublabel: latest.variance_ratio_5_21 != null && latest.variance_ratio_5_21 > 1 ? 'Short variance elevated' : 'Short variance contained', tone: latest.variance_ratio_5_21 != null && latest.variance_ratio_5_21 > 1 ? 'warn' : 'good' },

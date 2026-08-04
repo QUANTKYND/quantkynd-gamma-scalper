@@ -129,6 +129,11 @@ def test_metric_stride_selects_non_overlapping_targets() -> None:
     assert np.diff(positions).tolist() == [5, 5, 5]
 
 
+def test_metric_stride_must_prevent_overlapping_targets() -> None:
+    with pytest.raises(ValueError, match="metric_stride must be at least horizon_sessions"):
+        backtest_rv_forecast(_prices(), horizon_sessions=5, metric_stride=1)
+
+
 def test_metrics_include_n_obs_and_null_undefined_correlation() -> None:
     metrics = evaluate_forecast(pd.Series([1.0, 1.0, 1.0]), pd.Series([2.0, 2.0, 2.0]))
 
