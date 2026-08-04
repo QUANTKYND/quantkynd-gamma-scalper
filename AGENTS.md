@@ -66,3 +66,25 @@ A change is not complete until:
 - Documentation is updated.
 - Generated artifacts and caches are not committed.
 - `git diff --check` passes.
+
+## Milestone implementation standard
+
+Before designing or implementing any roadmap milestone, read:
+
+- `docs/standards/milestone-requirement-standard.md`
+
+All milestone work must follow its requirements, including:
+
+- the Definition of Ready;
+- the pre-implementation design gate;
+- identity and time-model specification;
+- lifecycle and state-transition modelling;
+- adversarial scenario matrices;
+- proof obligations;
+- infrastructure prerequisites;
+- acceptance-critical tests with zero skips;
+- the Definition of Done.
+
+Do not begin implementation until the task-specific design proposal has been reviewed and approved when the standard requires a design gate.
+
+If a task instruction conflicts with the standard, stop and report the conflict rather than choosing an interpretation silently.
