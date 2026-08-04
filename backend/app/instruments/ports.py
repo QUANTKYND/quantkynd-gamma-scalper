@@ -13,6 +13,12 @@ from app.instruments.identity import (
 )
 from app.instruments.sessions import TradingSessionIdentity, TradingSessionVersion
 from app.instruments.temporal_records import AmbiguousPointInTimeResultError
+from app.instruments.provider_catalogue import (
+    CatalogueIngestionRun,
+    CatalogueMembership,
+    CatalogueRowOutcome,
+    CatalogueSourceArtifact,
+)
 
 
 class SemanticCollisionError(ValueError):
@@ -105,10 +111,28 @@ class TradingSessionRepository(Protocol):
     ) -> TradingSessionVersion | None: ...
 
 
+class CatalogueIngestionRepository(Protocol):
+    async def lock_provider_profile(self, provider: str, profile_version: str) -> None: ...
+
+    async def add_source_artifact(self, artifact: CatalogueSourceArtifact) -> None: ...
+
+    async def add_ingestion_run(self, run: CatalogueIngestionRun) -> None: ...
+
+    async def add_row_outcomes(self, outcomes: tuple[CatalogueRowOutcome, ...]) -> None: ...
+
+    async def add_memberships(self, memberships: tuple[CatalogueMembership, ...]) -> None: ...
+
+    async def get_ingestion_run_by_idempotency_key(
+        self,
+        idempotency_key: str,
+    ) -> CatalogueIngestionRun | None: ...
+
+
 class UnitOfWork(Protocol):
     instruments: InstrumentRepository
     catalogues: CatalogueRepository
     trading_sessions: TradingSessionRepository
+    catalogue_ingestions: CatalogueIngestionRepository
 
     async def __aenter__(self) -> Self: ...
 

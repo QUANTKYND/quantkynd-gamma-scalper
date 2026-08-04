@@ -32,6 +32,7 @@ class DatabaseSettings(BaseSettings):
     database_expected_integration_test_name: str | None = None
     database_expected_restore_test_name: str | None = None
     database_allow_nonlocal_destructive_operations: bool = False
+    catalogue_artifact_root: str | None = None
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -80,6 +81,13 @@ class DatabaseSettings(BaseSettings):
                 "source and restore-test databases must be different"
             )
         return DatabaseUrls(source, restore)
+
+    def require_catalogue_artifact_root(self) -> str:
+        if self.catalogue_artifact_root is None or not self.catalogue_artifact_root.strip():
+            raise DatabaseConfigurationError(
+                "CATALOGUE_ARTIFACT_ROOT is required for catalogue ingestion commits"
+            )
+        return self.catalogue_artifact_root
 
 
 def redacted_database_url(value: str) -> str:
