@@ -21,6 +21,9 @@ This evidence does not accept or merge DATA-1.3. The feature branch remains pape
 - Final lifecycle/CLI core correction SHA: `a72ffe1c70b8261beee1ccf89dd36ac63b7912ce`
 - Final lifecycle/CLI corrected implementation SHA: `9e0e62dd1e220f2a92ebcaeb4d4b3dbf4efd9069`
 - Final lifecycle/CLI evidence snapshot SHA: `e540b3ed688fec89902760ee47833e5924d8c5e9`
+- Provider-identity correction starting SHA: `73f6e113afa95c9df19364ac2220a5678fbabdd3`
+- Provider-identity corrected implementation SHA: `e088760d646c8ec569abd1de3a3c395cb5e30ec6`
+- Provider-identity evidence snapshot SHA: `PENDING_PROVIDER_IDENTITY_EVIDENCE_SHA`
 
 Implementation commits from the original baseline:
 
@@ -41,6 +44,8 @@ c323d49 test(data): prove corrected normalization checkpoint
 971a9e3 fix(data): apply final normalization review corrections
 a72ffe1 fix(data): apply final lifecycle and CLI corrections
 9e0e62d fix(data): preserve canonical result output
+66d6cb9 fix(data): enforce provider identity boundaries
+e088760 test(data): refresh canonical provenance hashes
 ```
 
 ## Implemented contracts
@@ -60,6 +65,10 @@ Final lifecycle corrections retain independent state by subscription scope while
 Lifecycle identity validation preserves first-capture order and the CLI validates and normalizes only `unique_events`, while reporting sorted `exact_duplicate_raw_event_ids`. Exact connection and subscription duplicates therefore succeed as a controlled deduplication outcome; changed content under the same identity remains exit `1`.
 
 Deferred declarations are fixed per selected feed union. Frame declarations are the sorted union across decoded primary entries. Failed subjects retain the selected union, declaration, reliably present nested-message paths, and structural depth count without evaluating deferred values.
+
+Provider-identity boundary correction validates only map identities in the primary payload selected by the response type. A malformed quote key or market segment produces a deterministic frame failure before subject resolution, status normalization, event construction, or secondary structural processing. Reasons are `invalid_provider_contract_key` and `invalid_market_segment`; decoded response type is retained and all reconciliation counts are zero. Provider keys accept at most 512 UTF-8 bytes and segments at most 128, with no leading/trailing whitespace or ASCII controls. Internal spaces remain valid. Coexisting secondary identities remain unadopted and are not validated or reinterpreted.
+
+Subject and segment failure identifiers use the same exact validation and bounds. `SubjectResolutionFailureV1` stores only the four declared resolver reasons: unknown key, stale mapping, ambiguous mapping, or ambiguous contract version. Both static and PostgreSQL resolvers construct this closed contract.
 
 ## Proto and dependency ownership
 
@@ -117,15 +126,17 @@ Capture and subject manifests now validate every required object, array, string,
 
 `FrameNormalizationResultV1` carries explicit immutable capture provenance internally and recomputes both hash projections during construction. The provenance is excluded from canonical result serialization because the established CLI projection already exposes raw identity and frame hash; it remains included in the full-hash projection. Forged full/adopted hashes, an adopted event changed without rebuilding, and capture provenance changed without rebuilding all fail. Official CLI projections, fixture event IDs, and expected hashes remain unchanged because the corrected self-validation uses the previously approved projections.
 
+Provider-identity correction completes capture-provenance construction: schema digest uses canonical prefixed lowercase SHA-256, receipt-based captures require equal receipt/availability, historical imports forbid receipt, clock order is explicit, and source identities are paired. The CLI treats a structurally decoded, fully reconciled result containing only entry failures as a valid exit `0` outcome; a `frame_failure` remains unconditional exit `1`.
+
 `app.cli.normalize_market_lifecycle_fixture` deterministically covers connection, subscription, reconnect/new-session, sorted key digest, redacted failure, and invalid transitions. Neither CLI requires database, restore URL, provider token, Redis, or network.
 
 ## Acceptance results
 
-- Focused no-infrastructure normalization/fixture/LIVE-RV suite: `231 passed`, zero skipped.
-- Complete market-data test directory: `244 passed`, zero skipped.
+- Focused no-infrastructure normalization/fixture/LIVE-RV suite: `278 passed`, zero skipped.
+- Complete market-data test directory: `291 passed`, zero skipped.
 - Existing LIVE-RV suite: `26 passed`, unchanged public payloads and files.
 - Repository resolver integration: `2 passed`, zero skipped, including a valid/ambiguous-version mixed batch.
-- Complete backend: `650 passed`, zero skipped.
+- Complete backend: `697 passed`, zero skipped.
 - PostgreSQL server: `17.10`; `psql`: `17.10`; database: `quantkynd_test`.
 - Alembic heads/current: `20260804_03`; check: `No new upgrade operations detected`.
 - Proto verification: passed.
@@ -136,6 +147,8 @@ Capture and subject manifests now validate every required object, array, string,
 - Python compilation and `git diff --check`: passed.
 
 The 17 binary bytes, byte counts, frame hashes, event identities, and approved result hashes are unchanged by the final lifecycle/CLI correction. All capture manifests explicitly bind `provider=upstox` and use strict JSON integers. The prior final-review full/adopted hash corrections remain in every capture sidecar; regeneration verified all 36 generated artifacts byte-for-byte with no new fixture diff.
+
+The provider-identity correction leaves all 17 binary files, frame hashes, raw identities, event IDs, and adopted-semantics hashes unchanged. All 17 full-result golden hashes changed because capture provenance now serializes its schema digest in the required canonical `sha256:<lowercase-hex>` form. Regeneration with the corrected projection and subsequent verification reproduced all 36 artifacts byte-for-byte.
 
 ## Security and hygiene
 

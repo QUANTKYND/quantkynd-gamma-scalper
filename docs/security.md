@@ -78,5 +78,6 @@ WebSocket denials and closes use stable internal codes and generic safe text. Th
 
 - The official Upstox V3 Proto, generated Python, generated stub, descriptor, generator version, and runtime ownership are hash-verified locally before fixture normalization. There is no runtime download.
 - Frames are immutable and hash-checked, capped at 16 MiB, 5,000 feeds, 256 status segments, and 30 depth levels. Failure reasons and lifecycle reasons are controlled; lifecycle reasons reject token, URL, traceback, socket, account, user, and exception detail.
+- Identities in the selected primary provider payload are validated before resolution or event construction. Provider contract keys are bounded to 512 UTF-8 bytes and market segments to 128 bytes; leading/trailing whitespace and ASCII control characters fail the whole frame without logging or rewriting the hostile identity. Ignored secondary-payload identities remain unadopted and are not interpreted.
 - Fixtures are synthetic and contain no token, authorized WebSocket URL, account/user identifier, or complete proprietary capture. Raw frame bytes are never emitted by the CLIs.
 - Offline normalization uses no network, database, Redis, pickle, `eval`, or shell execution. The repository resolver is read-only and never commits. DATA-1.3 adds no migration, raw/event persistence, live subscription wiring, or order route.
