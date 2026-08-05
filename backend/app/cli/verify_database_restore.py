@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import hashlib
 import json
 import os
@@ -37,6 +38,9 @@ from app.persistence.postgres.models import (
     CatalogueMembershipRow,
     CatalogueRowOutcomeRow,
     CatalogueSourceArtifactRow,
+    CatalogueVersionRecordRow,
+    InstrumentVersionRecordRow,
+    ProviderMappingRecordRow,
 )
 from app.persistence.postgres.unit_of_work import PostgresUnitOfWork
 from app.persistence.postgres.verification import database_revision, durable_snapshot
@@ -58,7 +62,11 @@ DATA_1_2_TABLES = {
 }
 FIXTURE_PATH = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "upstox" / "NSE.json.gz"
 FIXTURE_EFFECTIVE_FROM = datetime(2026, 8, 4, 3, 45, tzinfo=UTC)
-FIXTURE_IDEMPOTENCY_KEY = "DATA-1.2-restore-verifier-fixture"
+FIXTURE_SECOND_EFFECTIVE_FROM = datetime(2026, 8, 5, 3, 45, tzinfo=UTC)
+FIXTURE_IDEMPOTENCY_KEYS = (
+    "DATA-1.2-restore-verifier-fixture-a",
+    "DATA-1.2-restore-verifier-fixture-b",
+)
 
 
 def main() -> int:
@@ -147,20 +155,44 @@ async def _verify(
 
 
 async def _seed_catalogue_fixture(settings: DatabaseSettings, source_url: str) -> None:
-    command = CatalogueIngestionCommand(
-        profile=PROFILE_VERSION,
-        file=FIXTURE_PATH,
-        effective_from=FIXTURE_EFFECTIVE_FROM,
-        effective_until=None,
-        idempotency_key=FIXTURE_IDEMPOTENCY_KEY,
-        expected_compressed_sha256=None,
-        supersedes_catalogue_record_id=None,
-        mode="commit",
-    )
-    await ingest_provider_catalogue(
-        command,
+    first = await ingest_provider_catalogue(
+        CatalogueIngestionCommand(
+            profile=PROFILE_VERSION,
+            file=FIXTURE_PATH,
+            effective_from=FIXTURE_EFFECTIVE_FROM,
+            effective_until=None,
+            idempotency_key=FIXTURE_IDEMPOTENCY_KEYS[0],
+            expected_compressed_sha256=None,
+            supersedes_catalogue_record_id=None,
+            mode="commit",
+        ),
         settings.model_copy(update={"database_url": SecretStr(source_url)}),
     )
+    rows = json.loads(gzip.decompress(FIXTURE_PATH.read_bytes()).decode("utf-8"))
+    future = next(row for row in rows if row.get("instrument_type") == "FUT")
+    future["trading_symbol"] = str(future["trading_symbol"]) + "-UPDATED"
+    with tempfile.TemporaryDirectory(prefix="quantkynd-catalogue-b-") as directory:
+        second_path = Path(directory) / "NSE-B.json.gz"
+        second_path.write_bytes(
+            gzip.compress(
+                json.dumps(rows, separators=(",", ":"), sort_keys=True).encode("utf-8"),
+                mtime=0,
+            )
+        )
+        command = CatalogueIngestionCommand(
+            profile=PROFILE_VERSION,
+            file=second_path,
+            effective_from=FIXTURE_SECOND_EFFECTIVE_FROM,
+            effective_until=None,
+            idempotency_key=FIXTURE_IDEMPOTENCY_KEYS[1],
+            expected_compressed_sha256=None,
+            supersedes_catalogue_record_id=first.catalogue_record_id,
+            mode="commit",
+        )
+        await ingest_provider_catalogue(
+            command,
+            settings.model_copy(update={"database_url": SecretStr(source_url)}),
+        )
 
 
 async def _compare(
@@ -265,118 +297,279 @@ async def _representative_reads(engine, fixture) -> dict[str, object]:
 
 async def _catalogue_representative_reads(engine) -> dict[str, object]:
     direct = await _direct_catalogue_reads(engine)
+    first_run, second_run = direct["ingestion_runs"]
+    first_memberships, second_memberships = direct["memberships"]
+    provider_key = str(first_memberships[0]["provider_contract_key"])
     factory = create_session_factory(engine)
     async with PostgresUnitOfWork(factory) as unit_of_work:
         catalogue_current = await unit_of_work.catalogues.resolve(
             f"{PROVIDER}:{PROFILE_VERSION}",
-            FIXTURE_EFFECTIVE_FROM,
+            FIXTURE_SECOND_EFFECTIVE_FROM,
             None,
         )
-        catalogue_historical = await unit_of_work.catalogues.resolve(
+        catalogue_before_second_known = await unit_of_work.catalogues.resolve(
             f"{PROVIDER}:{PROFILE_VERSION}",
-            FIXTURE_EFFECTIVE_FROM,
-            datetime.fromisoformat(str(direct["ingestion_run"]["recorded_at"])),
+            FIXTURE_SECOND_EFFECTIVE_FROM,
+            datetime.fromisoformat(str(first_run["recorded_at"])),
         )
-        provider_key = str(direct["accepted_provider_keys"][0])
+        catalogue_known_before_effective = await unit_of_work.catalogues.resolve(
+            f"{PROVIDER}:{PROFILE_VERSION}",
+            FIXTURE_SECOND_EFFECTIVE_FROM - timedelta(microseconds=1),
+            datetime.fromisoformat(str(second_run["recorded_at"])),
+        )
         mapping_current = await unit_of_work.instruments.resolve_provider_key(
             PROVIDER,
             provider_key,
-            FIXTURE_EFFECTIVE_FROM,
+            FIXTURE_SECOND_EFFECTIVE_FROM,
             None,
         )
-        mapping_historical = await unit_of_work.instruments.resolve_provider_key(
+        mapping_before_second_known = await unit_of_work.instruments.resolve_provider_key(
             PROVIDER,
             provider_key,
-            FIXTURE_EFFECTIVE_FROM,
-            datetime.fromisoformat(str(direct["ingestion_run"]["recorded_at"])),
+            FIXTURE_SECOND_EFFECTIVE_FROM,
+            datetime.fromisoformat(str(first_run["recorded_at"])),
         )
+        mapping_known_before_effective = await unit_of_work.instruments.resolve_provider_key(
+            PROVIDER,
+            provider_key,
+            FIXTURE_SECOND_EFFECTIVE_FROM - timedelta(microseconds=1),
+            datetime.fromisoformat(str(second_run["recorded_at"])),
+        )
+    if catalogue_before_second_known is None or (
+        catalogue_before_second_known.catalogue_version_id
+        != first_run["catalogue_version_id"]
+    ):
+        raise RestoreVerificationError("catalogue A is not reproducible before B is known")
+    if catalogue_known_before_effective is None or (
+        catalogue_known_before_effective.catalogue_version_id
+        != first_run["catalogue_version_id"]
+    ):
+        raise RestoreVerificationError("catalogue A is not active before B is market-effective")
+    if catalogue_current is None or (
+        catalogue_current.catalogue_version_id != second_run["catalogue_version_id"]
+    ):
+        raise RestoreVerificationError("catalogue B is not the current eligible catalogue")
+    first_mapping_id = first_memberships[0]["mapping_id"]
+    second_mapping_id = second_memberships[0]["mapping_id"]
+    if mapping_before_second_known is None or mapping_before_second_known.mapping_id != first_mapping_id:
+        raise RestoreVerificationError("mapping A is not reproducible before B is known")
+    if mapping_known_before_effective is None or (
+        mapping_known_before_effective.mapping_id != first_mapping_id
+    ):
+        raise RestoreVerificationError("mapping A is not active before B is market-effective")
+    if mapping_current is None or mapping_current.mapping_id != second_mapping_id:
+        raise RestoreVerificationError("mapping B is not the current eligible mapping")
+    binding_continuity = all(
+        first_membership["instrument_id"] == second_membership["instrument_id"]
+        for first_membership, second_membership in zip(
+            first_memberships,
+            second_memberships,
+            strict=True,
+        )
+    )
+    if not binding_continuity:
+        raise RestoreVerificationError("provider binding changed economic instrument identity")
     return {
         **direct,
         "catalogue_current": _identity(catalogue_current, "catalogue_version_id"),
-        "catalogue_historical": _identity(catalogue_historical, "catalogue_version_id"),
+        "catalogue_before_second_known": _identity(
+            catalogue_before_second_known,
+            "catalogue_version_id",
+        ),
+        "catalogue_known_before_effective": _identity(
+            catalogue_known_before_effective,
+            "catalogue_version_id",
+        ),
         "provider_mapping_current": _identity(mapping_current, "mapping_id"),
-        "provider_mapping_historical": _identity(mapping_historical, "mapping_id"),
+        "provider_mapping_before_second_known": _identity(
+            mapping_before_second_known,
+            "mapping_id",
+        ),
+        "provider_mapping_known_before_effective": _identity(
+            mapping_known_before_effective,
+            "mapping_id",
+        ),
+        "provider_binding_continuity": binding_continuity,
     }
 
 
 async def _direct_catalogue_reads(engine) -> dict[str, object]:
     async with engine.connect() as connection:
-        run = (
+        runs = (
             await connection.execute(
-                select(*CatalogueIngestionRunRow.__table__.columns).where(
-                    CatalogueIngestionRunRow.idempotency_key == FIXTURE_IDEMPOTENCY_KEY
+                select(*CatalogueIngestionRunRow.__table__.columns)
+                .where(CatalogueIngestionRunRow.idempotency_key.in_(FIXTURE_IDEMPOTENCY_KEYS))
+                .order_by(CatalogueIngestionRunRow.effective_from)
+            )
+        ).mappings().all()
+        if len(runs) != 2:
+            raise RestoreVerificationError("expected two sequential catalogue ingestion runs")
+        artifacts = []
+        outcomes_by_run = []
+        memberships_by_catalogue = []
+        for run in runs:
+            artifacts.append(
+                (
+                    await connection.execute(
+                        select(*CatalogueSourceArtifactRow.__table__.columns).where(
+                            CatalogueSourceArtifactRow.source_artifact_id
+                            == run["source_artifact_id"]
+                        )
+                    )
+                ).mappings().one()
+            )
+            outcomes_by_run.append(
+                (
+                    await connection.execute(
+                        select(
+                            CatalogueRowOutcomeRow.row_outcome_id,
+                            CatalogueRowOutcomeRow.disposition,
+                            CatalogueRowOutcomeRow.provider_contract_key,
+                            CatalogueRowOutcomeRow.instrument_id,
+                            CatalogueRowOutcomeRow.version_id,
+                            CatalogueRowOutcomeRow.mapping_id,
+                        )
+                        .where(
+                            CatalogueRowOutcomeRow.ingestion_run_id
+                            == run["ingestion_run_id"]
+                        )
+                        .order_by(CatalogueRowOutcomeRow.physical_row_number)
+                    )
+                ).mappings().all()
+            )
+            memberships_by_catalogue.append(
+                (
+                    await connection.execute(
+                        select(
+                            CatalogueMembershipRow.membership_id,
+                            CatalogueMembershipRow.instrument_id,
+                            CatalogueMembershipRow.version_id,
+                            CatalogueMembershipRow.mapping_id,
+                            CatalogueMembershipRow.provider_contract_key,
+                        )
+                        .where(
+                            CatalogueMembershipRow.catalogue_version_id
+                            == run["catalogue_version_id"]
+                        )
+                        .order_by(CatalogueMembershipRow.provider_contract_key)
+                    )
+                ).mappings().all()
+            )
+        first_memberships, second_memberships = memberships_by_catalogue
+        first_by_key = {row["provider_contract_key"]: row for row in first_memberships}
+        second_by_key = {row["provider_contract_key"]: row for row in second_memberships}
+        successor_edges = []
+        for provider_key in sorted(first_by_key.keys() & second_by_key.keys()):
+            first_membership = first_by_key[provider_key]
+            second_membership = second_by_key[provider_key]
+            first_version_record = (
+                await connection.execute(
+                    select(InstrumentVersionRecordRow.record_id).where(
+                        InstrumentVersionRecordRow.version_id
+                        == first_membership["version_id"]
+                    )
+                )
+            ).scalar_one()
+            second_version_record = (
+                await connection.execute(
+                    select(
+                        InstrumentVersionRecordRow.record_id,
+                        InstrumentVersionRecordRow.supersedes_record_id,
+                    ).where(
+                        InstrumentVersionRecordRow.version_id
+                        == second_membership["version_id"]
+                    )
+                )
+            ).mappings().one()
+            first_mapping_record = (
+                await connection.execute(
+                    select(ProviderMappingRecordRow.record_id).where(
+                        ProviderMappingRecordRow.mapping_id
+                        == first_membership["mapping_id"]
+                    )
+                )
+            ).scalar_one()
+            second_mapping_record = (
+                await connection.execute(
+                    select(
+                        ProviderMappingRecordRow.record_id,
+                        ProviderMappingRecordRow.supersedes_record_id,
+                    ).where(
+                        ProviderMappingRecordRow.mapping_id
+                        == second_membership["mapping_id"]
+                    )
+                )
+            ).mappings().one()
+            successor_edges.append(
+                {
+                    "provider_contract_key": provider_key,
+                    "instrument_id": second_membership["instrument_id"],
+                    "first_version_record_id": first_version_record,
+                    "second_version_record_id": second_version_record["record_id"],
+                    "version_supersedes_record_id": second_version_record[
+                        "supersedes_record_id"
+                    ],
+                    "first_mapping_record_id": first_mapping_record,
+                    "second_mapping_record_id": second_mapping_record["record_id"],
+                    "mapping_supersedes_record_id": second_mapping_record[
+                        "supersedes_record_id"
+                    ],
+                }
+            )
+        second_catalogue_record = (
+            await connection.execute(
+                select(
+                    CatalogueVersionRecordRow.record_id,
+                    CatalogueVersionRecordRow.supersedes_record_id,
+                ).where(
+                    CatalogueVersionRecordRow.record_id == runs[1]["catalogue_record_id"]
                 )
             )
         ).mappings().one()
-        artifact = (
-            await connection.execute(
-                select(*CatalogueSourceArtifactRow.__table__.columns).where(
-                    CatalogueSourceArtifactRow.source_artifact_id == run["source_artifact_id"]
-                )
-            )
-        ).mappings().one()
-        outcomes = (
-            await connection.execute(
-                select(
-                    CatalogueRowOutcomeRow.row_outcome_id,
-                    CatalogueRowOutcomeRow.disposition,
-                    CatalogueRowOutcomeRow.provider_contract_key,
-                    CatalogueRowOutcomeRow.instrument_id,
-                    CatalogueRowOutcomeRow.version_id,
-                    CatalogueRowOutcomeRow.mapping_id,
-                )
-                .where(CatalogueRowOutcomeRow.ingestion_run_id == run["ingestion_run_id"])
-                .order_by(CatalogueRowOutcomeRow.physical_row_number)
-            )
-        ).mappings().all()
-        memberships = (
-            await connection.execute(
-                select(
-                    CatalogueMembershipRow.membership_id,
-                    CatalogueMembershipRow.instrument_id,
-                    CatalogueMembershipRow.version_id,
-                    CatalogueMembershipRow.mapping_id,
-                    CatalogueMembershipRow.provider_contract_key,
-                )
-                .where(CatalogueMembershipRow.catalogue_version_id == run["catalogue_version_id"])
-                .order_by(CatalogueMembershipRow.membership_id)
-            )
-        ).mappings().all()
-    accepted_provider_keys = sorted(
-        str(row["provider_contract_key"])
-        for row in outcomes
-        if row["disposition"] == "accepted"
-    )
+    if second_catalogue_record["supersedes_record_id"] != runs[0]["catalogue_record_id"]:
+        raise RestoreVerificationError("catalogue B does not supersede catalogue A")
+    if any(
+        edge["version_supersedes_record_id"] != edge["first_version_record_id"]
+        or edge["mapping_supersedes_record_id"] != edge["first_mapping_record_id"]
+        for edge in successor_edges
+    ):
+        raise RestoreVerificationError("catalogue version or mapping successor edge is invalid")
     return {
-        "ingestion_run": {
-            "ingestion_run_id": run["ingestion_run_id"],
-            "command_digest": run["command_digest"],
-            "catalogue_version_id": run["catalogue_version_id"],
-            "catalogue_record_id": run["catalogue_record_id"],
-            "source_artifact_id": run["source_artifact_id"],
-            "recorded_at": run["recorded_at"].isoformat(),
-        },
-        "source_artifact": {
-            "source_artifact_id": artifact["source_artifact_id"],
-            "artifact_object_key": artifact["artifact_object_key"],
-            "compressed_sha256": artifact["compressed_sha256"],
-            "decompressed_sha256": artifact["decompressed_sha256"],
-        },
-        "row_outcomes": tuple(
+        "ingestion_runs": tuple(
             {
-                "row_outcome_id": row["row_outcome_id"],
-                "disposition": row["disposition"],
-                "provider_contract_key": row["provider_contract_key"],
-                "instrument_id": row["instrument_id"],
-                "version_id": row["version_id"],
-                "mapping_id": row["mapping_id"],
+                "ingestion_run_id": run["ingestion_run_id"],
+                "command_digest": run["command_digest"],
+                "catalogue_version_id": run["catalogue_version_id"],
+                "catalogue_record_id": run["catalogue_record_id"],
+                "source_artifact_id": run["source_artifact_id"],
+                "recorded_at": run["recorded_at"].isoformat(),
             }
-            for row in outcomes
+            for run in runs
         ),
-        "memberships": tuple(dict(row) for row in memberships),
-        "accepted_provider_keys": tuple(accepted_provider_keys),
-        "excluded_by_profile_count": sum(
-            1 for row in outcomes if row["disposition"] == "excluded_by_profile"
+        "source_artifacts": tuple(
+            {
+                "source_artifact_id": artifact["source_artifact_id"],
+                "artifact_object_key": artifact["artifact_object_key"],
+                "compressed_sha256": artifact["compressed_sha256"],
+                "decompressed_sha256": artifact["decompressed_sha256"],
+            }
+            for artifact in artifacts
+        ),
+        "row_outcomes": tuple(
+            tuple(dict(row) for row in outcomes) for outcomes in outcomes_by_run
+        ),
+        "memberships": tuple(
+            tuple(dict(row) for row in memberships)
+            for memberships in memberships_by_catalogue
+        ),
+        "catalogue_successor_edge": {
+            "record_id": second_catalogue_record["record_id"],
+            "supersedes_record_id": second_catalogue_record["supersedes_record_id"],
+        },
+        "version_and_mapping_successor_edges": tuple(successor_edges),
+        "excluded_by_profile_counts": tuple(
+            sum(1 for row in outcomes if row["disposition"] == "excluded_by_profile")
+            for outcomes in outcomes_by_run
         ),
     }
 
@@ -396,20 +589,24 @@ async def _verified_artifact_reference(
                 ).order_by(CatalogueSourceArtifactRow.source_artifact_id)
             )
         ).mappings().all()
-    if len(rows) != 1:
-        raise RestoreVerificationError("expected exactly one catalogue source artifact")
-    row = rows[0]
-    object_path = root / str(row["artifact_object_key"])
-    if not object_path.is_file() or object_path.is_symlink():
-        raise RestoreVerificationError("catalogue artifact reference is missing or unsafe")
-    digest = hashlib.sha256(object_path.read_bytes()).hexdigest()
-    if "sha256:" + digest != row["compressed_sha256"]:
-        raise RestoreVerificationError("catalogue artifact reference hash is invalid")
-    return {
-        "source_artifact_id": row["source_artifact_id"],
-        "artifact_object_key": row["artifact_object_key"],
-        "compressed_sha256": row["compressed_sha256"],
-    }
+    if len(rows) != 2:
+        raise RestoreVerificationError("expected exactly two catalogue source artifacts")
+    references = []
+    for row in rows:
+        object_path = root / str(row["artifact_object_key"])
+        if not object_path.is_file() or object_path.is_symlink():
+            raise RestoreVerificationError("catalogue artifact reference is missing or unsafe")
+        digest = hashlib.sha256(object_path.read_bytes()).hexdigest()
+        if "sha256:" + digest != row["compressed_sha256"]:
+            raise RestoreVerificationError("catalogue artifact reference hash is invalid")
+        references.append(
+            {
+                "source_artifact_id": row["source_artifact_id"],
+                "artifact_object_key": row["artifact_object_key"],
+                "compressed_sha256": row["compressed_sha256"],
+            }
+        )
+    return {"artifacts": tuple(references)}
 
 
 def _require_nonzero_data_1_2_counts(counts: dict[str, int]) -> None:
