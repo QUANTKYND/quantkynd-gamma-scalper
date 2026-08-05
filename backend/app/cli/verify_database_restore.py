@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 import tempfile
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from pydantic import SecretStr
+from sqlalchemy import select
 from sqlalchemy.engine import make_url
 
 from app.core.database_config import DatabaseConfigurationError, DatabaseSettings, database_name
+from app.instruments.providers.upstox_catalogue import PROFILE_VERSION, PROVIDER
 from app.persistence.postgres.database_safety import (
     DestructiveDatabasePurpose,
     DestructiveDatabaseSafetyError,
@@ -29,12 +32,33 @@ from app.persistence.postgres.fixtures import (
     seed_temporal_fixture,
 )
 from app.persistence.postgres.migrations import upgrade_to_head
+from app.persistence.postgres.models import (
+    CatalogueIngestionRunRow,
+    CatalogueMembershipRow,
+    CatalogueRowOutcomeRow,
+    CatalogueSourceArtifactRow,
+)
 from app.persistence.postgres.unit_of_work import PostgresUnitOfWork
 from app.persistence.postgres.verification import database_revision, durable_snapshot
+from app.services.catalogue_ingestion_service import (
+    CatalogueIngestionCommand,
+    ingest_provider_catalogue,
+)
 
 
 class RestoreVerificationError(RuntimeError):
     pass
+
+
+DATA_1_2_TABLES = {
+    "catalogue_source_artifacts",
+    "catalogue_ingestion_runs",
+    "catalogue_row_outcomes",
+    "catalogue_memberships",
+}
+FIXTURE_PATH = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "upstox" / "NSE.json.gz"
+FIXTURE_EFFECTIVE_FROM = datetime(2026, 8, 4, 3, 45, tzinfo=UTC)
+FIXTURE_IDEMPOTENCY_KEY = "DATA-1.2-restore-verifier-fixture"
 
 
 def main() -> int:
@@ -86,19 +110,28 @@ async def _verify(
                 DestructiveDatabasePurpose.RESTORE,
             ) as restore_lease:
                 assert_distinct_database_servers(source_lease, restore_lease)
+                await source_lease.drop_and_recreate_public()
                 await asyncio.to_thread(upgrade_to_head, source_url)
                 fixture = deterministic_temporal_fixture()
                 await seed_temporal_fixture(
                     PostgresUnitOfWork(create_session_factory(source_engine)),
                     fixture,
                 )
-                with tempfile.TemporaryDirectory(prefix="quantkynd-data11-") as directory:
-                    dump_path = Path(directory) / "data11.dump"
+                await _seed_catalogue_fixture(settings, source_url)
+                artifact_before_dump = await _verified_artifact_reference(source_engine, settings)
+                with tempfile.TemporaryDirectory(prefix="quantkynd-restore-") as directory:
+                    dump_path = Path(directory) / "catalogue.dump"
                     await asyncio.to_thread(_run_pg_dump, source_url, dump_path)
                     await restore_lease.drop_public_for_restore()
                     await asyncio.to_thread(_run_pg_restore, restore_url, dump_path)
                 dump_removed = not dump_path.exists()
-                result = await _compare(source_engine, restore_engine, fixture)
+                result = await _compare(
+                    source_engine,
+                    restore_engine,
+                    fixture,
+                    settings,
+                    artifact_before_dump,
+                )
                 await restore_lease.recheck_sentinel()
                 await restore_lease.connection.commit()
     finally:
@@ -113,19 +146,50 @@ async def _verify(
     }
 
 
-async def _compare(source_engine, restore_engine, fixture) -> dict[str, object]:
+async def _seed_catalogue_fixture(settings: DatabaseSettings, source_url: str) -> None:
+    command = CatalogueIngestionCommand(
+        profile=PROFILE_VERSION,
+        file=FIXTURE_PATH,
+        effective_from=FIXTURE_EFFECTIVE_FROM,
+        effective_until=None,
+        idempotency_key=FIXTURE_IDEMPOTENCY_KEY,
+        expected_compressed_sha256=None,
+        supersedes_catalogue_record_id=None,
+        mode="commit",
+    )
+    await ingest_provider_catalogue(
+        command,
+        settings.model_copy(update={"database_url": SecretStr(source_url)}),
+    )
+
+
+async def _compare(
+    source_engine,
+    restore_engine,
+    fixture,
+    settings: DatabaseSettings,
+    artifact_before_dump: dict[str, object],
+) -> dict[str, object]:
     source_revision = await database_revision(source_engine)
     restore_revision = await database_revision(restore_engine)
     source_counts, source_digest = await durable_snapshot(source_engine)
     restore_counts, restore_digest = await durable_snapshot(restore_engine)
     source_reads = await _representative_reads(source_engine, fixture)
     restore_reads = await _representative_reads(restore_engine, fixture)
+    source_catalogue_reads = await _catalogue_representative_reads(source_engine)
+    restore_catalogue_reads = await _catalogue_representative_reads(restore_engine)
+    artifact_after_restore = await _verified_artifact_reference(restore_engine, settings)
     if source_revision != restore_revision:
         raise RestoreVerificationError("restored Alembic revision does not match source")
     if source_counts != restore_counts or source_digest != restore_digest:
         raise RestoreVerificationError("restored durable rows do not match source")
     if source_reads != restore_reads:
         raise RestoreVerificationError("restored representative reads do not match source")
+    if source_catalogue_reads != restore_catalogue_reads:
+        raise RestoreVerificationError("restored catalogue representative reads do not match source")
+    if artifact_before_dump != artifact_after_restore:
+        raise RestoreVerificationError("restored catalogue artifact reference does not match source")
+    _require_nonzero_data_1_2_counts(source_counts)
     return {
         "source_revision": source_revision,
         "restored_revision": restore_revision,
@@ -134,6 +198,11 @@ async def _compare(source_engine, restore_engine, fixture) -> dict[str, object]:
         "digest_match": True,
         "semantic_and_record_ids_match": True,
         "representative_query_match": True,
+        "catalogue_representative_query_match": True,
+        "catalogue_representative_reads": source_catalogue_reads,
+        "artifact_reference": artifact_after_restore,
+        "artifact_reference_hash_valid": True,
+        "artifact_bytes_external_to_database": True,
     }
 
 
@@ -192,6 +261,163 @@ async def _representative_reads(engine, fixture) -> dict[str, object]:
         ),
         "catalogue_current": _identity(catalogue_current, "catalogue_version_id"),
     }
+
+
+async def _catalogue_representative_reads(engine) -> dict[str, object]:
+    direct = await _direct_catalogue_reads(engine)
+    factory = create_session_factory(engine)
+    async with PostgresUnitOfWork(factory) as unit_of_work:
+        catalogue_current = await unit_of_work.catalogues.resolve(
+            f"{PROVIDER}:{PROFILE_VERSION}",
+            FIXTURE_EFFECTIVE_FROM,
+            None,
+        )
+        catalogue_historical = await unit_of_work.catalogues.resolve(
+            f"{PROVIDER}:{PROFILE_VERSION}",
+            FIXTURE_EFFECTIVE_FROM,
+            datetime.fromisoformat(str(direct["ingestion_run"]["recorded_at"])),
+        )
+        provider_key = str(direct["accepted_provider_keys"][0])
+        mapping_current = await unit_of_work.instruments.resolve_provider_key(
+            PROVIDER,
+            provider_key,
+            FIXTURE_EFFECTIVE_FROM,
+            None,
+        )
+        mapping_historical = await unit_of_work.instruments.resolve_provider_key(
+            PROVIDER,
+            provider_key,
+            FIXTURE_EFFECTIVE_FROM,
+            datetime.fromisoformat(str(direct["ingestion_run"]["recorded_at"])),
+        )
+    return {
+        **direct,
+        "catalogue_current": _identity(catalogue_current, "catalogue_version_id"),
+        "catalogue_historical": _identity(catalogue_historical, "catalogue_version_id"),
+        "provider_mapping_current": _identity(mapping_current, "mapping_id"),
+        "provider_mapping_historical": _identity(mapping_historical, "mapping_id"),
+    }
+
+
+async def _direct_catalogue_reads(engine) -> dict[str, object]:
+    async with engine.connect() as connection:
+        run = (
+            await connection.execute(
+                select(*CatalogueIngestionRunRow.__table__.columns).where(
+                    CatalogueIngestionRunRow.idempotency_key == FIXTURE_IDEMPOTENCY_KEY
+                )
+            )
+        ).mappings().one()
+        artifact = (
+            await connection.execute(
+                select(*CatalogueSourceArtifactRow.__table__.columns).where(
+                    CatalogueSourceArtifactRow.source_artifact_id == run["source_artifact_id"]
+                )
+            )
+        ).mappings().one()
+        outcomes = (
+            await connection.execute(
+                select(
+                    CatalogueRowOutcomeRow.row_outcome_id,
+                    CatalogueRowOutcomeRow.disposition,
+                    CatalogueRowOutcomeRow.provider_contract_key,
+                    CatalogueRowOutcomeRow.instrument_id,
+                    CatalogueRowOutcomeRow.version_id,
+                    CatalogueRowOutcomeRow.mapping_id,
+                )
+                .where(CatalogueRowOutcomeRow.ingestion_run_id == run["ingestion_run_id"])
+                .order_by(CatalogueRowOutcomeRow.physical_row_number)
+            )
+        ).mappings().all()
+        memberships = (
+            await connection.execute(
+                select(
+                    CatalogueMembershipRow.membership_id,
+                    CatalogueMembershipRow.instrument_id,
+                    CatalogueMembershipRow.version_id,
+                    CatalogueMembershipRow.mapping_id,
+                    CatalogueMembershipRow.provider_contract_key,
+                )
+                .where(CatalogueMembershipRow.catalogue_version_id == run["catalogue_version_id"])
+                .order_by(CatalogueMembershipRow.membership_id)
+            )
+        ).mappings().all()
+    accepted_provider_keys = sorted(
+        str(row["provider_contract_key"])
+        for row in outcomes
+        if row["disposition"] == "accepted"
+    )
+    return {
+        "ingestion_run": {
+            "ingestion_run_id": run["ingestion_run_id"],
+            "command_digest": run["command_digest"],
+            "catalogue_version_id": run["catalogue_version_id"],
+            "catalogue_record_id": run["catalogue_record_id"],
+            "source_artifact_id": run["source_artifact_id"],
+            "recorded_at": run["recorded_at"].isoformat(),
+        },
+        "source_artifact": {
+            "source_artifact_id": artifact["source_artifact_id"],
+            "artifact_object_key": artifact["artifact_object_key"],
+            "compressed_sha256": artifact["compressed_sha256"],
+            "decompressed_sha256": artifact["decompressed_sha256"],
+        },
+        "row_outcomes": tuple(
+            {
+                "row_outcome_id": row["row_outcome_id"],
+                "disposition": row["disposition"],
+                "provider_contract_key": row["provider_contract_key"],
+                "instrument_id": row["instrument_id"],
+                "version_id": row["version_id"],
+                "mapping_id": row["mapping_id"],
+            }
+            for row in outcomes
+        ),
+        "memberships": tuple(dict(row) for row in memberships),
+        "accepted_provider_keys": tuple(accepted_provider_keys),
+        "excluded_by_profile_count": sum(
+            1 for row in outcomes if row["disposition"] == "excluded_by_profile"
+        ),
+    }
+
+
+async def _verified_artifact_reference(
+    engine,
+    settings: DatabaseSettings,
+) -> dict[str, object]:
+    root = Path(settings.require_catalogue_artifact_root())
+    async with engine.connect() as connection:
+        rows = (
+            await connection.execute(
+                select(
+                    CatalogueSourceArtifactRow.source_artifact_id,
+                    CatalogueSourceArtifactRow.artifact_object_key,
+                    CatalogueSourceArtifactRow.compressed_sha256,
+                ).order_by(CatalogueSourceArtifactRow.source_artifact_id)
+            )
+        ).mappings().all()
+    if len(rows) != 1:
+        raise RestoreVerificationError("expected exactly one catalogue source artifact")
+    row = rows[0]
+    object_path = root / str(row["artifact_object_key"])
+    if not object_path.is_file() or object_path.is_symlink():
+        raise RestoreVerificationError("catalogue artifact reference is missing or unsafe")
+    digest = hashlib.sha256(object_path.read_bytes()).hexdigest()
+    if "sha256:" + digest != row["compressed_sha256"]:
+        raise RestoreVerificationError("catalogue artifact reference hash is invalid")
+    return {
+        "source_artifact_id": row["source_artifact_id"],
+        "artifact_object_key": row["artifact_object_key"],
+        "compressed_sha256": row["compressed_sha256"],
+    }
+
+
+def _require_nonzero_data_1_2_counts(counts: dict[str, int]) -> None:
+    zero = sorted(table for table in DATA_1_2_TABLES if counts.get(table, 0) <= 0)
+    if zero:
+        raise RestoreVerificationError(
+            "restored DATA-1.2 fixture has zero rows: " + ", ".join(zero)
+        )
 
 
 def _identity(value, attribute: str) -> dict[str, str] | None:

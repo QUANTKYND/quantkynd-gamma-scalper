@@ -1,6 +1,6 @@
 # DATA-1.2 Deterministic Provider Catalogue Ingestion Evidence
 
-Status: implementation complete; acceptance evidence recorded; review pending. DATA-1.2 is not marked accepted.
+Status: implementation complete; acceptance evidence recorded; independent review pending. DATA-1.2 is not marked accepted.
 
 ## Provenance
 
@@ -185,6 +185,8 @@ Migration revision: `20260804_03`.
 
 ## Restore Verification
 
+The restore verifier now drops and recreates the source public schema, migrates it to head, seeds the DATA-1.1 temporal fixture, and then creates a real accepted DATA-1.2 catalogue through the production ingestion service before `pg_dump`. The restore comparison includes non-zero DATA-1.2 row counts, canonical digest equality, ingestion run and command digest equality, source artifact and object-key equality, row outcome and disposition equality, membership and linked instrument/version/mapping equality, current and historical catalogue resolution, current and historical provider-key resolution, and profile-exclusion reconstruction. The verifier also checks that the database artifact reference points to an existing hash-valid external object before dump and after restore.
+
 PostgreSQL clients:
 
 ```text
@@ -214,7 +216,7 @@ dump_removed=true
 target_safety_rechecked=true
 ```
 
-Representative restored DATA-1.2 row counts were all `0` in the verifier fixture state: `catalogue_source_artifacts`, `catalogue_ingestion_runs`, `catalogue_row_outcomes`, and `catalogue_memberships`.
+Database restore and external artifact backup remain separate operational concerns. The database dump stores the content-addressed artifact reference; artifact bytes remain in the external content-addressed store and must be backed up by the artifact-store operational path.
 
 ## Full Verification
 
@@ -268,4 +270,4 @@ Reasonable pattern scan was run with `rg` across tracked files. It is not a full
 
 - Real Upstox BOD files are not committed. Repository acceptance uses the schema-faithful sanitized fixture, and local acceptance may use a user-supplied official `NSE.json.gz`.
 - DATA-1.2 does not download provider catalogues, ingest other formats, or introduce live-capital paths.
-- DATA-1.2 remains review pending and must not be marked accepted until independent review is complete.
+- DATA-1.2 remains independent review pending and must not be marked accepted until independent review is complete.

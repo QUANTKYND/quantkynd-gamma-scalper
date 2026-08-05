@@ -165,6 +165,28 @@ def test_validate_only_needs_no_database(tmp_path: Path) -> None:
     assert result.accepted_unique_count == 4
 
 
+def test_validate_only_does_not_create_database_engine(monkeypatch) -> None:
+    def fail_engine(*args, **kwargs):
+        raise AssertionError("database engine must not be created")
+
+    monkeypatch.setattr("app.services.catalogue_ingestion_service.create_database_engine", fail_engine)
+    command = CatalogueIngestionCommand(
+        profile=PROFILE_VERSION,
+        file=NSE_JSON_GZ,
+        effective_from=EFFECTIVE_FROM,
+        effective_until=None,
+        idempotency_key=None,
+        expected_compressed_sha256=None,
+        supersedes_catalogue_record_id=None,
+        mode="validate-only",
+    )
+
+    result = asyncio.run(ingest_provider_catalogue(command, DatabaseSettings(_env_file=None)))
+
+    assert result.status == "accepted"
+    assert result.artifact_object_key is None
+
+
 def test_artifact_identity_tracks_exact_gzip_bytes_and_decompressed_content(tmp_path: Path) -> None:
     same_name = _gzip(tmp_path, _catalogue_json(), "same-name.json.gz", mtime=0)
     other_name = tmp_path / "other-name.json.gz"

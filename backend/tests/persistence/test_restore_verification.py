@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from app.cli.verify_database_restore import RestoreVerificationError, _run_pg_tool, main
+from app.cli.verify_database_restore import (
+    RestoreVerificationError,
+    _require_nonzero_data_1_2_counts,
+    _run_pg_tool,
+    main,
+)
 from app.core.database_config import DatabaseSettings
 from app.persistence.postgres.database_safety import (
     DestructiveDatabasePurpose,
@@ -93,3 +98,15 @@ def test_invalid_database_configuration_does_not_emit_credentials(
     )
     assert main() == 1
     assert "secret" not in capsys.readouterr().out
+
+
+def test_restore_requires_nonzero_data_1_2_counts() -> None:
+    with pytest.raises(RestoreVerificationError, match="catalogue_ingestion_runs"):
+        _require_nonzero_data_1_2_counts(
+            {
+                "catalogue_source_artifacts": 1,
+                "catalogue_ingestion_runs": 0,
+                "catalogue_row_outcomes": 1,
+                "catalogue_memberships": 1,
+            }
+        )
