@@ -39,6 +39,7 @@ from app.instruments.temporal_records import (
     catalogue_temporal_record,
     instrument_version_temporal_record,
     provider_mapping_temporal_record,
+    resolve_temporal_knowledge_leaf,
     resolve_temporal_state,
     trading_session_version_temporal_record,
 )
@@ -183,6 +184,20 @@ class PostgresCatalogueRepository:
             known_as_of,
             lambda value: value.effective_from <= market_as_of
             and (value.effective_until is None or market_as_of < value.effective_until),
+        )
+        if resolved is None:
+            return None
+        return CatalogueVersionState(resolved.value, resolved.record.record_id)
+
+    async def resolve_knowledge_leaf(
+        self,
+        provider: str,
+        known_as_of: datetime | None = None,
+    ) -> CatalogueVersionState | None:
+        self._require_active()
+        resolved = resolve_temporal_knowledge_leaf(
+            await self._states_for_provider(provider, known_as_of),
+            known_as_of,
         )
         if resolved is None:
             return None
@@ -389,6 +404,20 @@ class PostgresInstrumentRepository:
             return None
         return InstrumentVersionState(resolved.value, resolved.record.record_id)
 
+    async def resolve_version_knowledge_leaf(
+        self,
+        instrument_id: str,
+        known_as_of: datetime | None = None,
+    ) -> InstrumentVersionState | None:
+        self._require_active()
+        resolved = resolve_temporal_knowledge_leaf(
+            await self._version_states(instrument_id, known_as_of),
+            known_as_of,
+        )
+        if resolved is None:
+            return None
+        return InstrumentVersionState(resolved.value, resolved.record.record_id)
+
     async def resolve_provider_key_state(
         self,
         provider: str,
@@ -434,6 +463,42 @@ class PostgresInstrumentRepository:
             and value.effective_from <= market_as_of
             and (value.effective_until is None or market_as_of < value.effective_until),
         )
+        if resolved is None:
+            return None
+        instrument_ids = {
+            mapping_row.mapping_id: version_row.instrument_id
+            for mapping_row, _, version_row in mapping_rows
+        }
+        return ProviderMappingState(
+            resolved.value,
+            resolved.record.record_id,
+            instrument_ids[resolved.value.mapping_id],
+        )
+
+    async def resolve_provider_key_knowledge_leaf(
+        self,
+        provider: str,
+        provider_contract_key: str,
+        known_as_of: datetime | None = None,
+    ) -> ProviderMappingState | None:
+        self._require_active()
+        mapping_rows = await self._mapping_rows(
+            provider,
+            provider_contract_key,
+            known_as_of,
+        )
+        states = tuple(
+            TemporalState(
+                temporal_record_from_row(
+                    record_row,
+                    TemporalRecordKind.PROVIDER_MAPPING,
+                    "mapping_id",
+                ),
+                provider_mapping_from_row(mapping_row, record_row),
+            )
+            for mapping_row, record_row, _ in mapping_rows
+        )
+        resolved = resolve_temporal_knowledge_leaf(states, known_as_of)
         if resolved is None:
             return None
         instrument_ids = {

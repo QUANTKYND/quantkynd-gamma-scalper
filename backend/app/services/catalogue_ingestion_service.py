@@ -323,18 +323,14 @@ async def _build_transition_plan(
     command: CatalogueIngestionCommand,
     plan: UpstoxCataloguePlan,
 ) -> CatalogueTransitionPlan:
-    predecessor = await unit_of_work.catalogues.resolve_state(
-        _catalogue_scope(),
-        command.effective_from,
-        None,
-    )
+    predecessor = await unit_of_work.catalogues.resolve_knowledge_leaf(_catalogue_scope())
     supplied_predecessor = command.supersedes_catalogue_record_id
     if predecessor is None and supplied_predecessor is not None:
-        raise CatalogueConflictError("catalogue predecessor is not the current eligible leaf")
+        raise CatalogueConflictError("catalogue predecessor is not the current knowledge leaf")
     if predecessor is not None and supplied_predecessor != predecessor.record_id:
         if supplied_predecessor is None:
             raise CatalogueConflictError("an explicit catalogue predecessor is required")
-        raise CatalogueConflictError("catalogue predecessor is not the current eligible leaf")
+        raise CatalogueConflictError("catalogue predecessor is not the current knowledge leaf")
 
     prior_memberships = (
         await unit_of_work.catalogue_ingestions.list_memberships_for_catalogue(
@@ -369,16 +365,12 @@ async def _build_transition_plan(
             raise CatalogueConflictError(
                 "provider key reassignment to another economic instrument is not allowed"
             )
-        version_state = await unit_of_work.instruments.resolve_version_state(
-            item.instrument_id,
-            command.effective_from,
-            None,
+        version_state = await unit_of_work.instruments.resolve_version_knowledge_leaf(
+            item.instrument_id
         )
-        mapping_state = await unit_of_work.instruments.resolve_provider_key_state(
+        mapping_state = await unit_of_work.instruments.resolve_provider_key_knowledge_leaf(
             PROVIDER,
             item.provider_contract_key,
-            command.effective_from,
-            None,
         )
         if mapping_state is not None and mapping_state.instrument_id != item.instrument_id:
             raise CatalogueConflictError(

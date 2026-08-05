@@ -101,6 +101,33 @@ def resolve_temporal_state(
     return leaves[0] if leaves else None
 
 
+def resolve_temporal_knowledge_leaf(
+    states: Iterable[TemporalState[ValueType]],
+    known_as_of: datetime | None,
+) -> TemporalState[ValueType] | None:
+    knowledge_time = _utc(known_as_of, "known_as_of") if known_as_of is not None else None
+    visible = [
+        state
+        for state in states
+        if knowledge_time is None or state.record.recorded_at <= knowledge_time
+    ]
+    indexed = _validated_visible_graph(visible)
+    superseded = {
+        state.record.supersedes_record_id
+        for state in indexed.values()
+        if state.record.supersedes_record_id is not None
+    }
+    leaves = sorted(
+        (state for state in indexed.values() if state.record.record_id not in superseded),
+        key=lambda state: state.record.record_id,
+    )
+    if len(leaves) > 1:
+        raise AmbiguousPointInTimeResultError(
+            "multiple temporal records are current knowledge leaves"
+        )
+    return leaves[0] if leaves else None
+
+
 def catalogue_temporal_record(value, supersedes_record_id: str | None = None) -> TemporalRecord:
     return TemporalRecord(
         TemporalRecordKind.CATALOGUE_VERSION,

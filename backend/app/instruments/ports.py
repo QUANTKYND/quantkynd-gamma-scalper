@@ -78,6 +78,12 @@ class CatalogueRepository(Protocol):
         known_as_of: datetime | None,
     ) -> CatalogueVersionState | None: ...
 
+    async def resolve_knowledge_leaf(
+        self,
+        provider: str,
+        known_as_of: datetime | None = None,
+    ) -> CatalogueVersionState | None: ...
+
 
 class InstrumentRepository(Protocol):
     async def add_underlying(self, instrument: UnderlyingInstrumentIdentity) -> None: ...
@@ -120,12 +126,25 @@ class InstrumentRepository(Protocol):
         known_as_of: datetime | None,
     ) -> InstrumentVersionState | None: ...
 
+    async def resolve_version_knowledge_leaf(
+        self,
+        instrument_id: str,
+        known_as_of: datetime | None = None,
+    ) -> InstrumentVersionState | None: ...
+
     async def resolve_provider_key_state(
         self,
         provider: str,
         provider_contract_key: str,
         market_as_of: datetime,
         known_as_of: datetime | None,
+    ) -> ProviderMappingState | None: ...
+
+    async def resolve_provider_key_knowledge_leaf(
+        self,
+        provider: str,
+        provider_contract_key: str,
+        known_as_of: datetime | None = None,
     ) -> ProviderMappingState | None: ...
 
     async def resolve_provider_key_instrument_id(
