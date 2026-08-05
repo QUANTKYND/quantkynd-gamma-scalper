@@ -63,6 +63,8 @@ Dependencies are added only when a milestone requires them. Each dependency must
 
 DATA-1.1 owns SQLAlchemy, Alembic, and asyncpg. DATA-1.2 owns `ijson` for streaming provider catalogue parsing. These slices do not add a synchronous driver, retries, calendar packages, or optimized serialization.
 
+DATA-1.3 owns the existing `protobuf>=7.35,<8` runtime for the vendored official Upstox Market Data Feed V3 schema. Generated Python and stub files are pinned to `grpcio-tools==1.82.1` for verification/regeneration only. The decoder performs no runtime schema download and does not depend on the Upstox SDK representation. Remove these assets and the runtime only when the Upstox V3 normalization boundary is retired or replaced by an equivalently owned schema contract. DATA-1.3 adds no new runtime dependency.
+
 | Dependency | Phase | Purpose |
 |---|---|---|
 | `psycopg` | Data-1 optional | Synchronous CLI, migrations, and recovery utilities if needed. |

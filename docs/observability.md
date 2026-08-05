@@ -164,3 +164,9 @@ Catalogue ingestion emits structured CLI/service events for `catalogue_ingestion
 Events include provider, profile version, source artifact ID, catalogue version ID when available, ingestion run ID when committed, normalized catalogue hash, physical row count, accepted unique count, exact duplicate count, excluded count, field-name fingerprint, elapsed parse and persistence time, database revision, and redacted error code. Events do not include raw provider payloads, provider credentials, database URLs, or local absolute artifact paths.
 
 Dry-run and successful new commits expose deterministic semantic diff counts for `added`, `unchanged`, `metadata_changed`, `provider_mapping_changed`, `disappeared`, `excluded`, and `exact_duplicates`, plus sorted disappeared provider keys. Output explicitly states that disappearance is informational. An idempotent replay identifies the persisted accepted run; unrelated database and temporal failures retain their own error category instead of being reported as idempotency conflicts.
+
+## DATA-1.3 offline normalization evidence
+
+The fixture CLI emits canonical JSON containing raw identity/hash, response type, accepted events, frame and entry failures, union-scoped unadopted declarations, present deferred-message paths, secondary payload paths, reconciliation counts, full-result hash, and adopted-semantics hash. It never emits raw bytes. Exit codes distinguish expected-result mismatch, manifest/configuration error, schema/hash drift, and raw-identity conflict.
+
+Lifecycle fixture output contains only normalized immutable observations and a deterministic sequence hash. Failure reasons are controlled redacted codes. DATA-1.3 deliberately adds no production logging, metrics, alerting, live lifecycle emission, or cardinality-bearing provider-key metrics.

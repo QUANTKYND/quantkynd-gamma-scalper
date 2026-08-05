@@ -239,3 +239,21 @@ Every research and paper run records:
 - Start and completion timestamps.
 - Artifact locations.
 - Failure reason when incomplete.
+
+## DATA-1.3 offline normalization
+
+Fixture normalization requires no database, Redis, token, provider connection, or network. From `backend`:
+
+```bash
+env -u DATABASE_URL -u DATABASE_RESTORE_TEST_URL -u UPSTOX_ACCESS_TOKEN -u REDIS_URL \
+  UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.normalize_market_event_fixture \
+  --frame tests/fixtures/upstox/market_feed_v3/nifty-option-live-market-ff-d5.bin \
+  --capture-manifest tests/fixtures/upstox/market_feed_v3/nifty-option-live-market-ff-d5.capture.json \
+  --subject-manifest tests/fixtures/upstox/market_feed_v3/subjects.json \
+  --output json --verify-expected-hash
+
+UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.normalize_market_lifecycle_fixture \
+  --fixture tests/fixtures/upstox/market_feed_v3/subscription-lifecycle.json --output json
+```
+
+The repository-backed resolver uses the existing PostgreSQL 17 environment and `postgres_catalogue_market_subject_resolver`, which creates one read-only repeatable-read unit of work per batch. It performs no writes or commit.

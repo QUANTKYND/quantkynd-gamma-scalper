@@ -73,3 +73,10 @@ WebSocket denials and closes use stable internal codes and generic safe text. Th
 - Commit mode stores exact compressed artifacts in a content-addressed object layout under `CATALOGUE_ARTIFACT_ROOT` with owner-only permissions and atomically verifies existing objects before treating retention as idempotent.
 - Postgres stores artifact hashes and relative object keys, not raw provider payload blobs. A transaction rollback may leave an unreferenced content-addressed artifact, but accepted database rows must not point to a missing or hash-invalid object.
 - Upstox `instrument_key` is the provider mapping key. `exchange_token` is provenance only and never provider identity.
+
+## DATA-1.3 normalization safety
+
+- The official Upstox V3 Proto, generated Python, generated stub, descriptor, generator version, and runtime ownership are hash-verified locally before fixture normalization. There is no runtime download.
+- Frames are immutable and hash-checked, capped at 16 MiB, 5,000 feeds, 256 status segments, and 30 depth levels. Failure reasons and lifecycle reasons are controlled; lifecycle reasons reject token, URL, traceback, socket, account, user, and exception detail.
+- Fixtures are synthetic and contain no token, authorized WebSocket URL, account/user identifier, or complete proprietary capture. Raw frame bytes are never emitted by the CLIs.
+- Offline normalization uses no network, database, Redis, pickle, `eval`, or shell execution. The repository resolver is read-only and never commits. DATA-1.3 adds no migration, raw/event persistence, live subscription wiring, or order route.

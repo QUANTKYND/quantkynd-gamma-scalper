@@ -814,3 +814,11 @@ The application writes successors only after locking the predecessor and checkin
 Revision `20260804_02` creates one deterministic root record for every legacy semantic row. It aborts before schema changes if any legacy instrument, mapping, or session row has non-null `superseded_at`; the timestamp alone cannot identify a successor and is never discarded or converted into an invented edge. Downgrade to `20260804_01` is permitted only while every semantic row has exactly one root record and no successor history.
 
 `market_instruments` remains the common registry for instrument subtypes. Futures and options reference an underlying, and no foreign key cascades deletion. Strike, multiplier, and tick size use `NUMERIC(38,18)` and remain exact `Decimal` values.
+
+## DATA-1.3 normalized market-event contracts
+
+`RawMarketFrameV1` owns a deterministic capture identity and exact frame hash. Live and recorded-original-receipt captures require `available_at == received_at`; historical imports require no receipt time. Optional historical source file/record identifiers are all-or-none. Normalization schema version 1 produces underlying, future, option, and provider-segment-status observations with exact catalogue mapping, contract version, and economic identity provenance.
+
+Quote sizes and volume are integers from zero through `2**63 - 1`; open interest is an integer from zero through `2**53`. At most one depth level is normalized, while the selected feed union declares fixed deferred schema paths and reconciles provider, normalized, and unadopted depth counts. Frame results are complete, partial, or failed; a frame failure emits no events. `full_result_hash` covers capture and all declared output, while `adopted_semantics_hash` excludes capture identity and deferred provider fields.
+
+Connection and subscription lifecycle raw/normalized events use explicit prior/current states, source-order scope, UTC occurrence/availability/recording times, controlled redacted failure reasons, and absent provider sequence. Reconnect creates a new connection session and source-order scope. Subscription identity is stable over provider, connection session, and subscription scope; its instrument digest hashes sorted unique provider keys and rejects duplicates.
