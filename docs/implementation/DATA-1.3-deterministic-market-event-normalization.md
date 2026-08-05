@@ -14,6 +14,9 @@ This evidence does not accept or merge DATA-1.3. The feature branch remains pape
 - Post-checkpoint starting SHA: `c323d49a5b12bb36daeeb19a0068acf1fbf46c76`
 - Completion implementation SHA: `6fb7980` (`test(data): add deterministic normalization fixtures and CLIs`)
 - Evidence snapshot SHA: `a27c27c` (`docs(data): record DATA-1.3 review-pending evidence`)
+- Final-review correction starting SHA: `e5aec9c3d4ed68d7cffc7c201b82b0437f9766a1`
+- Corrected implementation SHA: `971a9e35b40274225540605aa1ff7d3973b1fbff`
+- Corrected evidence snapshot SHA: `TO_BE_RECORDED`
 
 Implementation commits from the original baseline:
 
@@ -31,6 +34,7 @@ fb5832f fix(data): harden protobuf ownership verification
 c323d49 test(data): prove corrected normalization checkpoint
 1f45343 feat(data): complete normalization and lifecycle contracts
 6fb7980 test(data): add deterministic normalization fixtures and CLIs
+971a9e3 fix(data): apply final normalization review corrections
 ```
 
 ## Implemented contracts
@@ -40,6 +44,10 @@ The slice owns immutable raw frame identity, strict live/historical availability
 `CatalogueMarketSubjectResolver` processes sorted unique keys in one unit of work. The PostgreSQL factory always selects read-only repeatable-read and never commits. It distinguishes unknown, stale, and ambiguous provider mapping outcomes; loads the exact version and immutable identity; preserves actual mapping provenance and exact UTC caller cutoffs; and propagates unexpected infrastructure/integrity failures.
 
 Connection and subscription lifecycle models use immutable raw/normalized events, closed transition sets, deterministic identities, strict time/source-order rules, absent provider sequences, sorted unique subscription-key digests, and controlled redacted failures. Reconnect requires a new non-empty session and source-order scope. These contracts and CLIs remain offline-only.
+
+Final-review corrections enforce all mode/union/kind combinations during direct quote construction. Reconnect source order is compared only inside one scope, and the fixture proves `100 -> 0` at a valid new-session/new-scope boundary. Normalized lifecycle objects store enum instances and UTC timestamps after direct construction. `SubscriptionInstrumentSetV1` canonicalizes sorted unique keys and internally derives count/digest; lifecycle request modes are typed and acknowledgements must agree with their request.
+
+Raw lifecycle batches classify exact duplicate identities and raise `ConflictingRawIdentityError` for changed content under one identity. The subscription fixture CLI runs this real collision boundary before transition validation.
 
 Deferred declarations are fixed per selected feed union. Frame declarations are the sorted union across decoded primary entries. Failed subjects retain the selected union, declaration, reliably present nested-message paths, and structural depth count without evaluating deferred values.
 
@@ -87,20 +95,23 @@ The corpus also contains a deterministic DATA-1 subject manifest and connection,
 - An adopted LTP change changed the adopted-semantics hash.
 - Capture identity/source-order change changed raw and normalized IDs plus full-result hash while preserving adopted-semantics hash.
 - Unknown wire fields affect raw/full provenance only.
+- Status adopted hashes include provider-derived subject identity.
+- Adopted failure hashing excludes deferred declarations and present deferred-message paths; unknown-key frames differing only by deferred Greeks presence have different frame/full hashes and equal adopted hashes.
+- Duplicate-normalized-identity failure preserves reliably present deferred-message paths from the decoded draft.
 
 ## CLI evidence
 
-`app.cli.normalize_market_event_fixture` verifies owned schema artifacts, capture hash, capture manifest, and static subject manifest before normalization. It emits canonical JSON only and no raw bytes. Tested exit codes are `0` match, `1` result mismatch, `2` manifest/configuration error, `3` schema/frame hash error, and `4` raw identity conflict.
+`app.cli.normalize_market_event_fixture` verifies exact provider/schema ownership, strict manifest types, capture hash, and static subject manifest before normalization. The service decodes exactly once and returns an optional response type. Malformed Protobuf, unsupported type, missing timestamp, and empty primary payload return canonical failure JSON with no traceback or raw bytes. Tested exit codes are `0` match, `1` result/unapproved-failure mismatch, `2` manifest/configuration error, `3` schema/frame hash error, and `4` a real conflicting two-envelope raw identity supplied through the all-or-none baseline arguments.
 
 `app.cli.normalize_market_lifecycle_fixture` deterministically covers connection, subscription, reconnect/new-session, sorted key digest, redacted failure, and invalid transitions. Neither CLI requires database, restore URL, provider token, Redis, or network.
 
 ## Acceptance results
 
-- Focused no-infrastructure normalization/fixture/LIVE-RV suite: `166 passed`, zero skipped.
-- Complete market-data test directory: `179 passed`, zero skipped.
+- Focused no-infrastructure normalization/fixture/LIVE-RV suite: `200 passed`, zero skipped.
+- Complete market-data test directory: `213 passed`, zero skipped.
 - Existing LIVE-RV suite: `26 passed`, unchanged public payloads and files.
-- Repository resolver integration: `1 passed`, zero skipped, covering all required resolver scenarios.
-- Complete backend: `584 passed`, zero skipped.
+- Repository resolver integration: `2 passed`, zero skipped, including a valid/ambiguous-version mixed batch.
+- Complete backend: `619 passed`, zero skipped.
 - PostgreSQL server: `17.10`; `psql`: `17.10`; database: `quantkynd_test`.
 - Alembic heads/current: `20260804_03`; check: `No new upgrade operations detected`.
 - Proto verification: passed.
@@ -109,6 +120,8 @@ The corpus also contains a deterministic DATA-1 subject manifest and connection,
 - Frontend `pnpm lint`: passed.
 - Frontend `pnpm build`: passed with the pre-existing bundle-size warning only.
 - Python compilation and `git diff --check`: passed.
+
+The 17 binary bytes, byte counts, frame hashes, and event identities are unchanged. All capture manifests now explicitly bind `provider=upstox` and use strict JSON integers. Full-result golden hashes changed because response type is now part of the result contract. Adopted hashes changed only where the corrected status-subject or adopted-failure projection applies. Exact current hashes remain in every capture sidecar; regeneration verified all 36 generated artifacts byte-for-byte.
 
 ## Security and hygiene
 
