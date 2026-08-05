@@ -1,0 +1,109 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+from app.market_data.normalization.enums import FrameNormalizationStatus
+from app.market_data.normalization.errors import FrameDecodeError
+from app.market_data.normalization.identities import RawMarketFrameV1
+from app.market_data.normalization.ports import MarketSubjectResolver
+from app.market_data.normalization.results import FrameNormalizationResultV1, NormalizationFailureV1
+from app.market_data.normalization.serialization import adopted_semantics_hash, full_result_hash
+from app.market_data.upstox.v3_decoder import decode_upstox_v3_frame
+from app.market_data.upstox.v3_normalizer import normalize_upstox_v3_frame
+from app.market_data.upstox.v3_schema import UNADOPTED_SCHEMA_PATHS
+from app.market_data.upstox.proto import MarketDataFeed_pb2
+
+
+class MarketFrameNormalizationService:
+    def __init__(self, subject_resolver: MarketSubjectResolver) -> None:
+        self._subject_resolver = subject_resolver
+
+    async def normalize(
+        self,
+        frame: RawMarketFrameV1,
+        *,
+        market_as_of: datetime,
+        known_as_of: datetime,
+    ) -> FrameNormalizationResultV1:
+        market_cutoff = _utc(market_as_of, "market_as_of")
+        knowledge_cutoff = _utc(known_as_of, "known_as_of")
+        try:
+            decoded = decode_upstox_v3_frame(frame)
+        except FrameDecodeError as error:
+            failures = (NormalizationFailureV1(error.code),)
+            return _result(frame, (), failures, UNADOPTED_SCHEMA_PATHS, (), (), 1)
+        subjects = None
+        if decoded.response_type_numeric != MarketDataFeed_pb2.market_info:
+            subjects = await self._subject_resolver.resolve_many(
+                frame.provider,
+                decoded.provider_contract_keys,
+                market_cutoff,
+                knowledge_cutoff,
+            )
+        draft = normalize_upstox_v3_frame(decoded, frame, subjects)
+        event_ids = tuple(event.event_id for event in draft.accepted_events)
+        if len(event_ids) != len(set(event_ids)):
+            failures = (NormalizationFailureV1("duplicate_normalized_identity"),)
+            return _result(frame, (), failures, draft.unadopted_schema_paths, (), draft.secondary_payload_paths_present, 1)
+        return _result(
+            frame,
+            draft.accepted_events,
+            draft.failures,
+            draft.unadopted_schema_paths,
+            draft.present_unadopted_message_paths,
+            draft.secondary_payload_paths_present,
+            draft.decoded_entry_count,
+        )
+
+
+def _result(frame, events, failures, unadopted, present, secondary, decoded_count):
+    status = (
+        FrameNormalizationStatus.COMPLETE
+        if events and not failures
+        else FrameNormalizationStatus.PARTIAL
+        if events and failures
+        else FrameNormalizationStatus.FAILED
+    )
+    adopted_hash = adopted_semantics_hash(events, failures)
+    full_hash = full_result_hash(
+        {
+            "schema": "data-1.3-full-result-v1",
+            "raw_frame_identity": frame.identity,
+            "frame_content_hash": frame.frame_content_hash,
+            "capture_provenance": {
+                "provider_schema_sha256": frame.provider_schema_sha256,
+                "received_at": frame.received_at,
+                "available_at": frame.available_at,
+                "recorded_at": frame.recorded_at,
+                "capture_basis": frame.capture_basis,
+                "source_file_id": frame.source_file_id,
+                "source_record_id": frame.source_record_id,
+            },
+            "accepted_events": events,
+            "failures": failures,
+            "unadopted_schema_paths": unadopted,
+            "present_unadopted_message_paths": present,
+            "secondary_payload_paths_present": secondary,
+        }
+    )
+    return FrameNormalizationResultV1(
+        raw_frame_identity=frame.identity,
+        frame_content_hash=frame.frame_content_hash,
+        status=status,
+        accepted_events=events,
+        failures=failures,
+        unadopted_schema_paths=unadopted,
+        present_unadopted_message_paths=present,
+        secondary_payload_paths_present=secondary,
+        decoded_entry_count=decoded_count,
+        accepted_event_count=len(events),
+        failed_entry_count=len(failures),
+        full_result_hash=full_hash,
+        adopted_semantics_hash=adopted_hash,
+    )
+
+
+def _utc(value: datetime, field_name: str) -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field_name} must be timezone-aware")
+    return value.astimezone(UTC)
