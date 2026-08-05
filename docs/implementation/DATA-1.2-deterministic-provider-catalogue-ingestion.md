@@ -2,6 +2,25 @@
 
 Status: implementation complete; acceptance evidence recorded; independent review pending. DATA-1.2 is not marked accepted.
 
+## Transitive Market-Time Supersession Correction — 2026-08-05
+
+- Branch: `feature/data-1-deterministic-provider-catalogue-ingestion`
+- Correction starting SHA: `b4421125f19f7cc4467f66ca7ecc2b5d2a8dd840`
+- Required ancestor: `4030955c9be2c370d2ef40082fbb00aea7f7061a`
+- Corrected implementation SHA: `0f6543e65b359eda731ca8a49aea95691a40e975`
+
+Implementation commits through the corrected implementation SHA:
+
+```text
+d8758fb fix(data): apply transitive market-time supersession
+8e5b703 test(data): prove overlapping historical catalogue correction
+0f6543e test(data): restore overlapping historical lineage
+```
+
+The visible knowledge graph is filtered and fully validated before market selection. Every eligible record then walks its immutable predecessor chain and suppresses every eligible ancestor it encounters. An eligible descendant therefore suppresses all eligible ancestors in its visible lineage even when one or more intermediate records are market-ineligible. Supersession edges, not timestamp comparison, define lineage order. No eligible records returns no result. Eligible records in separate roots or otherwise unordered by the validated lineage remain an explicit ambiguity. Missing targets, cross-scope edges, branches, cycles, non-increasing knowledge time, deterministic ordering, and current knowledge-leaf resolution are unchanged.
+
+The PostgreSQL lifecycle and restore fixture use A open from `2026-08-04T03:45:00Z`, B open from `2026-08-05T03:45:00Z`, and H bounded to `[2026-08-04T12:00:00Z, 2026-08-04T18:00:00Z)`, recorded in A→B→H knowledge order. At `2026-08-04T13:00:00Z`, catalogue, instrument-version, and mapping reads return A before H is known and H after H is known despite ineligible B between them. At B's start they return B; between A's start and H, and between H's end and B, they return A. The graph retains one catalogue root with two successors and four version/mapping roots with eight successors, without ambiguity. A same-effective-time successor after B remains selected as the latest eligible descendant.
+
 ## Final Point-in-Time Corrections — 2026-08-05
 
 - Branch: `feature/data-1-deterministic-provider-catalogue-ingestion`

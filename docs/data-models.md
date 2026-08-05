@@ -235,7 +235,9 @@ DATA-1.2 persists accepted commit-mode runs only. `started_at` is invocation tim
 
 The normalized semantic plan is independent of its runtime knowledge timestamp. Rebinding changes the knowledge record and therefore its temporal record ID, while preserving catalogue, version, mapping, instrument, row, outcome, and membership semantic identities.
 
-Catalogue predecessor selection is knowledge-ordered rather than market-ordered. A first catalogue is permitted only when its provider/profile scope has no records. Every later catalogue explicitly names the current unsuperseded knowledge leaf. Existing instrument-version and provider/key mapping scopes likewise supersede their current knowledge leaves, even when the new market interval begins earlier than, equals, or is bounded before the predecessor interval. Read-time market selection remains independent, so a bounded historical successor is returned inside its interval after it is known while its market-eligible predecessor remains current outside that interval.
+Catalogue predecessor selection is knowledge-ordered rather than market-ordered. A first catalogue is permitted only when its provider/profile scope has no records. Every later catalogue explicitly names the current unsuperseded knowledge leaf. Existing instrument-version and provider/key mapping scopes likewise supersede their current knowledge leaves, even when the new market interval begins earlier than, equals, or is bounded before the predecessor interval.
+
+Read-time market selection remains independent. After knowledge filtering and full graph validation, each eligible record walks its complete visible predecessor chain and suppresses every eligible ancestor it encounters, including through ineligible intermediate records. Immutable edges define that order; timestamps do not. A bounded H that supersedes ineligible B can therefore suppress eligible A inside H's interval, while A remains selected outside H and before B. Separate eligible roots still fail closed. The same resolver governs catalogue versions, instrument versions, provider mappings, and trading-session versions.
 
 ### `CatalogueRowOutcome`
 
