@@ -6,7 +6,8 @@ from decimal import Decimal
 
 import pytest
 
-from app.market_data.normalization.enums import FrameNormalizationStatus
+from app.instruments.identity import ProviderContractMapping
+from app.market_data.normalization.enums import FrameNormalizationStatus, NormalizationFailureScope
 from app.market_data.normalization.ports import StaticSubjectManifestResolver
 from app.market_data.upstox.proto import MarketDataFeed_pb2
 from app.services.market_frame_normalization_service import MarketFrameNormalizationService
@@ -109,10 +110,11 @@ def test_unknown_subject_produces_deterministic_partial_result() -> None:
     unknown.ltpc.CopyFrom(ltpc())
     result = normalize(response)
     assert result.status is FrameNormalizationStatus.PARTIAL
-    assert result.accepted_event_count == 1
+    assert result.accepted_entry_count == 1
     assert result.failed_entry_count == 1
     assert result.decoded_entry_count == 2
-    assert result.failures[0].reason_code == "unknown_provider_key"
+    assert result.entry_failures[0].reason_code == "unknown_provider_key"
+    assert result.entry_failures[0].scope is NormalizationFailureScope.SUBJECT
 
 
 def test_kind_and_union_mismatch_fails_only_subject() -> None:
@@ -122,7 +124,7 @@ def test_kind_and_union_mismatch_fails_only_subject() -> None:
     feed.fullFeed.indexFF.ltpc.CopyFrom(ltpc())
     result = normalize(response)
     assert result.status is FrameNormalizationStatus.FAILED
-    assert result.failures[0].reason_code == "subject_kind_mismatch"
+    assert result.entry_failures[0].reason_code == "subject_kind_mismatch"
 
 
 def test_market_status_preserves_exact_known_and_unknown_values() -> None:
@@ -191,13 +193,17 @@ def test_deferred_field_change_does_not_change_adopted_semantics_hash() -> None:
 def test_structural_frame_failures_are_explicit(response, reason) -> None:
     result = normalize(response)
     assert result.status is FrameNormalizationStatus.FAILED
-    assert result.failures[0].reason_code == reason
+    assert result.frame_failure is not None
+    assert result.frame_failure.reason_code == reason
+    assert result.decoded_entry_count == 0
 
 
 def test_malformed_protobuf_is_whole_frame_failure() -> None:
     service = MarketFrameNormalizationService(StaticSubjectManifestResolver(subjects()))
     result = asyncio.run(service.normalize(raw_frame(b"\x80"), market_as_of=AT, known_as_of=AT))
-    assert result.failures[0].reason_code == "protobuf_decode_failed"
+    assert result.frame_failure is not None
+    assert result.frame_failure.reason_code == "protobuf_decode_failed"
+    assert result.decoded_entry_count == 0
 
 
 @pytest.mark.parametrize(
@@ -211,7 +217,7 @@ def test_invalid_adopted_price_fails_subject(price, reason) -> None:
     feed.fullFeed.marketFF.ltpc.CopyFrom(ltpc())
     feed.fullFeed.marketFF.marketLevel.bidAskQuote.add(bidQ=1, bidP=price, askQ=1, askP=1.0)
     result = normalize(response)
-    assert result.failures[0].reason_code == reason
+    assert result.entry_failures[0].reason_code == reason
 
 
 @pytest.mark.parametrize(
@@ -225,7 +231,7 @@ def test_invalid_open_interest_fails_subject(open_interest, reason) -> None:
     feed.fullFeed.marketFF.ltpc.CopyFrom(ltpc())
     feed.fullFeed.marketFF.oi = open_interest
     result = normalize(response)
-    assert result.failures[0].reason_code == reason
+    assert result.entry_failures[0].reason_code == reason
 
 
 def test_depth_limit_failure_does_not_validate_deeper_levels() -> None:
@@ -236,7 +242,7 @@ def test_depth_limit_failure_does_not_validate_deeper_levels() -> None:
     for _ in range(31):
         feed.fullFeed.marketFF.marketLevel.bidAskQuote.add(bidQ=-1, bidP=float("nan"))
     result = normalize(response)
-    assert result.failures[0].reason_code == "depth_limit_exceeded"
+    assert result.entry_failures[0].reason_code == "depth_limit_exceeded"
 
 
 def test_unknown_wire_field_changes_full_provenance_only() -> None:
@@ -265,7 +271,22 @@ def test_provider_timestamp_can_be_later_than_local_capture_clock() -> None:
 
 def test_duplicate_normalized_identity_is_whole_result_failure() -> None:
     manifest = subjects()
-    alias = replace(manifest[0], provider_contract_key="NSE_INDEX|alias", provider_mapping_id="mapping-alias")
+    alias_mapping = ProviderContractMapping(
+        provider="upstox",
+        provider_contract_key="NSE_INDEX|alias",
+        contract_version_id=manifest[0].contract_version_id,
+        provider_payload_hash="sha256:" + "b" * 64,
+        source_row_identity="row-alias",
+        effective_from=AT,
+        effective_until=None,
+        recorded_at=AT,
+    )
+    alias = replace(
+        manifest[0],
+        provider_contract_key="NSE_INDEX|alias",
+        provider_mapping_id=alias_mapping.mapping_id,
+        provider_mapping=alias_mapping,
+    )
     service = MarketFrameNormalizationService(StaticSubjectManifestResolver(manifest + (alias,)))
     response = feed_response()
     for key in ("NSE_INDEX|Nifty 50", "NSE_INDEX|alias"):
@@ -275,7 +296,11 @@ def test_duplicate_normalized_identity_is_whole_result_failure() -> None:
     result = asyncio.run(service.normalize(raw_frame(response.SerializeToString()), market_as_of=AT, known_as_of=AT))
     assert result.status is FrameNormalizationStatus.FAILED
     assert result.accepted_events == ()
-    assert result.failures[0].reason_code == "duplicate_normalized_identity"
+    assert result.frame_failure is not None
+    assert result.frame_failure.reason_code == "duplicate_normalized_identity"
+    assert result.decoded_entry_count == 2
+    assert result.accepted_entry_count == 0
+    assert result.failed_entry_count == 0
 
 
 def test_invalid_provider_timestamp_is_whole_frame_failure() -> None:
@@ -285,4 +310,52 @@ def test_invalid_provider_timestamp_is_whole_frame_failure() -> None:
     feed.requestMode = MarketDataFeed_pb2.ltpc
     feed.ltpc.CopyFrom(ltpc())
     result = normalize(response)
-    assert result.failures[0].reason_code == "invalid_provider_timestamp"
+    assert result.frame_failure is not None
+    assert result.frame_failure.reason_code == "invalid_provider_timestamp"
+
+
+@pytest.mark.parametrize("depth_count", [0, 1, 5])
+def test_full_d5_accepts_up_to_five_depth_levels(depth_count) -> None:
+    response = feed_response()
+    feed = response.feeds["NSE_FO|future"]
+    feed.requestMode = MarketDataFeed_pb2.full_d5
+    feed.fullFeed.marketFF.ltpc.CopyFrom(ltpc())
+    for index in range(depth_count):
+        feed.fullFeed.marketFF.marketLevel.bidAskQuote.add(
+            bidQ=1 if index == 0 else -1,
+            bidP=1.0 if index == 0 else float("nan"),
+            askQ=1 if index == 0 else -1,
+            askP=2.0 if index == 0 else float("nan"),
+        )
+    result = normalize(response)
+    assert result.frame_failure is None
+    assert result.failed_entry_count == 0
+    assert result.accepted_events[0].provider_depth_levels_present == depth_count
+
+
+def test_full_d5_rejects_six_depth_levels() -> None:
+    response = feed_response()
+    feed = response.feeds["NSE_FO|future"]
+    feed.requestMode = MarketDataFeed_pb2.full_d5
+    feed.fullFeed.marketFF.ltpc.CopyFrom(ltpc())
+    for _ in range(6):
+        feed.fullFeed.marketFF.marketLevel.bidAskQuote.add()
+    result = normalize(response)
+    assert result.entry_failures[0].reason_code == "request_mode_depth_mismatch"
+
+
+def test_full_d30_accepts_thirty_and_rejects_thirty_one_levels() -> None:
+    accepted = feed_response()
+    accepted_feed = accepted.feeds["NSE_FO|future"]
+    accepted_feed.requestMode = MarketDataFeed_pb2.full_d30
+    accepted_feed.fullFeed.marketFF.ltpc.CopyFrom(ltpc())
+    for _ in range(30):
+        accepted_feed.fullFeed.marketFF.marketLevel.bidAskQuote.add()
+    assert normalize(accepted).failed_entry_count == 0
+    rejected = feed_response()
+    rejected_feed = rejected.feeds["NSE_FO|future"]
+    rejected_feed.requestMode = MarketDataFeed_pb2.full_d30
+    rejected_feed.fullFeed.marketFF.ltpc.CopyFrom(ltpc())
+    for _ in range(31):
+        rejected_feed.fullFeed.marketFF.marketLevel.bidAskQuote.add()
+    assert normalize(rejected).entry_failures[0].reason_code == "depth_limit_exceeded"

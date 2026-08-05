@@ -12,6 +12,7 @@ from app.instruments.identity import (
     OptionContractIdentity,
     OptionContractVersion,
     OptionSide,
+    ProviderContractMapping,
     SettlementType,
     TradingStatus,
     UnderlyingInstrumentIdentity,
@@ -106,19 +107,26 @@ def subjects() -> tuple[ResolvedMarketSubjectV1, ...]:
 
 def _resolved(key, kind, identity, version):
     subject_id = getattr(identity, "instrument_id", None) or identity.contract_id
+    mapping = ProviderContractMapping(
+        provider="upstox",
+        provider_contract_key=key,
+        contract_version_id=version.version_id,
+        provider_payload_hash="sha256:" + "a" * 64,
+        source_row_identity=f"row-{kind.value}",
+        effective_from=AT,
+        effective_until=None,
+        recorded_at=AT,
+    )
     return ResolvedMarketSubjectV1(
         provider="upstox",
         provider_contract_key=key,
-        provider_mapping_id=f"mapping-{kind.value}",
+        provider_mapping_id=mapping.mapping_id,
+        provider_mapping=mapping,
         contract_version_id=version.version_id,
         economic_subject_id=subject_id,
         instrument_kind=kind,
         economic_identity=identity,
         contract_version=version,
-        mapping_effective_from=AT,
-        mapping_effective_until=None,
-        version_effective_from=AT,
-        version_effective_until=None,
         resolution_market_as_of=AT,
         resolution_known_as_of=AT,
     )
