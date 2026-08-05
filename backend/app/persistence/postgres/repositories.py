@@ -26,6 +26,8 @@ from app.instruments.ports import (
     SemanticCollisionError,
 )
 from app.market_data.persistence.planner import plan_parameter_chunks
+from app.market_data.persistence.errors import MarketEventDurableCorruptionError
+
 
 EVENT_MEMBERSHIP_IMMUTABLE_FIELDS = (
     "id",
@@ -269,22 +271,56 @@ class PostgresMarketEventRepository:
                 batch,
             )
 
-    async def _fetch_existing_rows(self, table, key_name, identifiers, selected_columns):
-        if not identifiers:
+    async def _fetch_existing_rows(
+        self,
+        table: str,
+        key_name: str,
+        identifiers: tuple[object, ...],
+        selected_columns: tuple[str, ...],
+    ) -> dict[object, dict[str, object]]:
+        unique_identifiers = tuple(dict.fromkeys(identifiers))
+        if not unique_identifiers:
             return {}
-        if len(identifiers) == 1:
-            id_list = [identifiers[0]]
-        else:
-            id_list = list(identifiers)
-        placeholders = ", ".join(f":id_{index}" for index in range(len(id_list)))
-        rows = await self._session.execute(
-            text(f"SELECT {', '.join(selected_columns)} FROM {table} WHERE {key_name} IN ({placeholders})"),
-            {f"id_{index}": value for index, value in enumerate(id_list)},
-        )
-        results = {}
-        for row in rows:
-            values = dict(row._mapping)
-            results[values[key_name]] = values
+
+        results: dict[object, dict[str, object]] = {}
+
+        for chunk in plan_parameter_chunks(
+            len(unique_identifiers),
+            parameters_per_item=1,
+        ):
+            batch = unique_identifiers[
+                chunk.offset : chunk.offset + chunk.size
+            ]
+            parameters = {
+                f"id_{index}": value
+                for index, value in enumerate(batch)
+            }
+            placeholders = ", ".join(
+                f":id_{index}"
+                for index in range(len(batch))
+            )
+
+            rows = await self._session.execute(
+                text(
+                    f"SELECT {', '.join(selected_columns)} "
+                    f"FROM {table} "
+                    f"WHERE {key_name} IN ({placeholders})"
+                ),
+                parameters,
+            )
+
+            for row in rows:
+                values = dict(row._mapping)
+                durable_key = values[key_name]
+
+                if durable_key in results:
+                    raise MarketEventDurableCorruptionError(
+                        f"duplicate durable key returned for "
+                        f"{table}.{key_name}: {durable_key}"
+                    )
+
+                results[durable_key] = values
+
         return results
 
     async def _insert_membership(self, table, values, predicate):

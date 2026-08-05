@@ -3,11 +3,17 @@ from datetime import UTC, datetime
 
 import pytest
 
+from app.market_data.persistence.errors import (
+    MarketEventDurableCorruptionError,
+)
+
 from app.persistence.postgres.repositories import (
     EVENT_MEMBERSHIP_IMMUTABLE_FIELDS,
     FAILURE_MEMBERSHIP_IMMUTABLE_FIELDS,
+    PostgresMarketEventRepository,
     _rows_match_on_fields,
 )
+
 
 from app.market_data.persistence.contracts import (
     CANONICAL_IMPLEMENTATION,
@@ -16,6 +22,53 @@ from app.market_data.persistence.contracts import (
     QueryCursor,
 )
 from app.market_data.persistence.planner import derive_lock_stripes, lock_stripe, plan_parameter_chunks
+
+
+class _FakeRow:
+    def __init__(self, values: dict[str, object]) -> None:
+        self._mapping = values
+
+
+class _RecordingSession:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def execute(
+        self,
+        statement: object,
+        parameters: dict[str, object],
+    ) -> list[_FakeRow]:
+        self.calls.append(dict(parameters))
+        return [
+            _FakeRow(
+                {
+                    "id": identifier,
+                    "payload": {"id": identifier},
+                }
+            )
+            for identifier in parameters.values()
+        ]
+
+
+class _DuplicateDurableKeySession(_RecordingSession):
+    async def execute(
+        self,
+        statement: object,
+        parameters: dict[str, object],
+    ) -> list[_FakeRow]:
+        rows = await super().execute(statement, parameters)
+
+        if len(self.calls) == 2:
+            rows.append(
+                _FakeRow(
+                    {
+                        "id": "event-0",
+                        "payload": {"id": "event-0"},
+                    }
+                )
+            )
+
+        return rows
 
 
 def test_data14_namespace_derivation() -> None:
@@ -108,3 +161,80 @@ def test_exact_failure_membership_retry_ignores_created_at() -> None:
         changed,
         FAILURE_MEMBERSHIP_IMMUTABLE_FIELDS,
     )
+
+
+@pytest.mark.anyio
+async def test_existing_row_prefetch_chunks_five_thousand_ids() -> None:
+    session = _RecordingSession()
+    repository = PostgresMarketEventRepository(
+        session,
+        require_active=lambda: None,
+    )
+    identifiers = tuple(
+        f"event-{index}"
+        for index in range(5_000)
+    )
+
+    rows = await repository._fetch_existing_rows(
+        "market_observations",
+        "id",
+        identifiers,
+        ("id", "payload"),
+    )
+
+    assert len(rows) == 5_000
+    assert len(session.calls) == 5
+    assert [len(call) for call in session.calls] == [
+        1_000,
+        1_000,
+        1_000,
+        1_000,
+        1_000,
+    ]
+    assert all(len(call) <= 1_000 for call in session.calls)
+
+
+@pytest.mark.anyio
+async def test_existing_row_prefetch_deduplicates_requested_ids() -> None:
+    session = _RecordingSession()
+    repository = PostgresMarketEventRepository(
+        session,
+        require_active=lambda: None,
+    )
+
+    rows = await repository._fetch_existing_rows(
+        "market_observations",
+        "id",
+        ("event-0", "event-0", "event-1"),
+        ("id", "payload"),
+    )
+
+    assert set(rows) == {"event-0", "event-1"}
+    assert len(session.calls) == 1
+    assert len(session.calls[0]) == 2
+
+
+@pytest.mark.anyio
+async def test_existing_row_prefetch_rejects_duplicate_durable_key() -> None:
+    session = _DuplicateDurableKeySession()
+    repository = PostgresMarketEventRepository(
+        session,
+        require_active=lambda: None,
+    )
+    identifiers = tuple(
+        f"event-{index}"
+        for index in range(1_001)
+    )
+
+    with pytest.raises(
+        MarketEventDurableCorruptionError,
+        match="duplicate durable key",
+    ):
+        await repository._fetch_existing_rows(
+            "market_observations",
+            "id",
+            identifiers,
+            ("id", "payload"),
+        )
+
+    assert len(session.calls) == 2
