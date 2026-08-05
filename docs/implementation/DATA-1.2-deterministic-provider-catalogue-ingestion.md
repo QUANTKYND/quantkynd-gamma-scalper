@@ -2,6 +2,120 @@
 
 Status: implementation complete; acceptance evidence recorded; independent review pending. DATA-1.2 is not marked accepted.
 
+## Review Correction Evidence — 2026-08-05
+
+- Correction branch: `feature/data-1-deterministic-provider-catalogue-ingestion`
+- Reviewed branch head and correction starting SHA: `643a9b2ee8e5b3b8f09a8ff7ee8350bddb3c6660`
+- Required ancestor: `4030955c9be2c370d2ef40082fbb00aea7f7061a`
+- Corrected implementation SHA: `c5dc29b9730bc0e9f80832d9bf6eb7863d957e35`
+- Review-pending evidence base SHA: `68a12126b3aaf7a70b7b9eeff13107d4a195f8a5`
+- The correction started with related uncommitted edits in seven backend files supplied in the workspace. They were preserved, reviewed, completed, tested, and divided into the commits below.
+
+Correction commits:
+
+```text
+e362ea9 fix(data): classify malformed profile candidates strictly
+a2984c6 fix(data): plan sequential catalogue temporal transitions
+1b0d3c2 fix(data): preserve catalogue persistence error categories
+fadce82 feat(data): add repository-aware catalogue diff
+38ec814 test(data): prove sequential catalogue lifecycle
+c5dc29b test(data): extend catalogue restore verification
+68a1212 docs(data): document DATA-1.2 review corrections
+docs(data): record corrected DATA-1.2 evidence
+```
+
+### Corrected Sequential Lifecycle
+
+The real-PostgreSQL lifecycle suite ingested catalogue A and then catalogue B with an explicit catalogue predecessor. The four provider keys remained bound to the same four economic instrument IDs while B produced new provenance-bound catalogue, version, and mapping IDs. B's catalogue record superseded A's catalogue record; all four B instrument-version records superseded their eligible A records; and all four B mapping records superseded their eligible A records. The resulting graph had four version roots and four version successors, plus four mapping roots and four mapping successors, with no ambiguous eligible leaves.
+
+Historical checks returned A before B was known, A after B was known but before B was market-effective, and B only when both knowledge and market cutoffs admitted it. A changed futures display symbol was classified as one `metadata_changed` row without changing economic identity. A missing predecessor member was reported as disappeared and remained open, eligible, and unsuperseded. Reusing a provider key with a changed strike was rejected by comparing its durable historical economic `instrument_id`, not its catalogue-bound version ID.
+
+The B dry-run used the same locked repository transition plan as commit and returned:
+
+```json
+{
+  "added": 0,
+  "unchanged": 3,
+  "metadata_changed": 1,
+  "provider_mapping_changed": 0,
+  "disappeared": 0,
+  "excluded": 1,
+  "exact_duplicates": 0
+}
+```
+
+Dry-run retained no artifact and wrote no catalogue, instrument, version, mapping, run, outcome, or membership rows. Separate tests proved informational disappearance, competing-root and competing-successor serialization, and exact concurrent replay as one commit plus one verified idempotent success.
+
+### Corrected Classification, Duplicate, Numeric, And Failure Behavior
+
+- The exact approved underlying key and every row with the approved `underlying_key` are candidates before schema validation.
+- Missing or unsupported candidate instrument type, underlying type, exchange, segment, and required underlying fields reject the catalogue.
+- Other-index and stock derivatives remain exclusions.
+- Exact raw duplicates remain `exact_duplicate`; a non-identical row reusing one provider key rejects even when its normalized projection is equal.
+- Two provider keys can identify one economic contract only when their version metadata is consistent.
+- Expiry conversion uses integer `divmod` plus UTC epoch `timedelta`; booleans, fractional values, negative values, and out-of-range values reject. Exchange-local midnight boundary tests pass.
+- A fresh transaction interprets a failed write as idempotent only when an accepted run has the same key, command digest, and immutable command inputs. Semantic collisions, unrelated integrity failures, and temporal successor conflicts retain their original category when no accepted run exists.
+
+Focused parser/profile result:
+
+```text
+28 passed
+```
+
+Acceptance-critical catalogue service result:
+
+```text
+17 passed; 0 skipped
+```
+
+### Corrected Restore Evidence
+
+The restore verifier seeded two accepted catalogue runs through the production ingestion service, using two retained compressed source artifacts. It verified the A→B catalogue edge, all four version edges, all four mapping edges, historical A reads, current B reads, economic binding continuity, both audit histories, and both hash-valid external artifact references before and after restore.
+
+```text
+source_revision=20260804_03
+restored_revision=20260804_03
+canonical_digest=sha256:d91e846443058ba1a5e6e3307f72057e5b0928ae22615ef234b0b96b9fa0dd5a
+catalogue_ingestion_runs=2
+catalogue_memberships=8
+catalogue_row_outcomes=10
+catalogue_source_artifacts=2
+catalogue_version_records=4
+catalogue_versions=4
+instrument_version_records=12
+instrument_versions=12
+market_instruments=7
+provider_contract_mappings=10
+provider_mapping_records=10
+digest_match=true
+semantic_and_record_ids_match=true
+representative_query_match=true
+catalogue_representative_query_match=true
+provider_binding_continuity=true
+artifact_reference_hash_valid=true
+dump_removed=true
+target_safety_rechecked=true
+```
+
+The totals include the pre-existing DATA-1.1 deterministic temporal fixture plus the two DATA-1.2 catalogues. Database restoration preserves artifact references; external artifact backup remains a separate operational responsibility.
+
+### Corrected Full Verification
+
+```text
+backend compile: passed
+backend tests: 430 passed in 14.26s; 0 skipped
+alembic current: 20260804_03 (head)
+alembic check: No new upgrade operations detected.
+frontend lint: passed
+frontend build: passed with the existing Vite large-chunk warning
+```
+
+Validate-only ran from `/tmp` with `DATABASE_URL`, `DATABASE_RESTORE_TEST_URL`, and `CATALOGUE_ARTIFACT_ROOT` absent. It exited `0`, returned `status=accepted`, four accepted unique rows, one exclusion, and null run, catalogue-record, and artifact keys. The unit boundary test also proves that validate-only never constructs a database engine.
+
+Acceptance used PostgreSQL `18.4` server with host `/usr/bin` `psql`, `pg_dump`, and `pg_restore` version `18.4`. The local system cluster was unavailable without administrator credentials, so verification used a temporary user-owned loopback PostgreSQL 18 cluster with only the exact disposable `quantkynd_test` and `quantkynd_restore` databases and their purpose-specific sentinels.
+
+The final evidence commit, pushed branch SHA, and clean worktree are reported in the implementation handoff because a Git commit cannot contain its own SHA. The status remains implementation complete; acceptance evidence recorded; independent review pending.
+
 ## Provenance
 
 - Branch: `feature/data-1-deterministic-provider-catalogue-ingestion`
