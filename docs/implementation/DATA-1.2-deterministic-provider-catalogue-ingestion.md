@@ -32,6 +32,89 @@ The first catalogue is allowed only when its provider/profile scope has no recor
 
 Market selection remains a separate read concern. After applying `known_as_of` and validating the graph, the repositories apply interval eligibility and let only an eligible successor hide its eligible predecessor. Forward and same-effective-time corrections select the later-known successor when admitted. An open historical correction also becomes the eligible successor after it is known. A bounded historical backfill is returned inside its earlier interval after it is known, while current-market queries continue to return the earlier knowledge record whose market interval remains eligible. Earlier knowledge cutoffs do not see the backfill.
 
+### Final PostgreSQL 17 Acceptance Evidence
+
+The initial branch, head, worktree, and ancestry checks found branch `feature/data-1-deterministic-provider-catalogue-ingestion`, exact correction starting SHA `854cdd62f1c136a32b81b32f8c832cc300d46a00`, a clean worktree, and required ancestor `4030955c9be2c370d2ef40082fbb00aea7f7061a`. The cached remote feature-branch ref also equalled the correction starting SHA. Two `git pull --ff-only` attempts could not pass the environment's automatic escalation review before timeout; no local or cached-remote state changed.
+
+The declared `postgres:17-alpine` service supplied:
+
+```text
+server: PostgreSQL 17.10 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+psql: PostgreSQL 17.10
+pg_dump: PostgreSQL 17.10
+pg_restore: PostgreSQL 17.10
+```
+
+Migration acceptance upgraded to `20260804_03`, downgraded to `20260804_02`, re-upgraded to `20260804_03`, reported `20260804_03 (head)`, and returned `No new upgrade operations detected.` The complete backend result was:
+
+```text
+python -m compileall -q app tests: passed
+pytest -ra: 438 passed in 30.50s; 0 skipped
+```
+
+Exact acceptance commands, with the two local disposable PostgreSQL URLs redacted, were:
+
+```bash
+cd backend
+UV_CACHE_DIR=/tmp/uv-cache uv run python -m compileall -q app tests
+DATABASE_URL=<local-quantkynd_test-url> UV_CACHE_DIR=/tmp/uv-cache uv run alembic upgrade head
+DATABASE_URL=<local-quantkynd_test-url> UV_CACHE_DIR=/tmp/uv-cache uv run alembic downgrade 20260804_02
+DATABASE_URL=<local-quantkynd_test-url> UV_CACHE_DIR=/tmp/uv-cache uv run alembic upgrade head
+DATABASE_URL=<local-quantkynd_test-url> DATABASE_RESTORE_TEST_URL=<local-quantkynd_restore-url> DATABASE_ALLOW_DESTRUCTIVE_TEST_OPERATIONS=true DATABASE_EXPECTED_INTEGRATION_TEST_NAME=quantkynd_test DATABASE_EXPECTED_RESTORE_TEST_NAME=quantkynd_restore DATABASE_ALLOW_NONLOCAL_DESTRUCTIVE_OPERATIONS=false CATALOGUE_ARTIFACT_ROOT=/tmp/quantkynd-data12-pg17-full-artifacts UV_CACHE_DIR=/tmp/uv-cache uv run pytest -ra
+DATABASE_URL=<local-quantkynd_test-url> UV_CACHE_DIR=/tmp/uv-cache uv run alembic current
+DATABASE_URL=<local-quantkynd_test-url> UV_CACHE_DIR=/tmp/uv-cache uv run alembic check
+DATABASE_URL=<local-quantkynd_test-url> DATABASE_RESTORE_TEST_URL=<local-quantkynd_restore-url> DATABASE_ALLOW_DESTRUCTIVE_TEST_OPERATIONS=true DATABASE_EXPECTED_INTEGRATION_TEST_NAME=quantkynd_test DATABASE_EXPECTED_RESTORE_TEST_NAME=quantkynd_restore DATABASE_ALLOW_NONLOCAL_DESTRUCTIVE_OPERATIONS=false CATALOGUE_ARTIFACT_ROOT=/tmp/quantkynd-data12-pg17-final-artifacts UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.verify_database_restore
+cd ../frontend
+pnpm lint
+pnpm build
+cd ..
+git diff --check
+git status --short
+```
+
+The acceptance-critical catalogue service subset separately returned `22 passed` with zero skips. Its deterministic clock proof used invocation `2026-08-05T10:00:00Z`, acceptance `2026-08-05T10:05:00Z`, and completion `2026-08-05T10:05:02Z`. Every new catalogue, instrument-version, mapping, and run knowledge record used the acceptance timestamp; a cutoff inside the five-minute pre-acceptance interval returned no catalogue, while the acceptance cutoff returned the market-eligible catalogue.
+
+Forward A→B returned A before B was known, A when B was known but not market-eligible, and B after both cutoffs admitted it. Open historical H explicitly superseded A's knowledge leaf and became the unambiguous eligible value after it was known. Bounded historical H returned no value at the earlier knowledge cutoff, returned H inside its bounded interval after acceptance, and continued returning A for the current interval. Missing predecessors, stale A after B, and provider-key economic reassignment failed closed. A later-known correction at B's same `effective_from` succeeded only with B's current record ID.
+
+The final restore fixture contains A, forward B, and bounded historical H. Exact temporal counts are:
+
+```text
+scope                 roots  successors
+catalogue                 1           2
+instrument versions       4           8
+provider mappings         4           8
+```
+
+The PostgreSQL 17 `pg_dump`/`pg_restore` verification returned:
+
+```text
+source_revision=20260804_03
+restored_revision=20260804_03
+canonical_digest=sha256:b8773b19cae1fc22ee2b0555347ac566cd84b4e5c0b8dfb594940a2a3ae87e2a
+catalogue_ingestion_runs=3
+catalogue_memberships=12
+catalogue_row_outcomes=15
+catalogue_source_artifacts=3
+catalogue_version_records=5
+catalogue_versions=5
+instrument_version_records=16
+instrument_versions=16
+provider_contract_mappings=14
+provider_mapping_records=14
+digest_match=true
+semantic_and_record_ids_match=true
+representative_query_match=true
+catalogue_representative_query_match=true
+provider_binding_continuity=true
+artifact_reference_hash_valid=true
+dump_removed=true
+target_safety_rechecked=true
+```
+
+Before H was known, historical catalogue and mapping queries both returned null. After H was known, the historical query returned catalogue `sha256:67744fa85cfabb8b64436d998328b2a4767fb0a65b8624413190ee0852059002` and mapping `sha256:7f655d5e4d26540e5e07d30294c6e6633a3127d34a4e60f33e4453c77062b4f9`. The same restored knowledge cutoff returned current catalogue B `sha256:4c799f3f16b2784871e03187e7bb5bd95b42991b1e05eb8e19b0adcae7606252` and current mapping B `sha256:af806598ebae4bb8ea1e0e369d5a88915a7cd182635f530da22041aca60ebc29` outside H's interval. Source and restored results were identical.
+
+Frontend `pnpm lint` passed. `pnpm build` passed under Vite `8.2.0`; the existing warning for a minified chunk larger than 500 kB remained. `git diff --check` passed. The evidence commit, final pushed branch SHA, and clean post-push worktree are reported in the handoff because a commit cannot contain its own SHA. PostgreSQL 18.4 results below remain supplementary and do not replace this PostgreSQL 17 acceptance run. Status remains: implementation complete; acceptance evidence recorded; independent review pending.
+
 ## Review Correction Evidence — 2026-08-05
 
 - Correction branch: `feature/data-1-deterministic-provider-catalogue-ingestion`
@@ -142,7 +225,7 @@ frontend build: passed with the existing Vite large-chunk warning
 
 Validate-only ran from `/tmp` with `DATABASE_URL`, `DATABASE_RESTORE_TEST_URL`, and `CATALOGUE_ARTIFACT_ROOT` absent. It exited `0`, returned `status=accepted`, four accepted unique rows, one exclusion, and null run, catalogue-record, and artifact keys. The unit boundary test also proves that validate-only never constructs a database engine.
 
-Acceptance used PostgreSQL `18.4` server with host `/usr/bin` `psql`, `pg_dump`, and `pg_restore` version `18.4`. The local system cluster was unavailable without administrator credentials, so verification used a temporary user-owned loopback PostgreSQL 18 cluster with only the exact disposable `quantkynd_test` and `quantkynd_restore` databases and their purpose-specific sentinels.
+Earlier supplementary evidence used PostgreSQL `18.4` server with host `/usr/bin` `psql`, `pg_dump`, and `pg_restore` version `18.4`. The final acceptance evidence above supersedes it with the declared PostgreSQL 17 service and PostgreSQL 17.10 client tools.
 
 The final evidence commit, pushed branch SHA, and clean worktree are reported in the implementation handoff because a Git commit cannot contain its own SHA. The status remains implementation complete; acceptance evidence recorded; independent review pending.
 
