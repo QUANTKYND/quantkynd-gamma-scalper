@@ -1,0 +1,16 @@
+{
+  "descriptor_sha256": "e78b1c8523d65a8d6a338adcd8147c9186a43365e8b9f42bdd281d7f0bbec2c8",
+  "downloaded_at": "2026-08-05T00:00:00Z",
+  "generated_python_sha256": "03be6eaa3285e897f7a34ca0ea4eee298a1426f3441c75716616f463e3b952fe",
+  "generated_stub_sha256": "851ffbed919335685d1e37abde64dfb825dbad2a5b1e6c67d431c344461c40d1",
+  "generator_package": "grpcio-tools",
+  "generator_version": "1.82.1",
+  "package": "com.upstox.marketdatafeederv3udapi.rpc.proto",
+  "proto_byte_count": 2070,
+  "proto_sha256": "ded335a0c7d2054011c2c0e06f276007a3186d1e212268d85d665788e42916c4",
+  "protobuf_runtime_range": ">=7.35,<8",
+  "protobuf_runtime_resolved": "7.35.1",
+  "root_message": "FeedResponse",
+  "schema_id": "upstox-market-data-feed-v3",
+  "source_url": "https://assets.upstox.com/feed/market-data-feed/v3/MarketDataFeed.proto"
+}
