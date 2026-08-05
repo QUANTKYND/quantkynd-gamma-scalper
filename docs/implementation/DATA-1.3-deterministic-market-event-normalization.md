@@ -96,7 +96,8 @@ The corpus also contains a deterministic DATA-1 subject manifest and connection,
 
 ## Acceptance results
 
-- Focused no-infrastructure market-data suite: `179 passed`, zero skipped.
+- Focused no-infrastructure normalization/fixture/LIVE-RV suite: `166 passed`, zero skipped.
+- Complete market-data test directory: `179 passed`, zero skipped.
 - Existing LIVE-RV suite: `26 passed`, unchanged public payloads and files.
 - Repository resolver integration: `1 passed`, zero skipped, covering all required resolver scenarios.
 - Complete backend: `584 passed`, zero skipped.
