@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -95,6 +95,7 @@ def build_upstox_nifty_catalogue_plan(
     excluded = 0
     duplicate_count = 0
     seen_semantic_rows: set[str] = set()
+    accepted_provider_keys: dict[str, str] = {}
     accepted_projections: list[AcceptedProjection] = []
     outcomes: list[CatalogueRowOutcome] = []
     for row in parse_json_array_rows(artifact.decompressed_path):
@@ -104,7 +105,7 @@ def build_upstox_nifty_catalogue_plan(
             row.physical_row_number,
             row.raw_row_hash,
         )
-        if not _is_profile_row(row.raw):
+        if not _is_profile_candidate(row.raw):
             excluded += 1
             outcomes.append(
                 CatalogueRowOutcome(
@@ -138,6 +139,11 @@ def build_upstox_nifty_catalogue_plan(
             continue
         seen_semantic_rows.add(semantic_id)
         projection = _projection(row.raw, scan.underlying.instrument_id)
+        provider_key = str(projection["provider_contract_key"])
+        prior_raw_hash = accepted_provider_keys.get(provider_key)
+        if prior_raw_hash is not None and prior_raw_hash != row.raw_row_hash:
+            raise CatalogueConflictError("duplicate provider key with non-identical raw content")
+        accepted_provider_keys[provider_key] = row.raw_row_hash
         accepted_projections.append(AcceptedProjection(row, projection))
     catalogue_hash = normalized_catalogue_hash(tuple(item.projection for item in accepted_projections))
     catalogue = CatalogueVersion(
@@ -152,7 +158,6 @@ def build_upstox_nifty_catalogue_plan(
     )
     items: list[NormalizedCatalogueItem] = []
     memberships: list[CatalogueMembership] = []
-    provider_keys: dict[str, str] = {}
     for accepted_projection in accepted_projections:
         row = accepted_projection.row
         projection = accepted_projection.projection
@@ -166,11 +171,6 @@ def build_upstox_nifty_catalogue_plan(
             effective_until=effective_until,
             recorded_at=recorded_at,
         )
-        existing_projection_hash = provider_keys.get(item.provider_contract_key)
-        projection_hash = stable_hash(item.projection)
-        if existing_projection_hash is not None and existing_projection_hash != projection_hash:
-            raise CatalogueConflictError("duplicate provider key with conflicting normalized content")
-        provider_keys[item.provider_contract_key] = projection_hash
         items.append(item)
         accepted = CatalogueRowOutcome(
             ingestion_run_id=ingestion_run_id,
@@ -218,6 +218,7 @@ def build_upstox_nifty_catalogue_plan(
 
 def _scan_profile(artifact: ParsedCatalogueArtifact) -> ProfileScan:
     underlying: UnderlyingInstrumentIdentity | None = None
+    underlying_raw_hash: str | None = None
     physical_count = 0
     fields: set[str] = set()
     for row in parse_json_array_rows(artifact.decompressed_path):
@@ -225,8 +226,11 @@ def _scan_profile(artifact: ParsedCatalogueArtifact) -> ProfileScan:
         fields.update(row.raw)
         if row.raw.get("instrument_key") == UNDERLYING_KEY:
             if underlying is not None:
+                if row.raw_row_hash == underlying_raw_hash:
+                    continue
                 raise CatalogueConflictError("duplicate approved underlying row")
             underlying = _normalize_underlying(row.raw)
+            underlying_raw_hash = row.raw_row_hash
     if underlying is None:
         raise CatalogueNormalizationError("missing approved Upstox Nifty 50 underlying row")
     return ProfileScan(
@@ -248,20 +252,14 @@ def _normalize_underlying(row: dict[str, object]) -> UnderlyingInstrumentIdentit
     exchange = _required_text(row, "exchange")
     if segment != "NSE_INDEX" or exchange != EXCHANGE:
         raise CatalogueNormalizationError("underlying row is outside the approved profile")
+    if _required_text(row, "instrument_type") != "INDEX":
+        raise CatalogueNormalizationError("underlying instrument_type must be INDEX")
     return UnderlyingInstrumentIdentity(EXCHANGE, CANONICAL_SYMBOL, InstrumentType.INDEX, CURRENCY)
 
 
-def _is_profile_row(row: dict[str, object]) -> bool:
+def _is_profile_candidate(row: dict[str, object]) -> bool:
     key = _optional_text(row, "instrument_key")
-    if key == UNDERLYING_KEY:
-        return True
-    return (
-        _optional_text(row, "segment") == "NSE_FO"
-        and _optional_text(row, "exchange") == EXCHANGE
-        and _optional_text(row, "underlying_key") == UNDERLYING_KEY
-        and _optional_text(row, "underlying_type") == "INDEX"
-        and _optional_text(row, "instrument_type") in {"FUT", "CE", "PE"}
-    )
+    return key == UNDERLYING_KEY or _optional_text(row, "underlying_key") == UNDERLYING_KEY
 
 
 def _projection(row: dict[str, object], underlying_instrument_id: str) -> dict[str, object]:
@@ -281,6 +279,8 @@ def _projection(row: dict[str, object], underlying_instrument_id: str) -> dict[s
         }
     _validate_derivative(row)
     instrument_type = _required_text(row, "instrument_type")
+    if instrument_type not in {"FUT", "CE", "PE"}:
+        raise CatalogueNormalizationError("derivative instrument_type must be FUT, CE, or PE")
     base = {
         "provider_contract_key": key,
         "exchange": EXCHANGE,
@@ -392,6 +392,10 @@ def _item_from_projection(
 
 
 def _validate_derivative(row: dict[str, object]) -> None:
+    if _required_text(row, "segment") != "NSE_FO":
+        raise CatalogueNormalizationError("derivative segment must be NSE_FO")
+    if _required_text(row, "exchange") != EXCHANGE:
+        raise CatalogueNormalizationError("derivative exchange must be NSE")
     if _required_text(row, "underlying_key") != UNDERLYING_KEY:
         raise CatalogueNormalizationError("derivative underlying_key is outside the approved profile")
     if _required_text(row, "underlying_type") != "INDEX":
@@ -413,9 +417,16 @@ def _expiry(row: dict[str, object]):
         milliseconds = value
     else:
         raise CatalogueNormalizationError("expiry must be integral epoch milliseconds")
+    if milliseconds < 0:
+        raise CatalogueNormalizationError("expiry must not be negative")
     try:
-        return datetime.fromtimestamp(milliseconds / 1000, tz=UTC).astimezone(KOLKATA).date()
-    except (OverflowError, OSError, ValueError) as exc:
+        seconds, remainder_milliseconds = divmod(milliseconds, 1000)
+        instant = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(
+            seconds=seconds,
+            milliseconds=remainder_milliseconds,
+        )
+        return instant.astimezone(KOLKATA).date()
+    except (OverflowError, ValueError) as exc:
         raise CatalogueNormalizationError("expiry is outside the supported timestamp range") from exc
 
 

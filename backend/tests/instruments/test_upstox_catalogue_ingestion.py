@@ -9,7 +9,11 @@ from pathlib import Path
 import pytest
 
 from app.instruments.catalogue_parser import parse_json_array_rows, validate_gzip_json_array
-from app.instruments.provider_catalogue import CatalogueNormalizationError, CatalogueSourceArtifact
+from app.instruments.provider_catalogue import (
+    CatalogueConflictError,
+    CatalogueNormalizationError,
+    CatalogueSourceArtifact,
+)
 from app.instruments.providers.upstox_catalogue import (
     COMPRESSION,
     MEDIA_TYPE,
@@ -147,6 +151,122 @@ def test_underlying_symbol_mismatch_rejects_in_profile_derivative(tmp_path: Path
             )
 
 
+@pytest.mark.parametrize(
+    ("row_index", "old", "new", "message"),
+    [
+        (2, b'"instrument_type":"CE",', b"", "instrument_type"),
+        (2, b'"instrument_type":"CE"', b'"instrument_type":"EQ"', "instrument_type"),
+        (2, b'"underlying_type":"INDEX",', b"", "underlying_type"),
+        (2, b'"underlying_type":"INDEX"', b'"underlying_type":"EQUITY"', "underlying_type"),
+        (2, b'"exchange":"NSE"', b'"exchange":"BSE"', "exchange"),
+        (2, b'"segment":"NSE_FO"', b'"segment":"NSE_EQ"', "segment"),
+        (0, b'"instrument_type":"INDEX",', b"", "instrument_type"),
+        (0, b'"instrument_type":"INDEX"', b'"instrument_type":"EQ"', "instrument_type"),
+    ],
+)
+def test_malformed_profile_candidates_reject(
+    tmp_path: Path,
+    row_index: int,
+    old: bytes,
+    new: bytes,
+    message: str,
+) -> None:
+    rows = _rows()
+    rows[row_index] = rows[row_index].replace(old, new)
+
+    with pytest.raises(CatalogueNormalizationError, match=message):
+        _build_plan(_gzip(tmp_path, b"[" + b",".join(rows) + b"]"))
+
+
+def test_other_index_and_stock_derivatives_are_excluded(tmp_path: Path) -> None:
+    baseline = _build_plan(_gzip(tmp_path, _catalogue_json(), "baseline.json.gz"))
+    rows = _rows()
+    rows[2] = rows[2].replace(b"NSE_INDEX|Nifty 50", b"NSE_INDEX|Nifty Bank")
+    rows[3] = rows[3].replace(b"NSE_INDEX|Nifty 50", b"NSE_INDEX|Nifty Bank")
+    rows.append(
+        b'{"instrument_key":"NSE_FO|STOCK_FUT","segment":"NSE_FO","exchange":"NSE","instrument_type":"FUT","underlying_key":"NSE_EQ|INE002A01018","underlying_type":"EQUITY","underlying_symbol":"RELIANCE","expiry":1787769000000,"trading_symbol":"RELIANCE26AUGFUT","lot_size":500,"tick_size":5}'
+    )
+
+    plan = _build_plan(_gzip(tmp_path, b"[" + b",".join(rows) + b"]", "excluded.json.gz"))
+
+    assert plan.accepted_unique_count == baseline.accepted_unique_count - 1
+    assert plan.excluded_count == baseline.excluded_count + 3
+
+
+def test_exact_raw_duplicate_is_recorded_without_duplicate_membership(tmp_path: Path) -> None:
+    plan = _build_plan(_gzip(tmp_path, _catalogue_json()))
+
+    assert plan.exact_duplicate_count == 1
+    assert len(plan.memberships) == plan.accepted_unique_count
+    assert len({membership.provider_contract_key for membership in plan.memberships}) == len(plan.memberships)
+
+
+def test_exact_underlying_duplicate_is_recorded_without_duplicate_membership(
+    tmp_path: Path,
+) -> None:
+    rows = _rows()
+    rows.insert(1, rows[0])
+
+    plan = _build_plan(_gzip(tmp_path, b"[" + b",".join(rows) + b"]"))
+
+    assert plan.exact_duplicate_count == 2
+    assert len(plan.memberships) == plan.accepted_unique_count
+    assert len({membership.provider_contract_key for membership in plan.memberships}) == len(
+        plan.memberships
+    )
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        b'"tick_size":5,"name":"Equivalent projection"',
+        b'"tick_size":10',
+    ],
+)
+def test_non_identical_duplicate_provider_key_rejects(tmp_path: Path, replacement: bytes) -> None:
+    rows = _rows()
+    rows[3] = rows[3].replace(b'"tick_size":5', replacement)
+
+    with pytest.raises(CatalogueConflictError, match="duplicate provider key"):
+        _build_plan(_gzip(tmp_path, b"[" + b",".join(rows) + b"]"))
+
+
+def test_distinct_provider_keys_may_bind_the_same_economic_contract(tmp_path: Path) -> None:
+    rows = _rows()
+    rows[3] = rows[3].replace(b"NSE_FO|OPT", b"NSE_FO|OPT_ALIAS")
+
+    plan = _build_plan(_gzip(tmp_path, b"[" + b",".join(rows) + b"]"))
+    option_items = [item for item in plan.items if item.projection["kind"] == "option"]
+
+    assert len(option_items) == 2
+    assert len({item.instrument_id for item in option_items}) == 1
+    assert len({item.mapping_id for item in option_items}) == 2
+
+
+def test_expiry_conversion_uses_exchange_local_midnight_boundary(tmp_path: Path) -> None:
+    midnight_milliseconds = 1_777_573_800_000
+    before_rows = _rows()
+    at_rows = _rows()
+    for index in (1, 2, 3):
+        before_rows[index] = before_rows[index].replace(b"1787769000000", str(midnight_milliseconds - 1).encode())
+        at_rows[index] = at_rows[index].replace(b"1787769000000", str(midnight_milliseconds).encode())
+
+    before = _build_plan(_gzip(tmp_path, b"[" + b",".join(before_rows) + b"]", "before.json.gz"))
+    at = _build_plan(_gzip(tmp_path, b"[" + b",".join(at_rows) + b"]", "at.json.gz"))
+
+    assert _future_expiry(before).isoformat() == "2026-04-30"
+    assert _future_expiry(at).isoformat() == "2026-05-01"
+
+
+@pytest.mark.parametrize("replacement", [b"true", b"1787769000000.5", b"-1"])
+def test_invalid_expiry_numeric_forms_reject(tmp_path: Path, replacement: bytes) -> None:
+    rows = _rows()
+    rows[1] = rows[1].replace(b"1787769000000", replacement)
+
+    with pytest.raises(CatalogueNormalizationError, match="expiry"):
+        _build_plan(_gzip(tmp_path, b"[" + b",".join(rows) + b"]"))
+
+
 def test_validate_only_needs_no_database(tmp_path: Path) -> None:
     command = CatalogueIngestionCommand(
         profile=PROFILE_VERSION,
@@ -232,6 +352,22 @@ def _catalogue_json(reversed_rows: bool = False) -> bytes:
     if reversed_rows:
         rows = list(reversed(rows))
     return b"[" + b",".join(rows) + b"]"
+
+
+def _build_plan(path: Path):
+    with validate_gzip_json_array(path) as artifact:
+        return build_upstox_nifty_catalogue_plan(
+            artifact=artifact,
+            source_artifact_id="sha256:" + "a" * 64,
+            effective_from=EFFECTIVE_FROM,
+            effective_until=None,
+            recorded_at=EFFECTIVE_FROM,
+            ingestion_run_id="sha256:" + "b" * 64,
+        )
+
+
+def _future_expiry(plan):
+    return next(item.projection["expiry"] for item in plan.items if item.projection["kind"] == "future")
 
 
 def _gzip(tmp_path: Path, payload: bytes, name: str = "NSE.json.gz", mtime: int = 0) -> Path:
