@@ -21,6 +21,19 @@ The visible knowledge graph is filtered and fully validated before market select
 
 The PostgreSQL lifecycle and restore fixture use A open from `2026-08-04T03:45:00Z`, B open from `2026-08-05T03:45:00Z`, and H bounded to `[2026-08-04T12:00:00Z, 2026-08-04T18:00:00Z)`, recorded in A→B→H knowledge order. At `2026-08-04T13:00:00Z`, catalogue, instrument-version, and mapping reads return A before H is known and H after H is known despite ineligible B between them. At B's start they return B; between A's start and H, and between H's end and B, they return A. The graph retains one catalogue root with two successors and four version/mapping roots with eight successors, without ambiguity. A same-effective-time successor after B remains selected as the latest eligible descendant.
 
+Baseline verification switched to the required branch, completed `git pull --ff-only` as already up to date, confirmed exact starting SHA `b4421125f19f7cc4467f66ca7ecc2b5d2a8dd840`, found a clean worktree, and passed the required-ancestor check. Pure temporal resolver tests returned `16 passed`; the PostgreSQL catalogue lifecycle suite returned `23 passed`; both had zero skips. The complete declared-PostgreSQL-17 backend suite returned `443 passed in 30.14s` with zero skips. Compileall passed, Alembic reported `20260804_03 (head)` and no pending upgrade operations, and frontend lint/build passed with only the existing Vite large-chunk warning.
+
+The final PostgreSQL 17 restore digest is `sha256:941b2c94406bd8b0d3555d8fd1090a2c73a6622ce0656d3ff200a1b7a48af6e6`. Source and restored reads were equal. Representative semantic IDs were:
+
+```text
+                         before H known                                                    after H known                                                     current at B
+catalogue                sha256:658275c2a976e0403ea1b9087d2fdba069973be83b750435ab697ec71f2cd418  sha256:4f08958a1b246a26d27ccaa299ba0c1c17bec9221f4e30a9048fee42915799c4  sha256:4c799f3f16b2784871e03187e7bb5bd95b42991b1e05eb8e19b0adcae7606252
+instrument version       sha256:63bdb4de19b1bcdb2034a6574837d7b5b135f34bffa53029b1b78142750492e3  sha256:2a074dbded152abf0d74079d2b952b0ee8710fe056e1e8be73325c6765f9499d  sha256:b24ecf720a0ae3ad604966e88ef2b1287f2b355ffb82c69e1b7151fbbf10e3dd
+provider mapping         sha256:5bc5c3a144a1e718f87a47c6e5a468eae92e8c85bc5d449e2cc20c77ae10c98a  sha256:42b94f265ddc26f4ed7cf7dfc0bfd16329558c2c37843ccec70118b9838e948b  sha256:af806598ebae4bb8ea1e0e369d5a88915a7cd182635f530da22041aca60ebc29
+```
+
+The restore contained three non-zero DATA-1.2 ingestion runs, twelve memberships, fifteen row outcomes, and three source artifacts. Digest, semantic/record IDs, representative queries, provider binding, successor edges, and artifact hashes matched; the temporary dump was removed. Server, `psql`, `pg_dump`, and `pg_restore` were PostgreSQL `17.10`; the server was the declared Alpine image build on `x86_64-pc-linux-musl`.
+
 ## Final Point-in-Time Corrections — 2026-08-05
 
 - Branch: `feature/data-1-deterministic-provider-catalogue-ingestion`
@@ -49,7 +62,7 @@ Transition planning no longer applies the incoming `effective_from` while choosi
 
 The first catalogue is allowed only when its provider/profile scope has no record. Every later catalogue explicitly names the current catalogue knowledge leaf; a missing, stale, root-but-not-leaf, or unrelated predecessor is rejected. New versions and mappings for existing scopes supersede their current knowledge leaves. Stable provider-key binding to one durable economic instrument remains mandatory across all history.
 
-Market selection remains a separate read concern. After applying `known_as_of` and validating the graph, the repositories apply interval eligibility and let only an eligible successor hide its eligible predecessor. Forward and same-effective-time corrections select the later-known successor when admitted. An open historical correction also becomes the eligible successor after it is known. A bounded historical backfill is returned inside its earlier interval after it is known, while current-market queries continue to return the earlier knowledge record whose market interval remains eligible. Earlier knowledge cutoffs do not see the backfill.
+Market selection remains a separate read concern. After applying `known_as_of` and validating the graph, the repositories apply interval eligibility. Every eligible descendant hides all eligible ancestors in its visible predecessor chain, including through ineligible intermediate records. Forward and same-effective-time corrections select the later-known successor when admitted. Open and bounded historical corrections replace eligible ancestors inside their intervals after they are known, while the applicable ancestor remains selected outside those intervals. Earlier knowledge cutoffs reproduce the earlier lineage state.
 
 ### Final PostgreSQL 17 Acceptance Evidence
 
@@ -68,7 +81,7 @@ Migration acceptance upgraded to `20260804_03`, downgraded to `20260804_02`, re-
 
 ```text
 python -m compileall -q app tests: passed
-pytest -ra: 438 passed in 30.50s; 0 skipped
+pytest -ra: 443 passed in 30.14s; 0 skipped
 ```
 
 Exact acceptance commands, with the two local disposable PostgreSQL URLs redacted, were:
@@ -91,7 +104,7 @@ git diff --check
 git status --short
 ```
 
-The acceptance-critical catalogue service subset separately returned `22 passed` with zero skips. Its deterministic clock proof used invocation `2026-08-05T10:00:00Z`, acceptance `2026-08-05T10:05:00Z`, and completion `2026-08-05T10:05:02Z`. Every new catalogue, instrument-version, mapping, and run knowledge record used the acceptance timestamp; a cutoff inside the five-minute pre-acceptance interval returned no catalogue, while the acceptance cutoff returned the market-eligible catalogue.
+The acceptance-critical catalogue service subset separately returned `23 passed` with zero skips. Its deterministic clock proof used invocation `2026-08-05T10:00:00Z`, acceptance `2026-08-05T10:05:00Z`, and completion `2026-08-05T10:05:02Z`. Every new catalogue, instrument-version, mapping, and run knowledge record used the acceptance timestamp; a cutoff inside the five-minute pre-acceptance interval returned no catalogue, while the acceptance cutoff returned the market-eligible catalogue.
 
 Forward A→B returned A before B was known, A when B was known but not market-eligible, and B after both cutoffs admitted it. Open historical H explicitly superseded A's knowledge leaf and became the unambiguous eligible value after it was known. Bounded historical H returned no value at the earlier knowledge cutoff, returned H inside its bounded interval after acceptance, and continued returning A for the current interval. Missing predecessors, stale A after B, and provider-key economic reassignment failed closed. A later-known correction at B's same `effective_from` succeeded only with B's current record ID.
 
@@ -109,7 +122,7 @@ The PostgreSQL 17 `pg_dump`/`pg_restore` verification returned:
 ```text
 source_revision=20260804_03
 restored_revision=20260804_03
-canonical_digest=sha256:b8773b19cae1fc22ee2b0555347ac566cd84b4e5c0b8dfb594940a2a3ae87e2a
+canonical_digest=sha256:941b2c94406bd8b0d3555d8fd1090a2c73a6622ce0656d3ff200a1b7a48af6e6
 catalogue_ingestion_runs=3
 catalogue_memberships=12
 catalogue_row_outcomes=15
@@ -130,7 +143,7 @@ dump_removed=true
 target_safety_rechecked=true
 ```
 
-Before H was known, historical catalogue and mapping queries both returned null. After H was known, the historical query returned catalogue `sha256:67744fa85cfabb8b64436d998328b2a4767fb0a65b8624413190ee0852059002` and mapping `sha256:7f655d5e4d26540e5e07d30294c6e6633a3127d34a4e60f33e4453c77062b4f9`. The same restored knowledge cutoff returned current catalogue B `sha256:4c799f3f16b2784871e03187e7bb5bd95b42991b1e05eb8e19b0adcae7606252` and current mapping B `sha256:af806598ebae4bb8ea1e0e369d5a88915a7cd182635f530da22041aca60ebc29` outside H's interval. Source and restored results were identical.
+Before H was known, the overlapping historical catalogue, instrument-version, and mapping queries returned A. After H was known, the same queries returned H through ineligible intermediate B. At B's market start, the three queries returned B. Source and restored results were identical; exact semantic IDs are recorded in the transitive-correction evidence above.
 
 Frontend `pnpm lint` passed. `pnpm build` passed under Vite `8.2.0`; the existing warning for a minified chunk larger than 500 kB remained. `git diff --check` passed. The evidence commit, final pushed branch SHA, and clean post-push worktree are reported in the handoff because a commit cannot contain its own SHA. PostgreSQL 18.4 results below remain supplementary and do not replace this PostgreSQL 17 acceptance run. Status remains: implementation complete; acceptance evidence recorded; independent review pending.
 
