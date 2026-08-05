@@ -12,6 +12,7 @@ from app.instruments.catalogue_parser import parse_json_array_rows, validate_gzi
 from app.instruments.provider_catalogue import (
     CatalogueConflictError,
     CatalogueNormalizationError,
+    CatalogueSemanticDiff,
     CatalogueSourceArtifact,
 )
 from app.instruments.providers.upstox_catalogue import (
@@ -265,6 +266,19 @@ def test_invalid_expiry_numeric_forms_reject(tmp_path: Path, replacement: bytes)
 
     with pytest.raises(CatalogueNormalizationError, match="expiry"):
         _build_plan(_gzip(tmp_path, b"[" + b",".join(rows) + b"]"))
+
+
+def test_catalogue_semantic_diff_rejects_invalid_counts() -> None:
+    with pytest.raises(ValueError, match="added"):
+        CatalogueSemanticDiff(
+            added=-1,
+            unchanged=0,
+            metadata_changed=0,
+            provider_mapping_changed=0,
+            disappeared=0,
+            excluded=0,
+            exact_duplicates=0,
+        )
 
 
 def test_validate_only_needs_no_database(tmp_path: Path) -> None:

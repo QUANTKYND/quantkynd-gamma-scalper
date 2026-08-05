@@ -253,6 +253,18 @@ class CatalogueSemanticDiff:
     excluded: int
     exact_duplicates: int
 
+    def __post_init__(self) -> None:
+        for field_name in (
+            "added",
+            "unchanged",
+            "metadata_changed",
+            "provider_mapping_changed",
+            "disappeared",
+            "excluded",
+            "exact_duplicates",
+        ):
+            _require_non_negative_int(getattr(self, field_name), field_name)
+
     def as_dict(self) -> dict[str, int]:
         return {
             "added": self.added,
