@@ -110,6 +110,10 @@ class CatalogueIngestionRun:
             object.__setattr__(self, "effective_until", effective_until)
         for field_name in ("started_at", "recorded_at", "completed_at"):
             object.__setattr__(self, field_name, _utc(getattr(self, field_name), field_name))
+        if self.recorded_at < self.started_at:
+            raise ValueError("recorded_at must not precede started_at")
+        if self.completed_at < self.recorded_at:
+            raise ValueError("completed_at must not precede recorded_at")
         for field_name in (
             "physical_row_count",
             "accepted_unique_count",

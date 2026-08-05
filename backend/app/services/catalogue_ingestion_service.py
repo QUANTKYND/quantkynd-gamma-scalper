@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+from typing import Callable
 
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
@@ -37,6 +38,7 @@ from app.instruments.providers.upstox_catalogue import (
     PROVIDER,
     SOURCE_SCHEMA_VERSION,
     UpstoxCataloguePlan,
+    bind_upstox_catalogue_plan_recorded_at,
     build_upstox_nifty_catalogue_plan,
 )
 from app.persistence.postgres.engine import (
@@ -103,10 +105,13 @@ class CatalogueIngestionResult:
 async def ingest_provider_catalogue(
     command: CatalogueIngestionCommand,
     settings: DatabaseSettings,
+    *,
+    clock: Callable[[], datetime] | None = None,
 ) -> CatalogueIngestionResult:
     if command.profile != PROFILE_VERSION:
         raise CatalogueConflictError("unsupported catalogue ingestion profile")
-    started_at = datetime.now(UTC)
+    time_source = clock or _utc_now
+    started_at = _clock_value(time_source)
     with validate_gzip_json_array(command.file) as artifact:
         _verify_expected_hash(artifact, command.expected_compressed_sha256)
         object_key = _artifact_object_key(artifact.compressed_sha256)
@@ -157,6 +162,7 @@ async def ingest_provider_catalogue(
             command_digest,
             retained_key,
             started_at,
+            time_source,
         )
 
 
@@ -186,6 +192,7 @@ async def _commit(
     command_digest: str,
     retained_key: str,
     started_at: datetime,
+    clock: Callable[[], datetime],
 ) -> CatalogueIngestionResult:
     engine = create_database_engine(settings)
     try:
@@ -214,13 +221,23 @@ async def _commit(
                         retained_key,
                         None,
                     )
-                transition = await _build_transition_plan(unit_of_work, command, plan)
+                recorded_at = _clock_value(clock)
+                if recorded_at < started_at:
+                    raise CatalogueConflictError(
+                        "accepted write timestamp cannot precede invocation start"
+                    )
+                accepted_plan = bind_upstox_catalogue_plan_recorded_at(plan, recorded_at)
+                transition = await _build_transition_plan(
+                    unit_of_work,
+                    command,
+                    accepted_plan,
+                )
                 await unit_of_work.catalogue_ingestions.add_source_artifact(source_artifact)
                 catalogue_record_id = await unit_of_work.catalogues.add(
-                    plan.catalogue,
+                    accepted_plan.catalogue,
                     transition.catalogue_predecessor_record_id,
                 )
-                await _add_instruments(unit_of_work, plan.items)
+                await _add_instruments(unit_of_work, accepted_plan.items)
                 seen_versions: set[str] = set()
                 for item_transition in transition.item_transitions:
                     if item_transition.item.version_id in seen_versions:
@@ -238,20 +255,22 @@ async def _commit(
                 run = _run(
                     command,
                     source_artifact,
-                    plan,
+                    accepted_plan,
                     command_digest,
                     catalogue_record_id,
                     revision,
                     started_at,
+                    recorded_at,
+                    _clock_value(clock),
                 )
                 await unit_of_work.catalogue_ingestions.add_ingestion_run(run)
-                await unit_of_work.catalogue_ingestions.add_row_outcomes(plan.outcomes)
-                await unit_of_work.catalogue_ingestions.add_memberships(plan.memberships)
+                await unit_of_work.catalogue_ingestions.add_row_outcomes(accepted_plan.outcomes)
+                await unit_of_work.catalogue_ingestions.add_memberships(accepted_plan.memberships)
                 await unit_of_work.commit()
                 return _result(
                     command,
                     source_artifact,
-                    plan,
+                    accepted_plan,
                     command_digest,
                     run.ingestion_run_id,
                     catalogue_record_id,
@@ -435,6 +454,7 @@ async def _add_instruments(unit_of_work, items) -> None:
         elif isinstance(item.instrument, OptionContractIdentity):
             await unit_of_work.instruments.add_option(item.instrument)
 
+
 def _run(
     command: CatalogueIngestionCommand,
     source_artifact: CatalogueSourceArtifact,
@@ -443,10 +463,11 @@ def _run(
     catalogue_record_id: str,
     revision: str,
     started_at: datetime,
+    recorded_at: datetime,
+    completed_at: datetime,
 ):
     from app.instruments.provider_catalogue import CatalogueIngestionRun
 
-    completed_at = datetime.now(UTC)
     return CatalogueIngestionRun(
         idempotency_key=command.idempotency_key or command_digest,
         command_digest=command_digest,
@@ -458,7 +479,7 @@ def _run(
         effective_from=command.effective_from,
         effective_until=command.effective_until,
         started_at=started_at,
-        recorded_at=started_at,
+        recorded_at=recorded_at,
         completed_at=completed_at,
         normalized_catalogue_hash=plan.normalized_catalogue_hash,
         physical_row_count=plan.physical_row_count,
@@ -604,3 +625,14 @@ def _verify_expected_hash(
 
 def _catalogue_scope() -> str:
     return f"{PROVIDER}:{PROFILE_VERSION}"
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _clock_value(clock: Callable[[], datetime]) -> datetime:
+    value = clock()
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise CatalogueConflictError("catalogue ingestion clock must return an aware timestamp")
+    return value.astimezone(UTC)

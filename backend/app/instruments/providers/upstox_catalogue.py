@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -214,6 +214,28 @@ def build_upstox_nifty_catalogue_plan(
         excluded_count=excluded,
         field_fingerprint=scan.field_fingerprint,
     )
+
+
+def bind_upstox_catalogue_plan_recorded_at(
+    plan: UpstoxCataloguePlan,
+    recorded_at: datetime,
+) -> UpstoxCataloguePlan:
+    catalogue = replace(plan.catalogue, recorded_at=recorded_at)
+    items = tuple(
+        replace(
+            item,
+            version=replace(item.version, recorded_at=recorded_at),
+            mapping=replace(item.mapping, recorded_at=recorded_at),
+        )
+        for item in plan.items
+    )
+    rebound = replace(plan, catalogue=catalogue, items=items)
+    if rebound.catalogue.catalogue_version_id != plan.catalogue.catalogue_version_id:
+        raise CatalogueConflictError("catalogue semantic identity changed during time binding")
+    for prior, current in zip(plan.items, rebound.items, strict=True):
+        if prior.version_id != current.version.version_id or prior.mapping_id != current.mapping.mapping_id:
+            raise CatalogueConflictError("catalogue item semantic identity changed during time binding")
+    return rebound
 
 
 def _scan_profile(artifact: ParsedCatalogueArtifact) -> ProfileScan:
