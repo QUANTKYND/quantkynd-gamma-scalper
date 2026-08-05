@@ -1,6 +1,13 @@
 import hashlib
+from datetime import UTC, datetime
 
 import pytest
+
+from app.persistence.postgres.repositories import (
+    EVENT_MEMBERSHIP_IMMUTABLE_FIELDS,
+    FAILURE_MEMBERSHIP_IMMUTABLE_FIELDS,
+    _rows_match_on_fields,
+)
 
 from app.market_data.persistence.contracts import (
     CANONICAL_IMPLEMENTATION,
@@ -46,3 +53,58 @@ def test_parameter_chunks_obey_budget_and_thousand_row_cap() -> None:
     assert all(chunk.size <= 1000 and chunk.size * 61 <= 60000 for chunk in chunks)
     assert plan_parameter_chunks(5000, 1)[0].size == 1000
     assert plan_parameter_chunks(0, 1) == ()
+
+
+def test_exact_event_membership_retry_ignores_created_at() -> None:
+    existing = {
+        "id": "result:event:0",
+        "result_id": "result",
+        "raw_event_id": "raw",
+        "event_id": "event",
+        "event_ordinal": 0,
+    }
+    proposed = {
+        **existing,
+        "created_at": datetime(2026, 8, 5, tzinfo=UTC),
+    }
+
+    assert _rows_match_on_fields(
+        existing,
+        proposed,
+        EVENT_MEMBERSHIP_IMMUTABLE_FIELDS,
+    )
+
+    changed = {**proposed, "event_ordinal": 1}
+    assert not _rows_match_on_fields(
+        existing,
+        changed,
+        EVENT_MEMBERSHIP_IMMUTABLE_FIELDS,
+    )
+
+
+def test_exact_failure_membership_retry_ignores_created_at() -> None:
+    existing = {
+        "id": "result:entry:0",
+        "result_id": "result",
+        "raw_event_id": "raw",
+        "failure_id": "failure",
+        "failure_role": "entry",
+        "failure_ordinal": 0,
+    }
+    proposed = {
+        **existing,
+        "created_at": datetime(2026, 8, 5, tzinfo=UTC),
+    }
+
+    assert _rows_match_on_fields(
+        existing,
+        proposed,
+        FAILURE_MEMBERSHIP_IMMUTABLE_FIELDS,
+    )
+
+    changed = {**proposed, "failure_role": "frame"}
+    assert not _rows_match_on_fields(
+        existing,
+        changed,
+        FAILURE_MEMBERSHIP_IMMUTABLE_FIELDS,
+    )

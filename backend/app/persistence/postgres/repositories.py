@@ -27,6 +27,31 @@ from app.instruments.ports import (
 )
 from app.market_data.persistence.planner import plan_parameter_chunks
 
+EVENT_MEMBERSHIP_IMMUTABLE_FIELDS = (
+    "id",
+    "result_id",
+    "raw_event_id",
+    "event_id",
+    "event_ordinal",
+)
+
+FAILURE_MEMBERSHIP_IMMUTABLE_FIELDS = (
+    "id",
+    "result_id",
+    "raw_event_id",
+    "failure_id",
+    "failure_role",
+    "failure_ordinal",
+)
+
+def _rows_match_on_fields(
+    existing: dict[str, object],
+    proposed: dict[str, object],
+    fields: tuple[str, ...],
+) -> bool:
+    return all(existing[field] == proposed[field] for field in fields)
+
+
 class PostgresMarketEventRepository:
     def __init__(self, session, require_active):
         self._session = session
@@ -136,7 +161,11 @@ class PostgresMarketEventRepository:
             existing = existing_memberships.get(membership["id"])
             if existing is None:
                 missing_event_memberships.append(membership)
-            elif tuple(existing.items()) != tuple(membership.items()):
+            elif not _rows_match_on_fields(
+                existing,
+                membership,
+                EVENT_MEMBERSHIP_IMMUTABLE_FIELDS,
+            ):
                 raise NormalizedEventIdentityConflictError(membership["event_id"])
         await self._bulk_insert_rows("market_normalization_result_events", missing_event_memberships)
 
@@ -199,7 +228,11 @@ class PostgresMarketEventRepository:
             existing = existing_failure_memberships.get(membership["id"])
             if existing is None:
                 missing_failure_memberships.append(membership)
-            elif tuple(existing.items()) != tuple(membership.items()):
+            elif not _rows_match_on_fields(
+                existing,
+                membership,
+                FAILURE_MEMBERSHIP_IMMUTABLE_FIELDS,
+            ):
                 raise NormalizationFailureIdentityConflictError(membership["failure_id"])
         await self._bulk_insert_json_rows("market_normalization_failures", failure_rows, payload_cast=True)
         await self._bulk_insert_rows("market_normalization_result_failures", missing_failure_memberships)
