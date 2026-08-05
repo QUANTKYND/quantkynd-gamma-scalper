@@ -24,6 +24,19 @@ from app.instruments.ports import (
     ProviderMappingState,
     SemanticCollisionError,
 )
+
+class PostgresMarketEventRepository:
+    def __init__(self, session, require_active):
+        self._session = session
+        self._require_active = require_active
+
+    async def persist_frame_result(self, command):
+        self._require_active()
+        raise NotImplementedError("DATA-1.4 frame persistence is enabled at checkpoint schema level")
+
+    async def get_result(self, result_id):
+        self._require_active()
+        raise NotImplementedError("DATA-1.4 frame reads are enabled at checkpoint schema level")
 from app.instruments.provider_catalogue import (
     CatalogueIngestionRun,
     CatalogueMembership,
