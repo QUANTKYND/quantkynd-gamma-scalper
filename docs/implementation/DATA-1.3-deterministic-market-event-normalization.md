@@ -23,7 +23,7 @@ This evidence does not accept or merge DATA-1.3. The feature branch remains pape
 - Final lifecycle/CLI evidence snapshot SHA: `e540b3ed688fec89902760ee47833e5924d8c5e9`
 - Provider-identity correction starting SHA: `73f6e113afa95c9df19364ac2220a5678fbabdd3`
 - Provider-identity corrected implementation SHA: `e088760d646c8ec569abd1de3a3c395cb5e30ec6`
-- Provider-identity evidence snapshot SHA: `PENDING_PROVIDER_IDENTITY_EVIDENCE_SHA`
+- Provider-identity evidence snapshot SHA: `78c23f1b407b474ef9fe9078cb3bbc59fe8b4a99`
 
 Implementation commits from the original baseline:
 
