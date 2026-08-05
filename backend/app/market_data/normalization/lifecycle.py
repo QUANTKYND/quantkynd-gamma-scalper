@@ -12,11 +12,25 @@ from app.market_data.normalization.models import (
     NORMALIZATION_SCHEMA_VERSION,
     NORMALIZER_IMPLEMENTATION_VERSION,
 )
+from app.market_data.normalization.limits import (
+    MAX_LIFECYCLE_EVENTS_PER_BATCH,
+    validate_opaque_identifier,
+    validate_redacted_reason_code_size,
+    validate_source_order,
+)
+from app.market_data.normalization.provider_identifiers import validate_provider_contract_key
 from app.market_data.point_in_time import NormalizedMarketEventIdentity
 
 
 _CONTROLLED_REASON = re.compile(r"[a-z0-9]+(?:_[a-z0-9]+)*")
 _SENSITIVE_REASON_PARTS = ("token", "url", "traceback", "socket", "account", "user_id", "exception")
+MAX_SUBSCRIPTION_INSTRUMENT_KEYS = 5_000
+SUBSCRIPTION_MODE_INSTRUMENT_LIMITS = {
+    ProviderRequestMode.LTPC: 5_000,
+    ProviderRequestMode.OPTION_GREEKS: 3_000,
+    ProviderRequestMode.FULL_D5: 2_000,
+    ProviderRequestMode.FULL_D30: 50,
+}
 
 
 class ConnectionLifecycleState(StrEnum):
@@ -49,8 +63,10 @@ class SubscriptionInstrumentSetV1:
         keys = self.provider_contract_keys
         if not keys:
             raise ValueError("subscription instrument set must not be empty")
-        if any(not isinstance(key, str) or not key.strip() for key in keys):
-            raise ValueError("instrument keys must be non-empty text")
+        if len(keys) > MAX_SUBSCRIPTION_INSTRUMENT_KEYS:
+            raise ValueError("too_many_subscription_instrument_keys")
+        for key in keys:
+            validate_provider_contract_key(key)
         if len(set(keys)) != len(keys):
             raise ValueError("duplicate_instrument_key")
         canonical = tuple(sorted(keys))
@@ -217,13 +233,15 @@ class RawProviderSubscriptionLifecycleEventV1:
 
     def __post_init__(self) -> None:
         _validate_common(self)
-        _require_text(self.subscription_scope_id)
+        validate_opaque_identifier(self.subscription_scope_id, "subscription_scope_id")
         if not isinstance(self.instrument_set, SubscriptionInstrumentSetV1):
             raise TypeError("subscription instrument set is required")
         object.__setattr__(self, "instrument_keys_digest", self.instrument_set.instrument_keys_digest)
         object.__setattr__(self, "instrument_key_count", self.instrument_set.instrument_key_count)
         if self.request_mode is not None:
             object.__setattr__(self, "request_mode", ProviderRequestMode(self.request_mode))
+            if self.instrument_key_count > SUBSCRIPTION_MODE_INSTRUMENT_LIMITS[self.request_mode]:
+                raise ValueError("subscription_request_mode_instrument_limit_exceeded")
         previous = SubscriptionLifecycleState(self.previous_state) if self.previous_state is not None else None
         state = SubscriptionLifecycleState(self.state)
         object.__setattr__(self, "previous_state", previous)
@@ -450,6 +468,8 @@ class RawLifecycleIdentityBatchValidationV1:
 
 
 def validate_raw_lifecycle_identity_batch(events):
+    if len(events) > MAX_LIFECYCLE_EVENTS_PER_BATCH:
+        raise ValueError("too_many_lifecycle_events")
     by_id = {}
     duplicates = set()
     for event in events:
@@ -467,9 +487,10 @@ def validate_raw_lifecycle_identity_batch(events):
 
 
 def _validate_common(event) -> None:
-    _require_text(event.provider, event.connection_session_id, event.source_order_scope_id)
-    if not isinstance(event.source_order, int) or isinstance(event.source_order, bool) or event.source_order < 0:
-        raise ValueError("source_order must be a non-negative integer")
+    validate_opaque_identifier(event.provider, "provider")
+    validate_opaque_identifier(event.connection_session_id, "connection_session_id")
+    validate_opaque_identifier(event.source_order_scope_id, "source_order_scope_id")
+    validate_source_order(event.source_order)
     for name in ("occurred_at", "available_at", "recorded_at"):
         object.__setattr__(event, name, _utc(getattr(event, name), name))
     if event.available_at < event.occurred_at:
@@ -531,11 +552,10 @@ def _validate_reason(required: bool, value: str | None) -> None:
         raise ValueError("redacted_reason_code is required for failure")
     if not required and value is not None:
         raise ValueError("redacted_reason_code is only valid for failure")
-    if value is not None and (
-        _CONTROLLED_REASON.fullmatch(value) is None
-        or any(part in value for part in _SENSITIVE_REASON_PARTS)
-    ):
-        raise ValueError("redacted_reason_code must be controlled and redacted")
+    if value is not None:
+        validate_redacted_reason_code_size(value)
+        if _CONTROLLED_REASON.fullmatch(value) is None or any(part in value for part in _SENSITIVE_REASON_PARTS):
+            raise ValueError("redacted_reason_code must be controlled and redacted")
 
 
 def _require_text(*values: str) -> None:

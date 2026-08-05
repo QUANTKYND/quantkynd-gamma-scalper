@@ -22,6 +22,7 @@ from app.instruments.identity import (
 )
 from app.market_data.normalization.enums import MarketSubjectKind, RawCaptureBasis
 from app.market_data.normalization.identities import RawMarketFrameV1
+from app.market_data.normalization.limits import validate_source_order
 from app.market_data.normalization.models import ResolvedMarketSubjectV1
 from app.market_data.normalization.ports import StaticSubjectManifestResolver
 from app.market_data.upstox.v3_schema import UPSTOX_V3_SCHEMA_ID, UPSTOX_V3_SCHEMA_SHA256
@@ -302,6 +303,8 @@ def _integer(payload: dict, key: str) -> int:
     value = payload.get(key)
     if not isinstance(value, int) or isinstance(value, bool):
         raise ValueError(f"{key} must be an integer")
+    if key == "source_order":
+        validate_source_order(value)
     return value
 
 

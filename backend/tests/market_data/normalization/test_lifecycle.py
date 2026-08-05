@@ -18,6 +18,7 @@ from app.market_data.normalization.lifecycle import (
     validate_raw_lifecycle_identity_batch,
     validate_subscription_lifecycle_sequence,
 )
+from app.market_data.normalization.limits import MAX_LIFECYCLE_EVENTS_PER_BATCH, MAX_SOURCE_ORDER
 from tests.market_data.normalization.helpers import AT
 
 
@@ -128,7 +129,7 @@ def test_subscription_digest_is_sorted_and_rejects_duplicates() -> None:
     assert instrument_keys_digest(("b", "a")) == instrument_keys_digest(("a", "b"))
     with pytest.raises(ValueError, match="duplicate_instrument_key"):
         instrument_keys_digest(("a", "a"))
-    with pytest.raises(ValueError, match="non-empty"):
+    with pytest.raises(ValueError, match="invalid provider contract key"):
         SubscriptionInstrumentSetV1(("",))
     assert SubscriptionInstrumentSetV1(("b", "a")).provider_contract_keys == ("a", "b")
     with pytest.raises(TypeError):
@@ -275,3 +276,63 @@ def test_three_session_reconnect_chain_rejects_non_adjacent_reuse() -> None:
         validate_connection_lifecycle_sequence(chain[:-1] + (replace(chain[-1], source_order_scope_id="scope-1"),))
     with pytest.raises(ValueError, match="reconnect"):
         validate_connection_lifecycle_sequence(chain[:-1] + (replace(chain[-1], connection_session_id="session-1"),))
+
+
+def test_lifecycle_scalar_boundaries_are_explicit() -> None:
+    event = connection(None, ConnectionLifecycleState.CONNECTING, 0)
+    assert replace(event, source_order=MAX_SOURCE_ORDER).source_order == MAX_SOURCE_ORDER
+    with pytest.raises(ValueError, match="signed 64-bit"):
+        replace(event, source_order=MAX_SOURCE_ORDER + 1)
+    accepted = connection(None, ConnectionLifecycleState.CONNECTING, 0, session="é" * 256, scope="é" * 256)
+    assert accepted.connection_session_id == "é" * 256
+    with pytest.raises(ValueError, match="UTF-8 byte limit"):
+        connection(None, ConnectionLifecycleState.CONNECTING, 0, session="é" * 257)
+    with pytest.raises(ValueError, match="UTF-8 byte limit"):
+        subscription(None, SubscriptionLifecycleState.SUBSCRIBE_REQUESTED, 0, subscription_scope="é" * 257)
+
+
+def test_lifecycle_reason_code_uses_utf8_byte_boundary() -> None:
+    assert connection(ConnectionLifecycleState.CONNECTING, ConnectionLifecycleState.FAILED, 1, reason="a" * 128)
+    with pytest.raises(ValueError, match="UTF-8 byte limit"):
+        connection(ConnectionLifecycleState.CONNECTING, ConnectionLifecycleState.FAILED, 1, reason="a" * 129)
+
+
+def test_subscription_instrument_set_uses_provider_key_and_global_boundaries() -> None:
+    accepted_key = "é" * 256
+    assert SubscriptionInstrumentSetV1((accepted_key,)).provider_contract_keys == (accepted_key,)
+    with pytest.raises(ValueError, match="invalid provider contract key"):
+        SubscriptionInstrumentSetV1(("é" * 257,))
+    assert SubscriptionInstrumentSetV1(tuple(f"key-{index}" for index in range(5_000))).instrument_key_count == 5_000
+    with pytest.raises(ValueError, match="too_many_subscription"):
+        SubscriptionInstrumentSetV1(tuple(f"key-{index}" for index in range(5_001)))
+
+
+@pytest.mark.parametrize(
+    "mode,limit",
+    (("ltpc", 5_000), ("option_greeks", 3_000), ("full_d5", 2_000), ("full_d30", 50)),
+)
+def test_subscription_request_modes_enforce_provider_limits(mode, limit) -> None:
+    keys = tuple(f"key-{index}" for index in range(limit))
+    assert subscription(None, SubscriptionLifecycleState.SUBSCRIBE_REQUESTED, 0, mode=mode, keys=keys)
+    if limit < 5_000:
+        with pytest.raises(ValueError, match="request_mode_instrument_limit"):
+            subscription(None, SubscriptionLifecycleState.SUBSCRIBE_REQUESTED, 0, mode=mode, keys=keys + (f"key-{limit}",))
+
+
+def test_unsubscribe_without_mode_uses_global_instrument_limit() -> None:
+    keys = tuple(f"key-{index}" for index in range(5_000))
+    event = subscription(
+        SubscriptionLifecycleState.SUBSCRIBED,
+        SubscriptionLifecycleState.UNSUBSCRIBE_REQUESTED,
+        1,
+        mode=None,
+        keys=keys,
+    )
+    assert event.instrument_key_count == 5_000
+
+
+def test_raw_lifecycle_batch_has_event_count_boundary() -> None:
+    event = connection(None, ConnectionLifecycleState.CONNECTING, 0)
+    assert validate_raw_lifecycle_identity_batch((event,) * MAX_LIFECYCLE_EVENTS_PER_BATCH)
+    with pytest.raises(ValueError, match="too_many_lifecycle_events"):
+        validate_raw_lifecycle_identity_batch((event,) * (MAX_LIFECYCLE_EVENTS_PER_BATCH + 1))

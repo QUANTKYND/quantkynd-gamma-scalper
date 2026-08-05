@@ -6,6 +6,7 @@ import pytest
 from app.market_data.normalization.enums import RawCaptureBasis
 from app.market_data.normalization.errors import ConflictingRawIdentityError, RawFrameValidationError
 from app.market_data.normalization.identities import validate_raw_frame_identity_batch
+from app.market_data.normalization.limits import MAX_SOURCE_ORDER
 from tests.market_data.normalization.helpers import AT, raw_frame
 
 
@@ -75,3 +76,34 @@ def test_historical_source_identity_preserves_approved_optional_pair_rule() -> N
     )
     assert historical.source_file_id is None
     assert historical.source_record_id is None
+
+
+def test_raw_frame_source_order_uses_signed_bigint_boundary() -> None:
+    assert replace(raw_frame(b"frame"), source_order=MAX_SOURCE_ORDER).source_order == MAX_SOURCE_ORDER
+    with pytest.raises(RawFrameValidationError, match="signed 64-bit"):
+        replace(raw_frame(b"frame"), source_order=MAX_SOURCE_ORDER + 1)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("provider_schema_id", "connection_session_id", "source_order_scope_id"),
+)
+def test_raw_frame_identity_strings_use_utf8_byte_boundary(field) -> None:
+    accepted = replace(raw_frame(b"frame"), **{field: "é" * 256})
+    assert getattr(accepted, field) == "é" * 256
+    with pytest.raises(RawFrameValidationError, match="UTF-8 byte limit"):
+        replace(raw_frame(b"frame"), **{field: "é" * 257})
+
+
+@pytest.mark.parametrize("field", ("source_file_id", "source_record_id"))
+def test_historical_source_strings_use_utf8_byte_boundary(field) -> None:
+    values = {"source_file_id": "file", "source_record_id": "record", field: "é" * 256}
+    accepted = replace(
+        raw_frame(b"frame"),
+        capture_basis=RawCaptureBasis.HISTORICAL_IMPORT,
+        received_at=None,
+        **values,
+    )
+    assert getattr(accepted, field) == "é" * 256
+    with pytest.raises(RawFrameValidationError, match="UTF-8 byte limit"):
+        replace(accepted, **{field: "é" * 257})
