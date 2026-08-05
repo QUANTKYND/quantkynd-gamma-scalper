@@ -13,7 +13,7 @@ This evidence does not accept or merge DATA-1.3. The feature branch remains pape
 - Approved corrected checkpoint: `c323d49a5b12bb36daeeb19a0068acf1fbf46c76`
 - Post-checkpoint starting SHA: `c323d49a5b12bb36daeeb19a0068acf1fbf46c76`
 - Completion implementation SHA: `6fb7980` (`test(data): add deterministic normalization fixtures and CLIs`)
-- Evidence snapshot SHA: `TO_BE_RECORDED`
+- Evidence snapshot SHA: `a27c27c` (`docs(data): record DATA-1.3 review-pending evidence`)
 
 Implementation commits from the original baseline:
 
