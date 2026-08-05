@@ -271,6 +271,20 @@ normalized_row_hash
 
 Membership has one row per accepted unique in-profile provider row. Exact duplicates and out-of-profile rows have outcomes but no membership. Disappearance from a later catalogue is reported by diffing memberships and does not imply expiry, delisting, mapping closure, or temporal supersession.
 
+### `CatalogueTransitionPlan`
+
+```text
+catalogue_predecessor_record_id
+catalogue_predecessor_version_id
+item_transitions
+disappeared_provider_contract_keys
+semantic_diff
+```
+
+Each `CatalogueItemTransition` contains the normalized provider row, stable economic instrument ID, new provenance-bound version and mapping, eligible prior instrument-version record ID, eligible prior provider-mapping record ID, and one diff category. The categories are `added`, `unchanged`, `metadata_changed`, and `provider_mapping_changed`. Aggregate diff output also includes `disappeared`, `excluded`, and `exact_duplicates`.
+
+The provider-key binding invariant spans all durable mapping history: one provider and provider key can identify only one economic instrument ID. Version IDs may change on every catalogue because catalogue provenance participates in version identity. A successor version or mapping therefore compares economic identity and attaches the eligible temporal record ID rather than comparing new and old version IDs. Multiple provider keys may identify one economic contract, but one catalogue cannot contain two non-identical raw rows for one provider key or conflicting version metadata for one economic instrument.
+
 ### `TradingSession`
 
 ```text

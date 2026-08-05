@@ -188,3 +188,5 @@ Required persistence tests:
 - two concurrent first catalogues cannot both become roots;
 - same idempotency key with different command digest conflicts;
 - migration `20260804_03` upgrades, downgrades, passes Alembic drift checks, and is included in restore digests.
+
+Review-correction acceptance additionally requires two sequential accepted catalogues. Tests prove explicit catalogue, version, and mapping successor edges; A before B is known; A after B is known but before B is effective; B after both cutoffs admit it; metadata evolution without economic reassignment; informational disappearance; provider-key reassignment rejection; serialized competing roots and successors; and exact concurrent replay as one commit plus one verified idempotent success. Dry-run must produce the same transition checks and deterministic semantic diff as commit without writes or artifact retention. Persistence failure tests distinguish accepted idempotency races from semantic collisions, unrelated constraints, and temporal successor conflicts. The restore fixture contains both catalogue runs and both retained artifact references.

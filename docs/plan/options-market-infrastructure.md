@@ -57,7 +57,7 @@ Historical market events are append-only. Corrections create explicit supersedin
 
 ## O2 — Catalogue ingestion
 
-DATA-1.2 status: IMPLEMENTED PENDING ACCEPTANCE. The initial provider-catalogue slice ingests only the approved Upstox BOD NSE `NSE.json.gz` artifact through the `upstox-nse-nifty-index-derivatives-v1` profile. It supports `NSE_INDEX|Nifty 50`, its `NSE_FO` index futures, and its `NSE_FO` call/put options. It remains local-file, offline, CLI-only, and independent of live subscriptions and execution.
+DATA-1.2 status: CORRECTED IMPLEMENTATION; ACCEPTANCE EVIDENCE RECORDED; INDEPENDENT REVIEW PENDING. The initial provider-catalogue slice ingests only the approved Upstox BOD NSE `NSE.json.gz` artifact through the `upstox-nse-nifty-index-derivatives-v1` profile. It supports `NSE_INDEX|Nifty 50`, its `NSE_FO` index futures, and its `NSE_FO` call/put options. Sequential catalogues now carry explicit catalogue, version, and mapping predecessor edges, preserve economic provider-key binding, and share one transition plan between dry-run and commit. It remains local-file, offline, CLI-only, and independent of live subscriptions and execution. DATA-1.2 is not accepted until independent review approves the corrected branch.
 
 Requirements:
 
