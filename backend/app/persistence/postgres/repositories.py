@@ -335,30 +335,6 @@ class PostgresMarketEventRepository:
         row = await self._session.execute(text("SELECT * FROM market_normalization_results WHERE raw_event_id=:raw AND normalization_schema_version=:schema"), {"raw":raw_event_id,"schema":normalization_schema_version})
         return row.first()
 
-    async def insert_or_compare_raw_frame(self, frame):
-        if not hasattr(frame, "raw_frame"):
-            raise TypeError("frame must supply a raw_frame and normalization_result pair")
-        return await self.persist_frame_result(frame)
-
-    async def insert_or_compare_normalization_result(self, result):
-        if not hasattr(result, "raw_frame_identity"):
-            raise TypeError("result must be a frame normalization result")
-        return result
-
-    async def insert_or_compare_market_observations(self, observations):
-        return tuple(observations)
-
-    async def insert_or_compare_quote_observations(self, observations):
-        return tuple(observations)
-
-    async def insert_or_compare_failures(self, failures):
-        return tuple(failures)
-
-    async def insert_result_event_memberships(self, memberships):
-        return tuple(memberships)
-
-    async def insert_result_failure_memberships(self, memberships):
-        return tuple(memberships)
     async def get_raw_frame_metadata(self, raw_event_id):
         row = await self._session.execute(text("SELECT raw_event_id,frame_content_hash,source_order,created_at FROM raw_market_frames WHERE raw_event_id=:id"), {"id":raw_event_id})
         return row.first()

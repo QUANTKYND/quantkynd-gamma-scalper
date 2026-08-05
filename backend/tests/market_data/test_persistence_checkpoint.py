@@ -23,6 +23,16 @@ from app.market_data.persistence.contracts import (
 )
 from app.market_data.persistence.planner import derive_lock_stripes, lock_stripe, plan_parameter_chunks
 
+REMOVED_PLACEHOLDER_METHODS = (
+    "insert_or_compare_raw_frame",
+    "insert_or_compare_normalization_result",
+    "insert_or_compare_market_observations",
+    "insert_or_compare_quote_observations",
+    "insert_or_compare_failures",
+    "insert_result_event_memberships",
+    "insert_result_failure_memberships",
+)
+
 
 class _FakeRow:
     def __init__(self, values: dict[str, object]) -> None:
@@ -238,3 +248,16 @@ async def test_existing_row_prefetch_rejects_duplicate_durable_key() -> None:
         )
 
     assert len(session.calls) == 2
+
+
+def test_market_event_repository_does_not_expose_placeholder_writes() -> None:
+    repository = PostgresMarketEventRepository(
+        session=object(),
+        require_active=lambda: None,
+    )
+
+    assert all(
+        not hasattr(repository, method_name)
+        for method_name in REMOVED_PLACEHOLDER_METHODS
+    )
+    assert callable(repository.persist_frame_result)
