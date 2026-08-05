@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     Column,
     CheckConstraint,
     Date,
@@ -21,6 +22,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.persistence.postgres.base import Base
@@ -225,8 +227,216 @@ RAW_MARKET_FRAMES_TABLE = Table(
     ),
 )
 
+MARKET_NORMALIZATION_RESULTS_TABLE = Table(
+    "market_normalization_results",
+    Base.metadata,
+    Column(
+        "result_id",
+        String(ID_LENGTH),
+        primary_key=True,
+    ),
+    Column(
+        "raw_event_id",
+        String(ID_LENGTH),
+        ForeignKey(
+            "raw_market_frames.raw_event_id",
+            ondelete="NO ACTION",
+        ),
+        nullable=False,
+    ),
+    Column(
+        "normalization_schema_version",
+        Integer,
+        nullable=False,
+    ),
+    Column(
+        "normalizer_implementation_version",
+        String(NAME_LENGTH),
+        nullable=False,
+    ),
+    Column(
+        "response_type",
+        String(32),
+        nullable=True,
+    ),
+    Column(
+        "status",
+        String(16),
+        nullable=False,
+    ),
+    Column(
+        "decoded_entry_count",
+        Integer,
+        nullable=False,
+    ),
+    Column(
+        "accepted_entry_count",
+        Integer,
+        nullable=False,
+    ),
+    Column(
+        "failed_entry_count",
+        Integer,
+        nullable=False,
+    ),
+    Column(
+        "frame_failure_present",
+        Boolean,
+        nullable=False,
+    ),
+    Column(
+        "unadopted_schema_paths",
+        ARRAY(String(KEY_LENGTH)),
+        nullable=False,
+    ),
+    Column(
+        "present_unadopted_message_paths",
+        ARRAY(String(KEY_LENGTH)),
+        nullable=False,
+    ),
+    Column(
+        "secondary_payload_paths_present",
+        ARRAY(String(KEY_LENGTH)),
+        nullable=False,
+    ),
+    Column(
+        "full_result_hash",
+        String(ID_LENGTH),
+        nullable=False,
+    ),
+    Column(
+        "adopted_semantics_hash",
+        String(ID_LENGTH),
+        nullable=False,
+    ),
+    Column(
+        "metadata_payload",
+        JSONB,
+        nullable=False,
+    ),
+    Column(
+        "persistence_recorded_at",
+        DateTime(timezone=True),
+        nullable=False,
+    ),
+    CheckConstraint(
+        "result_id ~ '^sha256:[0-9a-f]{64}$'",
+        name="market_normalization_results_id_sha256",
+    ),
+    CheckConstraint(
+        "raw_event_id ~ '^sha256:[0-9a-f]{64}$'",
+        name="market_normalization_results_raw_sha256",
+    ),
+    CheckConstraint(
+        "normalization_schema_version = 1 "
+        "AND normalizer_implementation_version = "
+        "'upstox-v3-normalizer-1'",
+        name="market_normalization_results_schema_label",
+    ),
+    CheckConstraint(
+        "response_type IS NULL OR response_type IN "
+        "('initial_feed', 'live_feed', 'market_info')",
+        name="market_normalization_results_response_type",
+    ),
+    CheckConstraint(
+        "status IN ('complete', 'partial', 'failed')",
+        name="market_normalization_results_status",
+    ),
+    CheckConstraint(
+        "decoded_entry_count BETWEEN 0 AND 5000 "
+        "AND accepted_entry_count BETWEEN 0 AND 5000 "
+        "AND failed_entry_count BETWEEN 0 AND 5000",
+        name="market_normalization_results_count_bounds",
+    ),
+    CheckConstraint(
+        "("
+        "frame_failure_present "
+        "AND status = 'failed' "
+        "AND accepted_entry_count = 0 "
+        "AND failed_entry_count = 0"
+        ") OR ("
+        "NOT frame_failure_present "
+        "AND decoded_entry_count = "
+        "accepted_entry_count + failed_entry_count "
+        "AND ("
+        "(status = 'complete' "
+        "AND accepted_entry_count > 0 "
+        "AND failed_entry_count = 0) "
+        "OR "
+        "(status = 'partial' "
+        "AND accepted_entry_count > 0 "
+        "AND failed_entry_count > 0) "
+        "OR "
+        "(status = 'failed' "
+        "AND accepted_entry_count = 0)"
+        ")"
+        ")",
+        name="market_normalization_results_status_shape",
+    ),
+    CheckConstraint(
+        "array_position(unadopted_schema_paths, NULL) IS NULL",
+        name="market_normalization_results_unadopted_no_null",
+    ),
+    CheckConstraint(
+        "array_position("
+        "present_unadopted_message_paths, NULL"
+        ") IS NULL",
+        name="market_normalization_results_present_no_null",
+    ),
+    CheckConstraint(
+        "array_position("
+        "secondary_payload_paths_present, NULL"
+        ") IS NULL",
+        name="market_normalization_results_secondary_no_null",
+    ),
+    CheckConstraint(
+        "full_result_hash ~ '^sha256:[0-9a-f]{64}$'",
+        name="market_normalization_results_full_sha256",
+    ),
+    CheckConstraint(
+        "adopted_semantics_hash ~ '^sha256:[0-9a-f]{64}$'",
+        name="market_normalization_results_adopted_sha256",
+    ),
+    CheckConstraint(
+        "jsonb_typeof(metadata_payload) = 'object'",
+        name="market_normalization_results_metadata_object",
+    ),
+    CheckConstraint(
+        "persistence_recorded_at <> 'infinity'::timestamptz "
+        "AND persistence_recorded_at <> "
+        "'-infinity'::timestamptz",
+        name="market_normalization_results_persistence_finite",
+    ),
+    UniqueConstraint(
+        "raw_event_id",
+        "normalization_schema_version",
+        name="uq_market_normalization_results_raw_schema",
+    ),
+    UniqueConstraint(
+        "result_id",
+        "raw_event_id",
+        name="uq_market_normalization_results_result_raw",
+    ),
+    Index(
+        "ix_market_normalization_results_schema_raw",
+        "normalization_schema_version",
+        "raw_event_id",
+    ),
+    Index(
+        "ix_market_normalization_results_persistence",
+        "normalization_schema_version",
+        "persistence_recorded_at",
+        "result_id",
+    ),
+    Index(
+        "ix_market_normalization_results_status",
+        "normalization_schema_version",
+        "status",
+        "result_id",
+    ),
+)
+
 DATA14_TABLE_COLUMNS = {
-    "market_normalization_results": (Column("raw_event_id", String(ID_LENGTH), nullable=False), Column("full_result_hash", String(HASH_LENGTH), nullable=False), Column("adopted_semantics_hash", String(HASH_LENGTH), nullable=False), Column("normalization_schema_version", Integer, nullable=False), Column("normalizer_implementation_version", String(NAME_LENGTH), nullable=False)),
     "market_observations": (Column("raw_event_id", String(ID_LENGTH), nullable=False), Column("event_type", String(32), nullable=False), Column("normalization_schema_version", Integer, nullable=False), Column("payload", JSON, nullable=False)),
     "market_normalization_result_events": (Column("result_id", String(ID_LENGTH), nullable=False), Column("raw_event_id", String(ID_LENGTH), nullable=False), Column("event_id", String(ID_LENGTH), nullable=False), Column("event_ordinal", Integer, nullable=False)),
     "market_normalization_failures": (Column("result_id", String(ID_LENGTH), nullable=False), Column("raw_event_id", String(ID_LENGTH), nullable=False), Column("failure_id", String(ID_LENGTH), nullable=False), Column("payload", JSON, nullable=False)),
@@ -235,7 +445,6 @@ DATA14_TABLE_COLUMNS = {
 }
 
 DATA14_TABLES = (
-    "market_normalization_results",
     "market_observations",
     "underlying_quote_observations",
     "futures_quote_observations",

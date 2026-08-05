@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 revision = "20260804_04"
 down_revision = "20260804_03"
@@ -258,10 +259,266 @@ def _create_raw_market_frames() -> None:
     )
 
 
+def _create_market_normalization_results() -> None:
+    op.create_table(
+        "market_normalization_results",
+        sa.Column(
+            "result_id",
+            sa.String(ID),
+            primary_key=True,
+        ),
+        sa.Column(
+            "raw_event_id",
+            sa.String(ID),
+            sa.ForeignKey(
+                "raw_market_frames.raw_event_id",
+                ondelete="NO ACTION",
+            ),
+            nullable=False,
+        ),
+        sa.Column(
+            "normalization_schema_version",
+            sa.Integer(),
+            nullable=False,
+        ),
+        sa.Column(
+            "normalizer_implementation_version",
+            sa.String(128),
+            nullable=False,
+        ),
+        sa.Column(
+            "response_type",
+            sa.String(32),
+            nullable=True,
+        ),
+        sa.Column(
+            "status",
+            sa.String(16),
+            nullable=False,
+        ),
+        sa.Column(
+            "decoded_entry_count",
+            sa.Integer(),
+            nullable=False,
+        ),
+        sa.Column(
+            "accepted_entry_count",
+            sa.Integer(),
+            nullable=False,
+        ),
+        sa.Column(
+            "failed_entry_count",
+            sa.Integer(),
+            nullable=False,
+        ),
+        sa.Column(
+            "frame_failure_present",
+            sa.Boolean(),
+            nullable=False,
+        ),
+        sa.Column(
+            "unadopted_schema_paths",
+            postgresql.ARRAY(sa.String(512)),
+            nullable=False,
+        ),
+        sa.Column(
+            "present_unadopted_message_paths",
+            postgresql.ARRAY(sa.String(512)),
+            nullable=False,
+        ),
+        sa.Column(
+            "secondary_payload_paths_present",
+            postgresql.ARRAY(sa.String(512)),
+            nullable=False,
+        ),
+        sa.Column(
+            "full_result_hash",
+            sa.String(ID),
+            nullable=False,
+        ),
+        sa.Column(
+            "adopted_semantics_hash",
+            sa.String(ID),
+            nullable=False,
+        ),
+        sa.Column(
+            "metadata_payload",
+            postgresql.JSONB(
+                astext_type=sa.Text(),
+            ),
+            nullable=False,
+        ),
+        sa.Column(
+            "persistence_recorded_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "result_id ~ '^sha256:[0-9a-f]{64}$'",
+            name="market_normalization_results_id_sha256",
+        ),
+        sa.CheckConstraint(
+            "raw_event_id ~ '^sha256:[0-9a-f]{64}$'",
+            name="market_normalization_results_raw_sha256",
+        ),
+        sa.CheckConstraint(
+            (
+                "normalization_schema_version = 1 "
+                "AND normalizer_implementation_version = "
+                "'upstox-v3-normalizer-1'"
+            ),
+            name="market_normalization_results_schema_label",
+        ),
+        sa.CheckConstraint(
+            (
+                "response_type IS NULL OR "
+                "response_type IN ("
+                "'initial_feed', "
+                "'live_feed', "
+                "'market_info'"
+                ")"
+            ),
+            name="market_normalization_results_response_type",
+        ),
+        sa.CheckConstraint(
+            "status IN ('complete', 'partial', 'failed')",
+            name="market_normalization_results_status",
+        ),
+        sa.CheckConstraint(
+            (
+                "decoded_entry_count BETWEEN 0 AND 5000 "
+                "AND accepted_entry_count BETWEEN 0 AND 5000 "
+                "AND failed_entry_count BETWEEN 0 AND 5000"
+            ),
+            name="market_normalization_results_count_bounds",
+        ),
+        sa.CheckConstraint(
+            (
+                "("
+                "frame_failure_present "
+                "AND status = 'failed' "
+                "AND accepted_entry_count = 0 "
+                "AND failed_entry_count = 0"
+                ") OR ("
+                "NOT frame_failure_present "
+                "AND decoded_entry_count = "
+                "accepted_entry_count + failed_entry_count "
+                "AND ("
+                "("
+                "status = 'complete' "
+                "AND accepted_entry_count > 0 "
+                "AND failed_entry_count = 0"
+                ") OR ("
+                "status = 'partial' "
+                "AND accepted_entry_count > 0 "
+                "AND failed_entry_count > 0"
+                ") OR ("
+                "status = 'failed' "
+                "AND accepted_entry_count = 0"
+                ")"
+                ")"
+                ")"
+            ),
+            name="market_normalization_results_status_shape",
+        ),
+        sa.CheckConstraint(
+            (
+                "array_position("
+                "unadopted_schema_paths, NULL"
+                ") IS NULL"
+            ),
+            name="market_normalization_results_unadopted_no_null",
+        ),
+        sa.CheckConstraint(
+            (
+                "array_position("
+                "present_unadopted_message_paths, NULL"
+                ") IS NULL"
+            ),
+            name="market_normalization_results_present_no_null",
+        ),
+        sa.CheckConstraint(
+            (
+                "array_position("
+                "secondary_payload_paths_present, NULL"
+                ") IS NULL"
+            ),
+            name="market_normalization_results_secondary_no_null",
+        ),
+        sa.CheckConstraint(
+            "full_result_hash ~ '^sha256:[0-9a-f]{64}$'",
+            name="market_normalization_results_full_sha256",
+        ),
+        sa.CheckConstraint(
+            (
+                "adopted_semantics_hash "
+                "~ '^sha256:[0-9a-f]{64}$'"
+            ),
+            name="market_normalization_results_adopted_sha256",
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(metadata_payload) = 'object'",
+            name="market_normalization_results_metadata_object",
+        ),
+        sa.CheckConstraint(
+            (
+                "persistence_recorded_at "
+                "<> 'infinity'::timestamptz "
+                "AND persistence_recorded_at "
+                "<> '-infinity'::timestamptz"
+            ),
+            name="market_normalization_results_persistence_finite",
+        ),
+        sa.UniqueConstraint(
+            "raw_event_id",
+            "normalization_schema_version",
+            name="uq_market_normalization_results_raw_schema",
+        ),
+        sa.UniqueConstraint(
+            "result_id",
+            "raw_event_id",
+            name="uq_market_normalization_results_result_raw",
+        ),
+    )
+
+    op.create_index(
+        "ix_market_normalization_results_schema_raw",
+        "market_normalization_results",
+        (
+            "normalization_schema_version",
+            "raw_event_id",
+        ),
+    )
+
+    op.create_index(
+        "ix_market_normalization_results_persistence",
+        "market_normalization_results",
+        (
+            "normalization_schema_version",
+            "persistence_recorded_at",
+            "result_id",
+        ),
+    )
+
+    op.create_index(
+        "ix_market_normalization_results_status",
+        "market_normalization_results",
+        (
+            "normalization_schema_version",
+            "status",
+            "result_id",
+        ),
+    )
+
+
 def upgrade() -> None:
     for name in TABLES:
         if name == "raw_market_frames":
             _create_raw_market_frames()
+            continue
+
+        if name == "market_normalization_results":
+            _create_market_normalization_results()
             continue
 
         columns = [
@@ -277,35 +534,7 @@ def upgrade() -> None:
             ),
         ]
 
-        if name == "market_normalization_results":
-            columns += [
-                sa.Column(
-                    "raw_event_id",
-                    sa.String(ID),
-                    nullable=False,
-                ),
-                sa.Column(
-                    "full_result_hash",
-                    sa.String(128),
-                    nullable=False,
-                ),
-                sa.Column(
-                    "adopted_semantics_hash",
-                    sa.String(128),
-                    nullable=False,
-                ),
-                sa.Column(
-                    "normalization_schema_version",
-                    sa.Integer(),
-                    nullable=False,
-                ),
-                sa.Column(
-                    "normalizer_implementation_version",
-                    sa.String(128),
-                    nullable=False,
-                ),
-            ]
-        elif name == "market_observations":
+        if name == "market_observations":
             columns += [
                 sa.Column(
                     "raw_event_id",
@@ -416,7 +645,10 @@ def upgrade() -> None:
                 ),
             ]
 
-        op.create_table(name, *columns)
+        op.create_table(
+            name,
+            *columns,
+        )
 
         op.create_check_constraint(
             f"ck_{name}_append_created",

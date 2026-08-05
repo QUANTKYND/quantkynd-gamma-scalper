@@ -3,7 +3,15 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from alembic import command
-from sqlalchemy import BigInteger, LargeBinary, MetaData, inspect, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    LargeBinary,
+    MetaData,
+    inspect,
+    text,
+)
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 from app.core.database_config import DatabaseSettings
 from app.instruments.temporal_records import (
@@ -109,6 +117,44 @@ RAW_MARKET_FRAME_INDEXES = {
     "ix_raw_market_frames_persistence_order": (
         "persistence_recorded_at",
         "raw_event_id",
+    ),
+}
+
+
+MARKET_NORMALIZATION_RESULT_COLUMNS = {
+    "result_id",
+    "raw_event_id",
+    "normalization_schema_version",
+    "normalizer_implementation_version",
+    "response_type",
+    "status",
+    "decoded_entry_count",
+    "accepted_entry_count",
+    "failed_entry_count",
+    "frame_failure_present",
+    "unadopted_schema_paths",
+    "present_unadopted_message_paths",
+    "secondary_payload_paths_present",
+    "full_result_hash",
+    "adopted_semantics_hash",
+    "metadata_payload",
+    "persistence_recorded_at",
+}
+
+MARKET_NORMALIZATION_RESULT_INDEXES = {
+    "ix_market_normalization_results_schema_raw": (
+        "normalization_schema_version",
+        "raw_event_id",
+    ),
+    "ix_market_normalization_results_persistence": (
+        "normalization_schema_version",
+        "persistence_recorded_at",
+        "result_id",
+    ),
+    "ix_market_normalization_results_status": (
+        "normalization_schema_version",
+        "status",
+        "result_id",
     ),
 }
 
@@ -555,6 +601,94 @@ async def _assert_head_schema(engine) -> None:
         assert raw["indexes"].get(index_name) == expected_columns
 
 
+    result = details[
+        "market_normalization_results"
+    ]
+
+    assert (
+        set(result["columns"])
+        == MARKET_NORMALIZATION_RESULT_COLUMNS
+    )
+    assert result["primary_key"] == (
+        "result_id",
+    )
+
+    assert isinstance(
+        result["columns"][
+            "frame_failure_present"
+        ]["type"],
+        Boolean,
+    )
+    assert isinstance(
+        result["columns"][
+            "unadopted_schema_paths"
+        ]["type"],
+        ARRAY,
+    )
+    assert isinstance(
+        result["columns"][
+            "present_unadopted_message_paths"
+        ]["type"],
+        ARRAY,
+    )
+    assert isinstance(
+        result["columns"][
+            "secondary_payload_paths_present"
+        ]["type"],
+        ARRAY,
+    )
+    assert isinstance(
+        result["columns"][
+            "metadata_payload"
+        ]["type"],
+        JSONB,
+    )
+
+    assert (
+        (
+            "raw_event_id",
+            "normalization_schema_version",
+        )
+        in result["unique_constraints"]
+    )
+    assert (
+        (
+            "result_id",
+            "raw_event_id",
+        )
+        in result["unique_constraints"]
+    )
+
+    assert any(
+        constrained_columns
+        == ("raw_event_id",)
+        and referred_table
+        == "raw_market_frames"
+        and referred_columns
+        == ("raw_event_id",)
+        and ondelete
+        in (
+            None,
+            "NO ACTION",
+        )
+        for (
+            constrained_columns,
+            referred_table,
+            referred_columns,
+            ondelete,
+        )
+        in result["foreign_keys"]
+    )
+
+    for index_name, expected_columns in (
+        MARKET_NORMALIZATION_RESULT_INDEXES.items()
+    ):
+        assert (
+            result["indexes"].get(index_name)
+            == expected_columns
+        )
+
+
 def _schema_details(connection) -> dict[str, object]:
     schema = inspect(connection)
 
@@ -576,6 +710,55 @@ def _schema_details(connection) -> dict[str, object]:
         index["name"]: tuple(index["column_names"])
         for index in schema.get_indexes(
             "raw_market_frames"
+        )
+    }
+
+
+    result_columns = {
+        column["name"]: column
+        for column in schema.get_columns(
+            "market_normalization_results"
+        )
+    }
+
+    result_unique_constraints = {
+        tuple(constraint["column_names"])
+        for constraint
+        in schema.get_unique_constraints(
+            "market_normalization_results"
+        )
+    }
+
+    result_indexes = {
+        index["name"]: tuple(
+            index["column_names"]
+        )
+        for index in schema.get_indexes(
+            "market_normalization_results"
+        )
+    }
+
+    result_foreign_keys = {
+        (
+            tuple(
+                foreign_key[
+                    "constrained_columns"
+                ]
+            ),
+            foreign_key["referred_table"],
+            tuple(
+                foreign_key[
+                    "referred_columns"
+                ]
+            ),
+            foreign_key.get(
+                "options",
+                {},
+            ).get("ondelete"),
+        )
+        for foreign_key
+        in schema.get_foreign_keys(
+            "market_normalization_results"
         )
     }
 
@@ -627,6 +810,21 @@ def _schema_details(connection) -> dict[str, object]:
                 raw_unique_constraints
             ),
             "indexes": raw_indexes,
+        },
+        "market_normalization_results": {
+            "columns": result_columns,
+            "primary_key": tuple(
+                schema.get_pk_constraint(
+                    "market_normalization_results"
+                )["constrained_columns"]
+            ),
+            "unique_constraints": (
+                result_unique_constraints
+            ),
+            "indexes": result_indexes,
+            "foreign_keys": (
+                result_foreign_keys
+            ),
         },
     }
 
