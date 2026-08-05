@@ -42,3 +42,11 @@ class FrameNormalizationStatus(StrEnum):
     COMPLETE = "complete"
     PARTIAL = "partial"
     FAILED = "failed"
+
+
+class NormalizationFailureScope(StrEnum):
+    FRAME = "frame"
+    SUBJECT = "subject"
+    SEGMENT = "segment"
+    CONNECTION_LIFECYCLE = "connection_lifecycle"
+    SUBSCRIPTION_LIFECYCLE = "subscription_lifecycle"

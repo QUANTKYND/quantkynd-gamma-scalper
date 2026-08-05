@@ -93,8 +93,12 @@ class RawMarketFrameV1:
         if self.capture_basis is RawCaptureBasis.LIVE_RECEIVED:
             if self.received_at is None or self.available_at != self.received_at:
                 raise RawFrameValidationError("live_received requires equal receipt and availability")
-        if self.capture_basis is RawCaptureBasis.HISTORICAL_IMPORT and self.received_at is not None:
-            raise RawFrameValidationError("historical_import requires absent received_at")
+        if self.capture_basis is RawCaptureBasis.RECORDED_WITH_ORIGINAL_RECEIPT:
+            if self.received_at is None or self.available_at != self.received_at:
+                raise RawFrameValidationError("recorded_with_original_receipt requires equal receipt and availability")
+        if self.capture_basis is RawCaptureBasis.HISTORICAL_IMPORT:
+            if self.received_at is not None:
+                raise RawFrameValidationError("historical_import requires absent received_at")
         if (self.source_file_id is None) != (self.source_record_id is None):
             raise RawFrameValidationError("source file and record IDs must appear together")
         if self.source_file_id is not None:

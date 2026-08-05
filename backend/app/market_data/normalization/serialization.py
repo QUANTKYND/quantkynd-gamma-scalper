@@ -22,13 +22,15 @@ def full_result_hash(payload: object) -> str:
 
 def adopted_semantics_hash(
     events: tuple[QuoteObservationV1 | ProviderMarketSegmentStatusObservationV1, ...],
-    failures: tuple[NormalizationFailureV1, ...],
+    frame_failure: NormalizationFailureV1 | None,
+    entry_failures: tuple[NormalizationFailureV1, ...],
 ) -> str:
     return stable_hash(
         {
             "schema": "data-1.3-adopted-semantics-v1",
             "events": tuple(_adopted_event_payload(event) for event in events),
-            "failures": tuple(_payload(failure) for failure in failures),
+            "frame_failure": _payload(frame_failure),
+            "entry_failures": tuple(_payload(failure) for failure in entry_failures),
         }
     )
 
@@ -77,6 +79,9 @@ def _payload(value: Any) -> Any:
         return value.value
     if isinstance(value, dict):
         return {key: _payload(item) for key, item in value.items()}
-    if isinstance(value, (tuple, list, set, frozenset)):
+    if isinstance(value, (tuple, list)):
         return tuple(_payload(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        normalized = tuple(_payload(item) for item in value)
+        return tuple(sorted(normalized, key=canonical_json))
     return value

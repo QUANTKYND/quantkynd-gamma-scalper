@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from app.market_data.normalization.enums import FrameNormalizationStatus
+from app.market_data.normalization.enums import FrameNormalizationStatus, NormalizationFailureScope
 from app.market_data.normalization.errors import FrameDecodeError
 from app.market_data.normalization.identities import RawMarketFrameV1
 from app.market_data.normalization.ports import MarketSubjectResolver
-from app.market_data.normalization.results import FrameNormalizationResultV1, NormalizationFailureV1
+from app.market_data.normalization.results import (
+    FrameNormalizationResultV1,
+    NormalizationFailureV1,
+    failed_entry_scope_count,
+)
 from app.market_data.normalization.serialization import adopted_semantics_hash, full_result_hash
 from app.market_data.upstox.v3_decoder import decode_upstox_v3_frame
 from app.market_data.upstox.v3_normalizer import normalize_upstox_v3_frame
@@ -30,8 +34,11 @@ class MarketFrameNormalizationService:
         try:
             decoded = decode_upstox_v3_frame(frame)
         except FrameDecodeError as error:
-            failures = (NormalizationFailureV1(error.code),)
-            return _result(frame, (), failures, UNADOPTED_SCHEMA_PATHS, (), (), 1)
+            frame_failure = NormalizationFailureV1(
+                scope=NormalizationFailureScope.FRAME,
+                reason_code=error.code,
+            )
+            return _result(frame, (), frame_failure, (), UNADOPTED_SCHEMA_PATHS, (), (), 0)
         subjects = None
         if decoded.response_type_numeric != MarketDataFeed_pb2.market_info:
             subjects = await self._subject_resolver.resolve_many(
@@ -40,15 +47,46 @@ class MarketFrameNormalizationService:
                 market_cutoff,
                 knowledge_cutoff,
             )
+            if (
+                subjects.provider_contract_keys != decoded.provider_contract_keys
+                or any(subject.provider != frame.provider for subject in subjects.resolved)
+            ):
+                frame_failure = NormalizationFailureV1(
+                    scope=NormalizationFailureScope.FRAME,
+                    reason_code="invalid_subject_resolution_batch",
+                )
+                return _result(
+                    frame,
+                    (),
+                    frame_failure,
+                    (),
+                    UNADOPTED_SCHEMA_PATHS,
+                    (),
+                    (),
+                    len(decoded.provider_contract_keys),
+                )
         draft = normalize_upstox_v3_frame(decoded, frame, subjects)
         event_ids = tuple(event.event_id for event in draft.accepted_events)
         if len(event_ids) != len(set(event_ids)):
-            failures = (NormalizationFailureV1("duplicate_normalized_identity"),)
-            return _result(frame, (), failures, draft.unadopted_schema_paths, (), draft.secondary_payload_paths_present, 1)
+            frame_failure = NormalizationFailureV1(
+                scope=NormalizationFailureScope.FRAME,
+                reason_code="duplicate_normalized_identity",
+            )
+            return _result(
+                frame,
+                (),
+                frame_failure,
+                (),
+                draft.unadopted_schema_paths,
+                (),
+                draft.secondary_payload_paths_present,
+                draft.decoded_entry_count,
+            )
         return _result(
             frame,
             draft.accepted_events,
-            draft.failures,
+            None,
+            draft.entry_failures,
             draft.unadopted_schema_paths,
             draft.present_unadopted_message_paths,
             draft.secondary_payload_paths_present,
@@ -56,15 +94,18 @@ class MarketFrameNormalizationService:
         )
 
 
-def _result(frame, events, failures, unadopted, present, secondary, decoded_count):
+def _result(frame, events, frame_failure, entry_failures, unadopted, present, secondary, decoded_count):
+    failed_count = failed_entry_scope_count(entry_failures)
     status = (
-        FrameNormalizationStatus.COMPLETE
-        if events and not failures
+        FrameNormalizationStatus.FAILED
+        if frame_failure is not None
+        else FrameNormalizationStatus.COMPLETE
+        if events and not entry_failures
         else FrameNormalizationStatus.PARTIAL
-        if events and failures
+        if events and entry_failures
         else FrameNormalizationStatus.FAILED
     )
-    adopted_hash = adopted_semantics_hash(events, failures)
+    adopted_hash = adopted_semantics_hash(events, frame_failure, entry_failures)
     full_hash = full_result_hash(
         {
             "schema": "data-1.3-full-result-v1",
@@ -80,7 +121,12 @@ def _result(frame, events, failures, unadopted, present, secondary, decoded_coun
                 "source_record_id": frame.source_record_id,
             },
             "accepted_events": events,
-            "failures": failures,
+            "frame_failure": frame_failure,
+            "entry_failures": entry_failures,
+            "status": status,
+            "decoded_entry_count": decoded_count,
+            "accepted_entry_count": len(events),
+            "failed_entry_count": failed_count,
             "unadopted_schema_paths": unadopted,
             "present_unadopted_message_paths": present,
             "secondary_payload_paths_present": secondary,
@@ -91,13 +137,14 @@ def _result(frame, events, failures, unadopted, present, secondary, decoded_coun
         frame_content_hash=frame.frame_content_hash,
         status=status,
         accepted_events=events,
-        failures=failures,
+        frame_failure=frame_failure,
+        entry_failures=entry_failures,
         unadopted_schema_paths=unadopted,
         present_unadopted_message_paths=present,
         secondary_payload_paths_present=secondary,
         decoded_entry_count=decoded_count,
-        accepted_event_count=len(events),
-        failed_entry_count=len(failures),
+        accepted_entry_count=len(events),
+        failed_entry_count=failed_count,
         full_result_hash=full_hash,
         adopted_semantics_hash=adopted_hash,
     )

@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from app.core.hashing import stable_hash
 from app.market_data.normalization.conversions import (
     epoch_milliseconds,
     provider_double_to_price,
@@ -13,6 +12,7 @@ from app.market_data.normalization.conversions import (
 from app.market_data.normalization.enums import (
     FeedResponseType,
     MarketSubjectKind,
+    NormalizationFailureScope,
     NormalizedAvailabilityBasis,
     ProviderFeedUnion,
     ProviderRequestMode,
@@ -24,6 +24,7 @@ from app.market_data.normalization.models import (
     NORMALIZER_IMPLEMENTATION_VERSION,
     NUMERIC_BASIS,
     PRESENCE_SEMANTICS,
+    PROVIDER_MARKET_STATUS_NAMES,
     QUANTITY_BASIS,
     FuturesQuoteObservationV1,
     NormalizedMarketEventTimeV1,
@@ -32,9 +33,14 @@ from app.market_data.normalization.models import (
     QuoteObservationV1,
     ResolvedMarketSubjectV1,
     UnderlyingQuoteObservationV1,
+    market_segment_status_subject_id,
 )
 from app.market_data.normalization.ports import SubjectResolutionBatch
-from app.market_data.normalization.results import FrameNormalizationDraftV1, NormalizationFailureV1
+from app.market_data.normalization.results import (
+    FrameNormalizationDraftV1,
+    NormalizationFailureV1,
+    failed_entry_scope_count,
+)
 from app.market_data.point_in_time import NormalizedMarketEventIdentity
 from app.market_data.upstox.proto import MarketDataFeed_pb2
 from app.market_data.upstox.v3_decoder import DecodedUpstoxV3Frame
@@ -52,16 +58,6 @@ REQUEST_MODES = {
     MarketDataFeed_pb2.option_greeks: ProviderRequestMode.OPTION_GREEKS,
     MarketDataFeed_pb2.full_d30: ProviderRequestMode.FULL_D30,
 }
-KNOWN_MARKET_STATUSES = {
-    MarketDataFeed_pb2.PRE_OPEN_START: "PRE_OPEN_START",
-    MarketDataFeed_pb2.PRE_OPEN_END: "PRE_OPEN_END",
-    MarketDataFeed_pb2.NORMAL_OPEN: "NORMAL_OPEN",
-    MarketDataFeed_pb2.NORMAL_CLOSE: "NORMAL_CLOSE",
-    MarketDataFeed_pb2.CLOSING_START: "CLOSING_START",
-    MarketDataFeed_pb2.CLOSING_END: "CLOSING_END",
-}
-
-
 @dataclass(frozen=True)
 class _AdoptedQuoteFields:
     feed_union: ProviderFeedUnion
@@ -109,11 +105,11 @@ def normalize_upstox_v3_frame(
     )
     return FrameNormalizationDraftV1(
         accepted_events=ordered_events,
-        failures=ordered_failures,
+        entry_failures=ordered_failures,
         unadopted_schema_paths=UNADOPTED_SCHEMA_PATHS,
         present_unadopted_message_paths=present_paths,
         secondary_payload_paths_present=secondary_paths,
-        decoded_entry_count=len(ordered_events) + len(ordered_failures),
+        decoded_entry_count=len(ordered_events) + failed_entry_scope_count(ordered_failures),
     )
 
 
@@ -122,8 +118,8 @@ def _normalize_statuses(decoded: DecodedUpstoxV3Frame, frame: RawMarketFrameV1):
     events: list[ProviderMarketSegmentStatusObservationV1] = []
     for segment in decoded.status_segments:
         numeric = int(decoded.response.marketInfo.segmentStatus[segment])
-        name = KNOWN_MARKET_STATUSES.get(numeric, "UNKNOWN")
-        subject_id = stable_hash({"entity": "provider_market_segment", "provider": frame.provider, "segment": segment})
+        name = PROVIDER_MARKET_STATUS_NAMES.get(numeric, "UNKNOWN")
+        subject_id = market_segment_status_subject_id(frame.provider, segment)
         identity = NormalizedMarketEventIdentity(
             raw_event_id=frame.raw_event_id,
             event_type="market_segment_status_observation",
@@ -138,7 +134,7 @@ def _normalize_statuses(decoded: DecodedUpstoxV3Frame, frame: RawMarketFrameV1):
                 segment=segment,
                 provider_status_name=name,
                 provider_status_numeric=numeric,
-                status_is_known=numeric in KNOWN_MARKET_STATUSES,
+                status_is_known=numeric in PROVIDER_MARKET_STATUS_NAMES,
                 provider_timestamp=provider_timestamp,
                 received_at=frame.received_at,
                 available_at=frame.available_at,
@@ -164,11 +160,23 @@ def _normalize_quotes(
     for key in decoded.provider_contract_keys:
         resolution_failure = subjects.failure_for(key)
         if resolution_failure is not None:
-            failures.append(NormalizationFailureV1(resolution_failure.reason_code, provider_contract_key=key))
+            failures.append(
+                NormalizationFailureV1(
+                    scope=NormalizationFailureScope.SUBJECT,
+                    reason_code=resolution_failure.reason_code,
+                    provider_contract_key=key,
+                )
+            )
             continue
         subject = subjects.subject_for(key)
         if subject is None:
-            failures.append(NormalizationFailureV1("unknown_provider_key", provider_contract_key=key))
+            failures.append(
+                NormalizationFailureV1(
+                    scope=NormalizationFailureScope.SUBJECT,
+                    reason_code="unknown_provider_key",
+                    provider_contract_key=key,
+                )
+            )
             continue
         try:
             event = _normalize_quote(
@@ -193,9 +201,16 @@ def _normalize_quotes(
                 "fractional_open_interest",
                 "unsafe_open_interest",
                 "depth_limit_exceeded",
+                "request_mode_depth_mismatch",
             }:
                 raise
-            failures.append(NormalizationFailureV1(reason, provider_contract_key=key))
+            failures.append(
+                NormalizationFailureV1(
+                    scope=NormalizationFailureScope.SUBJECT,
+                    reason_code=reason,
+                    provider_contract_key=key,
+                )
+            )
         else:
             events.append(event)
     return events, failures
@@ -325,6 +340,8 @@ def _adopt_fields(feed, union, request_mode, kind):
         depth_count = len(payload.marketLevel.bidAskQuote) if payload.HasField("marketLevel") else 0
         if depth_count > UPSTOX_V3_MAX_DEPTH_LEVELS:
             raise ValueError("depth_limit_exceeded")
+        if request_mode is ProviderRequestMode.FULL_D5 and depth_count > 5:
+            raise ValueError("request_mode_depth_mismatch")
         first = payload.marketLevel.bidAskQuote[0] if depth_count else None
         present: list[str] = []
         if payload.HasField("optionGreeks"):

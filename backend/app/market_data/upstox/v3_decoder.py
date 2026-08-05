@@ -45,12 +45,12 @@ def decode_upstox_v3_frame(frame: RawMarketFrameV1) -> DecodedUpstoxV3Frame:
         epoch_milliseconds(response.currentTs, zero_is_none=False)
     except ValueError as error:
         raise FrameDecodeError("invalid_provider_timestamp") from error
+    if len(response.feeds) > UPSTOX_V3_MAX_FEEDS:
+        raise FrameDecodeError("too_many_feeds")
+    if len(response.marketInfo.segmentStatus) > UPSTOX_V3_MAX_STATUS_SEGMENTS:
+        raise FrameDecodeError("too_many_status_segments")
     provider_keys = tuple(sorted(response.feeds.keys()))
     status_segments = tuple(sorted(response.marketInfo.segmentStatus.keys()))
-    if len(provider_keys) > UPSTOX_V3_MAX_FEEDS:
-        raise FrameDecodeError("too_many_feeds")
-    if len(status_segments) > UPSTOX_V3_MAX_STATUS_SEGMENTS:
-        raise FrameDecodeError("empty_primary_payload")
     if response_type == MarketDataFeed_pb2.market_info and not status_segments:
         raise FrameDecodeError("empty_primary_payload")
     if response_type in (MarketDataFeed_pb2.initial_feed, MarketDataFeed_pb2.live_feed) and not provider_keys:

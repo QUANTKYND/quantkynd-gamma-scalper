@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from types import MappingProxyType
+from typing import Mapping
 from typing import Protocol
 
 from app.market_data.normalization.models import ResolvedMarketSubjectV1
@@ -12,11 +14,19 @@ class SubjectResolutionFailureV1:
     provider_contract_key: str
     reason_code: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.provider_contract_key, str) or not self.provider_contract_key.strip():
+            raise ValueError("subject resolution key must be non-empty")
+        if not isinstance(self.reason_code, str) or not self.reason_code.strip():
+            raise ValueError("subject resolution reason must be non-empty")
+
 
 @dataclass(frozen=True)
 class SubjectResolutionBatch:
     resolved: tuple[ResolvedMarketSubjectV1, ...]
     failures: tuple[SubjectResolutionFailureV1, ...]
+    _resolved_by_key: Mapping[str, ResolvedMarketSubjectV1] = field(init=False, repr=False, compare=False)
+    _failure_by_key: Mapping[str, SubjectResolutionFailureV1] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         resolved_keys = tuple(subject.provider_contract_key for subject in self.resolved)
@@ -27,18 +37,18 @@ class SubjectResolutionBatch:
             raise ValueError("subject failures must be unique and sorted")
         if set(resolved_keys) & set(failure_keys):
             raise ValueError("a subject cannot be both resolved and failed")
+        object.__setattr__(self, "_resolved_by_key", MappingProxyType(dict(zip(resolved_keys, self.resolved, strict=True))))
+        object.__setattr__(self, "_failure_by_key", MappingProxyType(dict(zip(failure_keys, self.failures, strict=True))))
 
     def subject_for(self, provider_contract_key: str) -> ResolvedMarketSubjectV1 | None:
-        return next(
-            (subject for subject in self.resolved if subject.provider_contract_key == provider_contract_key),
-            None,
-        )
+        return self._resolved_by_key.get(provider_contract_key)
 
     def failure_for(self, provider_contract_key: str) -> SubjectResolutionFailureV1 | None:
-        return next(
-            (failure for failure in self.failures if failure.provider_contract_key == provider_contract_key),
-            None,
-        )
+        return self._failure_by_key.get(provider_contract_key)
+
+    @property
+    def provider_contract_keys(self) -> tuple[str, ...]:
+        return tuple(sorted((*self._resolved_by_key, *self._failure_by_key)))
 
 
 class MarketSubjectResolver(Protocol):
