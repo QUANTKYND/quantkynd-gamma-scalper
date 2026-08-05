@@ -4,6 +4,8 @@ from datetime import timedelta
 import pytest
 
 from app.market_data.upstox.proto import MarketDataFeed_pb2
+from app.market_data.normalization.models import market_segment_status_subject_id
+from app.market_data.normalization.serialization import adopted_semantics_hash
 from tests.market_data.normalization.helpers import AT
 from tests.market_data.upstox.test_v3_normalizer import feed_response, normalize
 
@@ -46,3 +48,14 @@ def test_unknown_status_requires_unknown_name_and_flag() -> None:
         replace(unknown, provider_status_name="OTHER")
     with pytest.raises(ValueError, match="unknown provider status"):
         replace(unknown, status_is_known=True)
+
+
+def test_status_adopted_hash_includes_provider_subject_identity() -> None:
+    event = _status_event()
+    subject_id = market_segment_status_subject_id("other", event.segment)
+    other = replace(
+        event,
+        provider="other",
+        identity=replace(event.identity, subject_id=subject_id),
+    )
+    assert adopted_semantics_hash((event,), None, ()) != adopted_semantics_hash((other,), None, ())

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 
 from app.core.hashing import stable_hash
+from app.market_data.normalization.enums import ProviderRequestMode
+from app.market_data.normalization.errors import ConflictingRawIdentityError
 from app.market_data.normalization.models import (
     NORMALIZATION_SCHEMA_VERSION,
     NORMALIZER_IMPLEMENTATION_VERSION,
@@ -35,6 +37,33 @@ class SubscriptionLifecycleState(StrEnum):
     UNSUBSCRIBE_REQUESTED = "unsubscribe_requested"
     UNSUBSCRIBED = "unsubscribed"
     SUBSCRIPTION_FAILED = "subscription_failed"
+
+
+@dataclass(frozen=True)
+class SubscriptionInstrumentSetV1:
+    provider_contract_keys: tuple[str, ...]
+    instrument_keys_digest: str = field(init=False)
+    instrument_key_count: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        keys = self.provider_contract_keys
+        if any(not isinstance(key, str) or not key.strip() for key in keys):
+            raise ValueError("instrument keys must be non-empty text")
+        if len(set(keys)) != len(keys):
+            raise ValueError("duplicate_instrument_key")
+        canonical = tuple(sorted(keys))
+        object.__setattr__(self, "provider_contract_keys", canonical)
+        object.__setattr__(self, "instrument_key_count", len(canonical))
+        object.__setattr__(
+            self,
+            "instrument_keys_digest",
+            stable_hash(
+                {
+                    "entity": "provider_subscription_instrument_keys_v1",
+                    "provider_contract_keys": canonical,
+                }
+            ),
+        )
 
 
 CONNECTION_TRANSITIONS = {
@@ -157,6 +186,7 @@ class ProviderConnectionLifecycleObservationV1:
             redacted_reason_code=self.redacted_reason_code,
             provider_sequence=self.provider_sequence,
         )
+        _apply_raw_canonical_values(self, raw)
         _validate_normalized(self, raw.raw_event_id, self.connection_session_id, "provider_connection_lifecycle_observation")
 
     @property
@@ -176,25 +206,35 @@ class RawProviderSubscriptionLifecycleEventV1:
     occurred_at: datetime
     available_at: datetime
     recorded_at: datetime
-    request_mode: str | None
-    instrument_keys_digest: str
-    instrument_key_count: int
+    request_mode: ProviderRequestMode | None
+    instrument_set: SubscriptionInstrumentSetV1
+    instrument_keys_digest: str = field(init=False)
+    instrument_key_count: int = field(init=False)
     redacted_reason_code: str | None = None
     provider_sequence: None = None
 
     def __post_init__(self) -> None:
         _validate_common(self)
-        _require_text(self.subscription_scope_id, self.instrument_keys_digest)
-        if not isinstance(self.instrument_key_count, int) or isinstance(self.instrument_key_count, bool) or self.instrument_key_count < 0:
-            raise ValueError("instrument_key_count must be a non-negative integer")
+        _require_text(self.subscription_scope_id)
+        if not isinstance(self.instrument_set, SubscriptionInstrumentSetV1):
+            raise TypeError("subscription instrument set is required")
+        object.__setattr__(self, "instrument_keys_digest", self.instrument_set.instrument_keys_digest)
+        object.__setattr__(self, "instrument_key_count", self.instrument_set.instrument_key_count)
         if self.request_mode is not None:
-            _require_text(self.request_mode)
+            object.__setattr__(self, "request_mode", ProviderRequestMode(self.request_mode))
         previous = SubscriptionLifecycleState(self.previous_state) if self.previous_state is not None else None
         state = SubscriptionLifecycleState(self.state)
         object.__setattr__(self, "previous_state", previous)
         object.__setattr__(self, "state", state)
         if state not in SUBSCRIPTION_TRANSITIONS.get(previous, frozenset()):
             raise ValueError("invalid_subscription_lifecycle_transition")
+        if state in {
+            SubscriptionLifecycleState.SUBSCRIBE_REQUESTED,
+            SubscriptionLifecycleState.SUBSCRIBED,
+            SubscriptionLifecycleState.MODE_CHANGE_REQUESTED,
+            SubscriptionLifecycleState.MODE_CHANGED,
+        } and self.request_mode is None:
+            raise ValueError("subscription request mode is required")
         _validate_reason(state is SubscriptionLifecycleState.SUBSCRIPTION_FAILED, self.redacted_reason_code)
 
     @property
@@ -237,9 +277,10 @@ class ProviderSubscriptionLifecycleObservationV1:
     occurred_at: datetime
     available_at: datetime
     recorded_at: datetime
-    request_mode: str | None
-    instrument_keys_digest: str
-    instrument_key_count: int
+    request_mode: ProviderRequestMode | None
+    instrument_set: SubscriptionInstrumentSetV1
+    instrument_keys_digest: str = field(init=False)
+    instrument_key_count: int = field(init=False)
     redacted_reason_code: str | None
     normalization_schema_version: int
     normalizer_implementation_version: str
@@ -258,11 +299,11 @@ class ProviderSubscriptionLifecycleObservationV1:
             available_at=self.available_at,
             recorded_at=self.recorded_at,
             request_mode=self.request_mode,
-            instrument_keys_digest=self.instrument_keys_digest,
-            instrument_key_count=self.instrument_key_count,
+            instrument_set=self.instrument_set,
             redacted_reason_code=self.redacted_reason_code,
             provider_sequence=self.provider_sequence,
         )
+        _apply_raw_canonical_values(self, raw)
         _validate_normalized(self, raw.raw_event_id, raw.subject_id, "provider_subscription_lifecycle_observation")
 
     @property
@@ -321,8 +362,7 @@ def normalize_subscription_lifecycle(
         available_at=raw.available_at,
         recorded_at=raw.recorded_at,
         request_mode=raw.request_mode,
-        instrument_keys_digest=raw.instrument_keys_digest,
-        instrument_key_count=raw.instrument_key_count,
+        instrument_set=raw.instrument_set,
         redacted_reason_code=raw.redacted_reason_code,
         normalization_schema_version=NORMALIZATION_SCHEMA_VERSION,
         normalizer_implementation_version=NORMALIZER_IMPLEMENTATION_VERSION,
@@ -331,26 +371,21 @@ def normalize_subscription_lifecycle(
 
 
 def instrument_keys_digest(provider_contract_keys: tuple[str, ...]) -> str:
-    if any(not isinstance(key, str) or not key.strip() for key in provider_contract_keys):
-        raise ValueError("instrument keys must be non-empty text")
-    if len(set(provider_contract_keys)) != len(provider_contract_keys):
-        raise ValueError("duplicate_instrument_key")
-    return stable_hash(
-        {
-            "entity": "provider_subscription_instrument_keys_v1",
-            "provider_contract_keys": tuple(sorted(provider_contract_keys)),
-        }
-    )
+    return SubscriptionInstrumentSetV1(provider_contract_keys).instrument_keys_digest
 
 
 def validate_connection_lifecycle_sequence(
     events: tuple[RawProviderConnectionLifecycleEventV1 | ProviderConnectionLifecycleObservationV1, ...],
 ) -> None:
     for previous, current in zip(events, events[1:], strict=False):
-        if current.provider != previous.provider or current.source_order <= previous.source_order:
+        if current.provider != previous.provider:
             raise ValueError("invalid_connection_lifecycle_sequence")
         if current.connection_session_id == previous.connection_session_id:
-            if current.source_order_scope_id != previous.source_order_scope_id or current.previous_state is not previous.state:
+            if (
+                current.source_order_scope_id != previous.source_order_scope_id
+                or current.source_order <= previous.source_order
+                or current.previous_state is not previous.state
+            ):
                 raise ValueError("invalid_connection_lifecycle_sequence")
         elif (
             previous.state is not ConnectionLifecycleState.RECONNECTING
@@ -365,17 +400,50 @@ def validate_subscription_lifecycle_sequence(
     events: tuple[RawProviderSubscriptionLifecycleEventV1 | ProviderSubscriptionLifecycleObservationV1, ...],
 ) -> None:
     for previous, current in zip(events, events[1:], strict=False):
+        if current.subscription_scope_id != previous.subscription_scope_id:
+            if (
+                current.provider == previous.provider
+                and current.connection_session_id == previous.connection_session_id
+                and current.source_order_scope_id == previous.source_order_scope_id
+                and current.source_order > previous.source_order
+                and current.previous_state is None
+                and current.state is SubscriptionLifecycleState.SUBSCRIBE_REQUESTED
+            ):
+                continue
+            raise ValueError("invalid_subscription_lifecycle_sequence")
         if (
             current.provider != previous.provider
             or current.connection_session_id != previous.connection_session_id
-            or current.subscription_scope_id != previous.subscription_scope_id
             or current.source_order_scope_id != previous.source_order_scope_id
             or current.source_order <= previous.source_order
             or current.previous_state is not previous.state
-            or current.instrument_keys_digest != previous.instrument_keys_digest
-            or current.instrument_key_count != previous.instrument_key_count
+            or current.instrument_set != previous.instrument_set
+            or not _subscription_modes_agree(previous, current)
         ):
             raise ValueError("invalid_subscription_lifecycle_sequence")
+
+
+@dataclass(frozen=True)
+class RawLifecycleIdentityBatchValidationV1:
+    unique_events: tuple[RawProviderConnectionLifecycleEventV1 | RawProviderSubscriptionLifecycleEventV1, ...]
+    exact_duplicate_raw_event_ids: tuple[str, ...]
+
+
+def validate_raw_lifecycle_identity_batch(events):
+    by_id = {}
+    duplicates = set()
+    for event in events:
+        existing = by_id.get(event.raw_event_id)
+        if existing is not None:
+            if existing != event:
+                raise ConflictingRawIdentityError(event.raw_event_id)
+            duplicates.add(event.raw_event_id)
+        else:
+            by_id[event.raw_event_id] = event
+    return RawLifecycleIdentityBatchValidationV1(
+        tuple(sorted(by_id.values(), key=lambda event: event.raw_event_id)),
+        tuple(sorted(duplicates)),
+    )
 
 
 def _validate_common(event) -> None:
@@ -390,6 +458,37 @@ def _validate_common(event) -> None:
         raise ValueError("recorded_at cannot precede available_at")
     if event.provider_sequence is not None:
         raise ValueError("provider_sequence must be absent")
+
+
+def _apply_raw_canonical_values(event, raw) -> None:
+    for name in (
+        "previous_state",
+        "state",
+        "occurred_at",
+        "available_at",
+        "recorded_at",
+        "provider_sequence",
+    ):
+        object.__setattr__(event, name, getattr(raw, name))
+    if isinstance(raw, RawProviderSubscriptionLifecycleEventV1):
+        object.__setattr__(event, "request_mode", raw.request_mode)
+        object.__setattr__(event, "instrument_set", raw.instrument_set)
+        object.__setattr__(event, "instrument_keys_digest", raw.instrument_keys_digest)
+        object.__setattr__(event, "instrument_key_count", raw.instrument_key_count)
+
+
+def _subscription_modes_agree(previous, current) -> bool:
+    if current.state in {
+        SubscriptionLifecycleState.SUBSCRIBED,
+        SubscriptionLifecycleState.MODE_CHANGED,
+        SubscriptionLifecycleState.SUBSCRIPTION_FAILED,
+    }:
+        return current.request_mode == previous.request_mode
+    if current.state is SubscriptionLifecycleState.UNSUBSCRIBED:
+        return current.request_mode == previous.request_mode
+    if current.state is SubscriptionLifecycleState.UNSUBSCRIBE_REQUESTED:
+        return current.request_mode is None or previous.request_mode is None or current.request_mode == previous.request_mode
+    return True
 
 
 def _validate_normalized(event, raw_event_id: str, subject_id: str, event_type: str) -> None:

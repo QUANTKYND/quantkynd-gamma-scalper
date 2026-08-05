@@ -206,6 +206,27 @@ class QuoteObservationV1:
             raise ValueError("quote class, subject kind, and event type mismatch")
         if self.feed_response_type is FeedResponseType.MARKET_INFO:
             raise ValueError("market_info cannot produce quote observations")
+        valid_mode_union_kind = {
+            ProviderFeedUnion.LTPC: (
+                frozenset({ProviderRequestMode.LTPC}),
+                frozenset({MarketSubjectKind.UNDERLYING, MarketSubjectKind.FUTURE, MarketSubjectKind.OPTION}),
+            ),
+            ProviderFeedUnion.INDEX_FULL_FEED: (
+                frozenset({ProviderRequestMode.FULL_D5, ProviderRequestMode.FULL_D30}),
+                frozenset({MarketSubjectKind.UNDERLYING}),
+            ),
+            ProviderFeedUnion.MARKET_FULL_FEED: (
+                frozenset({ProviderRequestMode.FULL_D5, ProviderRequestMode.FULL_D30}),
+                frozenset({MarketSubjectKind.FUTURE, MarketSubjectKind.OPTION}),
+            ),
+            ProviderFeedUnion.FIRST_LEVEL_WITH_GREEKS: (
+                frozenset({ProviderRequestMode.OPTION_GREEKS}),
+                frozenset({MarketSubjectKind.OPTION}),
+            ),
+        }
+        valid_modes, valid_kinds = valid_mode_union_kind[self.feed_union]
+        if self.request_mode not in valid_modes or self.subject.instrument_kind not in valid_kinds:
+            raise ValueError("request mode, feed union, and subject kind mismatch")
         expected_snapshot = self.feed_response_type is FeedResponseType.INITIAL_FEED
         if self.is_snapshot is not expected_snapshot:
             raise ValueError("quote snapshot flag does not match response type")

@@ -475,6 +475,40 @@ class PostgresInstrumentRepository:
             instrument_ids[resolved.value.mapping_id],
         )
 
+    async def resolve_provider_key_mapping_state(
+        self,
+        provider: str,
+        provider_contract_key: str,
+        market_as_of: datetime,
+        known_as_of: datetime | None,
+    ) -> ProviderMappingState | None:
+        self._require_active()
+        mapping_rows = await self._mapping_rows(provider, provider_contract_key, known_as_of)
+        states = tuple(
+            TemporalState(
+                temporal_record_from_row(record_row, TemporalRecordKind.PROVIDER_MAPPING, "mapping_id"),
+                provider_mapping_from_row(mapping_row, record_row),
+            )
+            for mapping_row, record_row, _ in mapping_rows
+        )
+        resolved = resolve_temporal_state(
+            states,
+            known_as_of,
+            lambda value: value.effective_from <= market_as_of
+            and (value.effective_until is None or market_as_of < value.effective_until),
+        )
+        if resolved is None:
+            return None
+        instrument_ids = {
+            mapping_row.mapping_id: version_row.instrument_id
+            for mapping_row, _, version_row in mapping_rows
+        }
+        return ProviderMappingState(
+            resolved.value,
+            resolved.record.record_id,
+            instrument_ids[resolved.value.mapping_id],
+        )
+
     async def resolve_provider_key_knowledge_leaf(
         self,
         provider: str,

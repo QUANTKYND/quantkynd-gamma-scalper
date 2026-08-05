@@ -145,3 +145,54 @@ async def test_catalogue_market_subject_resolver_on_postgres_17(reset_postgres_u
         assert after == before
     finally:
         await dispose_database_engine(engine)
+
+
+@pytest.mark.anyio
+async def test_catalogue_resolver_returns_valid_and_ambiguous_version_outcomes(reset_postgres_url: str) -> None:
+    engine = create_database_engine(DatabaseSettings(database_url=reset_postgres_url, _env_file=None))
+    factory = create_session_factory(engine)
+    fixture = deterministic_fixture()
+    alternate = replace(
+        fixture.future_version,
+        display_symbol="NIFTY26AUGFUT-ALT",
+        recorded_at=fixture.future_version.recorded_at + timedelta(minutes=1),
+    )
+    underlying_mapping = _mapping(
+        "NSE_INDEX|mixed-valid",
+        fixture.underlying_version,
+        fixture.catalogue.effective_from,
+        fixture.catalogue.recorded_at,
+        "a",
+    )
+    future_mapping = _mapping(
+        "NSE_FO|mixed-ambiguous-version",
+        fixture.future_version,
+        fixture.catalogue.effective_from,
+        fixture.catalogue.recorded_at,
+        "b",
+    )
+    try:
+        async with PostgresUnitOfWork(factory) as unit_of_work:
+            await unit_of_work.catalogues.add(fixture.catalogue)
+            await unit_of_work.instruments.add_underlying(fixture.underlying)
+            await unit_of_work.instruments.add_future(fixture.future)
+            await unit_of_work.instruments.add_version(fixture.underlying_version)
+            await unit_of_work.instruments.add_version(fixture.future_version)
+            await unit_of_work.instruments.add_version(alternate)
+            await unit_of_work.instruments.add_provider_mapping(underlying_mapping)
+            await unit_of_work.instruments.add_provider_mapping(future_mapping)
+            await unit_of_work.commit()
+        resolver = postgres_catalogue_market_subject_resolver(factory)
+        result = await resolver.resolve_many(
+            "upstox",
+            (future_mapping.provider_contract_key, underlying_mapping.provider_contract_key),
+            fixture.catalogue.effective_from + timedelta(hours=1),
+            fixture.catalogue.recorded_at + timedelta(hours=1),
+        )
+        assert tuple(item.provider_contract_key for item in result.resolved) == (
+            underlying_mapping.provider_contract_key,
+        )
+        assert result.failures[0].provider_contract_key == future_mapping.provider_contract_key
+        assert result.failures[0].reason_code == "ambiguous_contract_version"
+    finally:
+        await dispose_database_engine(engine)

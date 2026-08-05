@@ -5,6 +5,7 @@ import pytest
 
 from app.market_data.normalization.enums import NormalizationFailureScope
 from app.market_data.normalization.ports import StaticSubjectManifestResolver
+from app.instruments.identity import ProviderContractMapping
 from app.market_data.normalization.results import NormalizationFailureV1
 from app.market_data.upstox.proto import MarketDataFeed_pb2
 from app.services.market_frame_normalization_service import MarketFrameNormalizationService
@@ -119,3 +120,34 @@ def test_status_segment_limit_boundary() -> None:
     assert rejected_result.decoded_entry_count == 0
     assert rejected_result.frame_failure is not None
     assert rejected_result.frame_failure.reason_code == "too_many_status_segments"
+
+
+def test_duplicate_identity_failure_preserves_present_structural_metadata() -> None:
+    option = subjects()[2]
+    second_mapping = ProviderContractMapping(
+        provider=option.provider,
+        provider_contract_key="NSE_FO|option-alias",
+        contract_version_id=option.contract_version_id,
+        provider_payload_hash="sha256:" + "b" * 64,
+        source_row_identity="row-option-alias",
+        effective_from=option.provider_mapping.effective_from,
+        effective_until=None,
+        recorded_at=option.provider_mapping.recorded_at,
+    )
+    alias = replace(
+        option,
+        provider_contract_key=second_mapping.provider_contract_key,
+        provider_mapping=second_mapping,
+        provider_mapping_id=second_mapping.mapping_id,
+    )
+    response = feed_response()
+    for key in (option.provider_contract_key, alias.provider_contract_key):
+        feed = response.feeds[key]
+        feed.requestMode = MarketDataFeed_pb2.full_d5
+        feed.fullFeed.marketFF.ltpc.CopyFrom(ltpc())
+    response.feeds[alias.provider_contract_key].fullFeed.marketFF.optionGreeks.delta = 0.5
+    service = MarketFrameNormalizationService(StaticSubjectManifestResolver((option, alias)))
+    result = asyncio.run(service.normalize(raw_frame(response.SerializeToString()), market_as_of=AT, known_as_of=AT))
+    assert result.frame_failure is not None
+    assert result.frame_failure.reason_code == "duplicate_normalized_identity"
+    assert result.present_unadopted_message_paths == ("MarketFullFeed.optionGreeks",)

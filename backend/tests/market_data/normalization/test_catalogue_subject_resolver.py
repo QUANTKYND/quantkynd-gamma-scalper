@@ -8,6 +8,10 @@ import pytest
 from app.instruments.ports import InstrumentVersionState, ProviderMappingState
 from app.instruments.temporal_records import AmbiguousPointInTimeResultError
 from app.services.catalogue_market_subject_resolver import CatalogueMarketSubjectResolver
+from app.services.market_frame_normalization_service import MarketFrameNormalizationService
+from app.market_data.upstox.proto import MarketDataFeed_pb2
+from tests.market_data.normalization.helpers import raw_frame
+from tests.market_data.upstox.test_v3_normalizer import feed_response, ltpc
 from tests.market_data.normalization.helpers import AT, subjects
 
 
@@ -16,6 +20,7 @@ class FakeInstrumentRepository:
         self.subjects = {subject.provider_contract_key: subject for subject in resolved_subjects}
         self.stale: set[str] = set()
         self.ambiguous: set[str] = set()
+        self.ambiguous_versions: set[str] = set()
         self.calls: list[tuple] = []
 
     async def resolve_provider_key_state(self, provider, key, market_as_of, known_as_of):
@@ -27,6 +32,9 @@ class FakeInstrumentRepository:
             return None
         return ProviderMappingState(subject.provider_mapping, "mapping-record", subject.economic_subject_id)
 
+    async def resolve_provider_key_mapping_state(self, provider, key, market_as_of, known_as_of):
+        return await self.resolve_provider_key_state(provider, key, market_as_of, known_as_of)
+
     async def resolve_provider_key_instrument_id(self, provider, key):
         self.calls.append(("binding", provider, key))
         subject = self.subjects.get(key)
@@ -34,6 +42,8 @@ class FakeInstrumentRepository:
 
     async def resolve_version_state(self, instrument_id, market_as_of, known_as_of):
         self.calls.append(("version", instrument_id, market_as_of, known_as_of))
+        if instrument_id in self.ambiguous_versions:
+            raise AmbiguousPointInTimeResultError("ambiguous version")
         subject = next(item for item in self.subjects.values() if item.economic_subject_id == instrument_id)
         return InstrumentVersionState(subject.contract_version, "version-record")
 
@@ -119,3 +129,34 @@ def test_catalogue_resolver_propagates_unexpected_repository_error() -> None:
     with pytest.raises(RuntimeError, match="database unavailable"):
         asyncio.run(resolver.resolve_many("upstox", ("key",), AT, AT))
     assert unit_of_work.exited == 1
+
+
+def test_catalogue_resolver_keeps_valid_result_when_another_version_is_ambiguous() -> None:
+    expected = subjects()
+    repository = FakeInstrumentRepository(expected)
+    repository.ambiguous_versions.add(expected[1].economic_subject_id)
+    resolver = CatalogueMarketSubjectResolver(lambda: FakeUnitOfWork(repository))
+    result = asyncio.run(
+        resolver.resolve_many(
+            "upstox",
+            (expected[0].provider_contract_key, expected[1].provider_contract_key),
+            AT,
+            AT,
+        )
+    )
+    assert tuple(item.provider_contract_key for item in result.resolved) == (expected[0].provider_contract_key,)
+    assert result.failures[0].reason_code == "ambiguous_contract_version"
+    response = feed_response()
+    for key in (expected[0].provider_contract_key, expected[1].provider_contract_key):
+        feed = response.feeds[key]
+        feed.requestMode = MarketDataFeed_pb2.ltpc
+        feed.ltpc.CopyFrom(ltpc())
+    normalized = asyncio.run(
+        MarketFrameNormalizationService(resolver).normalize(
+            raw_frame(response.SerializeToString()),
+            market_as_of=AT,
+            known_as_of=AT,
+        )
+    )
+    assert normalized.status.value == "partial"
+    assert normalized.accepted_entry_count == normalized.failed_entry_count == 1

@@ -192,8 +192,54 @@ def test_quote_direct_construction_rejects_numeric_and_depth_bypass(field, value
     ],
 )
 def test_quote_direct_construction_rejects_feed_union_depth_mismatch(changes) -> None:
-    with pytest.raises(ValueError, match="feed union depth mismatch"):
+    with pytest.raises(ValueError, match="mismatch"):
         replace(_underlying_event(), **changes)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"request_mode": ProviderRequestMode.FULL_D5},
+        {"feed_union": ProviderFeedUnion.INDEX_FULL_FEED, "request_mode": ProviderRequestMode.LTPC},
+        {"feed_union": ProviderFeedUnion.MARKET_FULL_FEED, "request_mode": ProviderRequestMode.FULL_D5},
+        {"feed_union": ProviderFeedUnion.FIRST_LEVEL_WITH_GREEKS, "request_mode": ProviderRequestMode.FULL_D5},
+        {"feed_union": ProviderFeedUnion.FIRST_LEVEL_WITH_GREEKS, "request_mode": ProviderRequestMode.OPTION_GREEKS},
+    ],
+)
+def test_quote_direct_construction_rejects_mode_union_kind_mismatch(changes) -> None:
+    with pytest.raises(ValueError, match="request mode, feed union, and subject kind mismatch"):
+        replace(_underlying_event(), **changes)
+
+
+@pytest.mark.parametrize(
+    "key,mode,union",
+    [
+        ("NSE_INDEX|Nifty 50", MarketDataFeed_pb2.ltpc, "ltpc"),
+        ("NSE_FO|future", MarketDataFeed_pb2.ltpc, "ltpc"),
+        ("NSE_FO|option", MarketDataFeed_pb2.ltpc, "ltpc"),
+        ("NSE_INDEX|Nifty 50", MarketDataFeed_pb2.full_d5, "indexFF"),
+        ("NSE_INDEX|Nifty 50", MarketDataFeed_pb2.full_d30, "indexFF"),
+        ("NSE_FO|future", MarketDataFeed_pb2.full_d5, "marketFF"),
+        ("NSE_FO|future", MarketDataFeed_pb2.full_d30, "marketFF"),
+        ("NSE_FO|option", MarketDataFeed_pb2.full_d5, "marketFF"),
+        ("NSE_FO|option", MarketDataFeed_pb2.full_d30, "marketFF"),
+        ("NSE_FO|option", MarketDataFeed_pb2.option_greeks, "firstLevelWithGreeks"),
+    ],
+)
+def test_supported_mode_union_kind_pairs_survive_direct_reconstruction(key, mode, union) -> None:
+    response = feed_response()
+    feed = response.feeds[key]
+    feed.requestMode = mode
+    if union == "ltpc":
+        feed.ltpc.CopyFrom(ltpc())
+    elif union == "indexFF":
+        feed.fullFeed.indexFF.ltpc.CopyFrom(ltpc())
+    elif union == "marketFF":
+        feed.fullFeed.marketFF.ltpc.CopyFrom(ltpc())
+    else:
+        feed.firstLevelWithGreeks.ltpc.CopyFrom(ltpc())
+    event = normalize(response).accepted_events[0]
+    assert replace(event) == event
 
 
 @pytest.mark.parametrize("value", [("",), ("bad path",), ("bad\npath",), (1,)])

@@ -140,6 +140,14 @@ class InstrumentRepository(Protocol):
         known_as_of: datetime | None,
     ) -> ProviderMappingState | None: ...
 
+    async def resolve_provider_key_mapping_state(
+        self,
+        provider: str,
+        provider_contract_key: str,
+        market_as_of: datetime,
+        known_as_of: datetime | None,
+    ) -> ProviderMappingState | None: ...
+
     async def resolve_provider_key_knowledge_leaf(
         self,
         provider: str,

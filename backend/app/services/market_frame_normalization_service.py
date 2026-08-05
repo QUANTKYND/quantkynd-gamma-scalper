@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from app.market_data.normalization.enums import FrameNormalizationStatus, NormalizationFailureScope
+from app.market_data.normalization.enums import FeedResponseType, FrameNormalizationStatus, NormalizationFailureScope
 from app.market_data.normalization.errors import FrameDecodeError
 from app.market_data.normalization.identities import RawMarketFrameV1
 from app.market_data.normalization.ports import MarketSubjectResolver
@@ -37,7 +37,12 @@ class MarketFrameNormalizationService:
                 scope=NormalizationFailureScope.FRAME,
                 reason_code=error.code,
             )
-            return _result(frame, (), frame_failure, (), (), (), (), 0)
+            return _result(frame, None, (), frame_failure, (), (), (), (), 0)
+        response_type = {
+            MarketDataFeed_pb2.initial_feed: FeedResponseType.INITIAL_FEED,
+            MarketDataFeed_pb2.live_feed: FeedResponseType.LIVE_FEED,
+            MarketDataFeed_pb2.market_info: FeedResponseType.MARKET_INFO,
+        }[decoded.response_type_numeric]
         subjects = None
         if decoded.response_type_numeric != MarketDataFeed_pb2.market_info:
             subjects = await self._subject_resolver.resolve_many(
@@ -61,6 +66,7 @@ class MarketFrameNormalizationService:
                 )
                 return _result(
                     frame,
+                    response_type,
                     (),
                     frame_failure,
                     (),
@@ -78,16 +84,18 @@ class MarketFrameNormalizationService:
             )
             return _result(
                 frame,
+                response_type,
                 (),
                 frame_failure,
                 (),
                 draft.unadopted_schema_paths,
-                (),
+                draft.present_unadopted_message_paths,
                 draft.secondary_payload_paths_present,
                 draft.decoded_entry_count,
             )
         return _result(
             frame,
+            response_type,
             draft.accepted_events,
             None,
             draft.entry_failures,
@@ -98,7 +106,7 @@ class MarketFrameNormalizationService:
         )
 
 
-def _result(frame, events, frame_failure, entry_failures, unadopted, present, secondary, decoded_count):
+def _result(frame, response_type, events, frame_failure, entry_failures, unadopted, present, secondary, decoded_count):
     failed_count = failed_entry_scope_count(entry_failures)
     status = (
         FrameNormalizationStatus.FAILED
@@ -128,6 +136,7 @@ def _result(frame, events, frame_failure, entry_failures, unadopted, present, se
             "frame_failure": frame_failure,
             "entry_failures": entry_failures,
             "status": status,
+            "response_type": response_type,
             "decoded_entry_count": decoded_count,
             "accepted_entry_count": len(events),
             "failed_entry_count": failed_count,
@@ -140,6 +149,7 @@ def _result(frame, events, frame_failure, entry_failures, unadopted, present, se
         raw_frame_identity=frame.identity,
         frame_content_hash=frame.frame_content_hash,
         status=status,
+        response_type=response_type,
         accepted_events=events,
         frame_failure=frame_failure,
         entry_failures=entry_failures,

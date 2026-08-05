@@ -260,6 +260,22 @@ def test_unknown_wire_field_changes_full_provenance_only() -> None:
     assert base.adopted_semantics_hash == unknown.adopted_semantics_hash
 
 
+def test_failed_subject_deferred_presence_changes_full_hash_only() -> None:
+    first = feed_response()
+    second = feed_response()
+    for response in (first, second):
+        feed = response.feeds["NSE_FO|unknown"]
+        feed.requestMode = MarketDataFeed_pb2.full_d5
+        feed.fullFeed.marketFF.ltpc.CopyFrom(ltpc())
+    second.feeds["NSE_FO|unknown"].fullFeed.marketFF.optionGreeks.delta = 0.5
+    left = normalize(first, source_order=40)
+    right = normalize(second, source_order=41)
+    assert left.full_result_hash != right.full_result_hash
+    assert left.adopted_semantics_hash == right.adopted_semantics_hash
+    assert left.entry_failures[0].present_unadopted_message_paths == ()
+    assert right.entry_failures[0].present_unadopted_message_paths == ("MarketFullFeed.optionGreeks",)
+
+
 def test_resolver_cutoff_mismatch_is_a_whole_frame_failure() -> None:
     response = feed_response()
     feed = response.feeds["NSE_INDEX|Nifty 50"]

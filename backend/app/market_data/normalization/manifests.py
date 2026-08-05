@@ -24,23 +24,30 @@ from app.market_data.normalization.enums import MarketSubjectKind, RawCaptureBas
 from app.market_data.normalization.identities import RawMarketFrameV1
 from app.market_data.normalization.models import ResolvedMarketSubjectV1
 from app.market_data.normalization.ports import StaticSubjectManifestResolver
+from app.market_data.upstox.v3_schema import UPSTOX_V3_SCHEMA_ID, UPSTOX_V3_SCHEMA_SHA256
 
 
 def load_capture_manifest(path: Path, frame_bytes: bytes) -> tuple[RawMarketFrameV1, datetime, datetime, dict]:
     payload = _load_json(path)
     if payload.get("fixture_schema_version") != "data-1.3-fixture-v1":
         raise ValueError("unsupported fixture capture manifest")
+    if payload.get("provider") != "upstox":
+        raise ValueError("fixture provider mismatch")
+    if payload.get("provider_schema_id") != UPSTOX_V3_SCHEMA_ID:
+        raise ValueError("fixture provider schema mismatch")
+    if payload.get("provider_schema_sha256") != UPSTOX_V3_SCHEMA_SHA256:
+        raise ValueError("fixture provider schema hash mismatch")
     frame_hash = f"sha256:{hashlib.sha256(frame_bytes).hexdigest()}"
     if payload.get("frame_sha256") != frame_hash:
         raise ValueError("fixture frame hash mismatch")
     received = _optional_datetime(payload.get("received_at"))
     frame = RawMarketFrameV1(
         provider="upstox",
-        provider_schema_id=_text(payload, "provider_schema_id"),
-        provider_schema_sha256=_text(payload, "provider_schema_sha256"),
+        provider_schema_id=UPSTOX_V3_SCHEMA_ID,
+        provider_schema_sha256=UPSTOX_V3_SCHEMA_SHA256,
         connection_session_id=_text(payload, "connection_session_id"),
         source_order_scope_id=_text(payload, "source_order_scope_id"),
-        source_order=int(payload["source_order"]),
+        source_order=_integer(payload, "source_order"),
         frame_bytes=frame_bytes,
         frame_content_hash=frame_hash,
         received_at=received,
@@ -204,7 +211,7 @@ def _version_fields(payload: dict) -> dict:
     return {
         "valid_from": _datetime(payload["valid_from"]),
         "valid_until": _optional_datetime(payload.get("valid_until")),
-        "lot_size": int(payload["lot_size"]),
+        "lot_size": _integer(payload, "lot_size"),
         "tick_size": Decimal(payload["tick_size"]),
         "display_symbol": payload["display_symbol"],
         "trading_status": TradingStatus(payload["trading_status"]),
@@ -225,6 +232,13 @@ def _text(payload: dict, key: str) -> str:
     value = payload.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{key} must be non-empty text")
+    return value
+
+
+def _integer(payload: dict, key: str) -> int:
+    value = payload.get(key)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"{key} must be an integer")
     return value
 
 

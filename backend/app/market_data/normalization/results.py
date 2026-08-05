@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from app.market_data.normalization.enums import (
     FrameNormalizationStatus,
+    FeedResponseType,
     NormalizationFailureScope,
     ProviderFeedUnion,
 )
@@ -76,6 +77,7 @@ class FrameNormalizationResultV1:
     raw_frame_identity: RawMarketFrameIdentityV1
     frame_content_hash: str
     status: FrameNormalizationStatus
+    response_type: FeedResponseType | None
     accepted_events: tuple[MarketObservationV1, ...]
     frame_failure: NormalizationFailureV1 | None
     entry_failures: tuple[NormalizationFailureV1, ...]
@@ -90,6 +92,8 @@ class FrameNormalizationResultV1:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "status", FrameNormalizationStatus(self.status))
+        if self.response_type is not None:
+            object.__setattr__(self, "response_type", FeedResponseType(self.response_type))
         for name in ("decoded_entry_count", "accepted_entry_count", "failed_entry_count"):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:

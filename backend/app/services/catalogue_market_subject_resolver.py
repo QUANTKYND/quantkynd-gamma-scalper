@@ -36,7 +36,7 @@ class CatalogueMarketSubjectResolver:
         async with self._unit_of_work_factory() as unit_of_work:
             for key in sorted(set(provider_contract_keys)):
                 try:
-                    mapping_state = await unit_of_work.instruments.resolve_provider_key_state(
+                    mapping_state = await unit_of_work.instruments.resolve_provider_key_mapping_state(
                         provider,
                         key,
                         market_cutoff,
@@ -53,11 +53,15 @@ class CatalogueMarketSubjectResolver:
                     reason = "unknown_provider_key" if instrument_id is None else "stale_provider_mapping"
                     failures.append(SubjectResolutionFailureV1(key, reason))
                     continue
-                version_state = await unit_of_work.instruments.resolve_version_state(
-                    mapping_state.instrument_id,
-                    market_cutoff,
-                    knowledge_cutoff,
-                )
+                try:
+                    version_state = await unit_of_work.instruments.resolve_version_state(
+                        mapping_state.instrument_id,
+                        market_cutoff,
+                        knowledge_cutoff,
+                    )
+                except AmbiguousPointInTimeResultError:
+                    failures.append(SubjectResolutionFailureV1(key, "ambiguous_contract_version"))
+                    continue
                 if version_state is None:
                     failures.append(SubjectResolutionFailureV1(key, "stale_provider_mapping"))
                     continue

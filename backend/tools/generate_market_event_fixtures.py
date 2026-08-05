@@ -3,14 +3,17 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import json
 import sys
 import tempfile
+from datetime import date, datetime
+from decimal import Decimal
+from enum import Enum
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app.core.hashing import canonical_json
 from app.market_data.normalization.identities import RawMarketFrameV1
 from app.market_data.normalization.ports import StaticSubjectManifestResolver
 from app.market_data.upstox.proto import MarketDataFeed_pb2
@@ -174,7 +177,7 @@ def build_tree(target: Path) -> None:
     subject_values = subjects()
     from app.market_data.normalization.manifests import subject_manifest_payload
 
-    (target / "subjects.json").write_text(canonical_json(subject_manifest_payload(subject_values)), encoding="utf-8")
+    (target / "subjects.json").write_text(_fixture_json(subject_manifest_payload(subject_values)), encoding="utf-8")
     service = MarketFrameNormalizationService(StaticSubjectManifestResolver(subject_values))
     inventory = []
     for source_order, (name, frame_bytes) in enumerate(sorted(fixture_bytes().items()), start=1):
@@ -198,6 +201,7 @@ def build_tree(target: Path) -> None:
         result = asyncio.run(service.normalize(frame, market_as_of=AT, known_as_of=AT))
         capture = {
             "fixture_schema_version": "data-1.3-fixture-v1",
+            "provider": "upstox",
             "provider_schema_id": UPSTOX_V3_SCHEMA_ID,
             "provider_schema_sha256": UPSTOX_V3_SCHEMA_SHA256,
             "connection_session_id": frame.connection_session_id,
@@ -217,9 +221,24 @@ def build_tree(target: Path) -> None:
             "expected_adopted_semantics_sha256": result.adopted_semantics_hash,
         }
         (target / f"{name}.bin").write_bytes(frame_bytes)
-        (target / f"{name}.capture.json").write_text(canonical_json(capture), encoding="utf-8")
+        (target / f"{name}.capture.json").write_text(_fixture_json(capture), encoding="utf-8")
         inventory.append({"file": f"{name}.bin", "bytes": len(frame_bytes), "sha256": frame_hash})
-    (target / "inventory.json").write_text(canonical_json({"files": tuple(inventory)}), encoding="utf-8")
+    (target / "inventory.json").write_text(_fixture_json({"files": tuple(inventory)}), encoding="utf-8")
+
+
+def _fixture_json(value) -> str:
+    def default(item):
+        if isinstance(item, datetime):
+            return item.isoformat()
+        if isinstance(item, date):
+            return item.isoformat()
+        if isinstance(item, Decimal):
+            return format(item, "f")
+        if isinstance(item, Enum):
+            return item.value
+        raise TypeError(type(item).__name__)
+
+    return json.dumps(value, default=default, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
 def verify_tree(target: Path) -> tuple[str, ...]:

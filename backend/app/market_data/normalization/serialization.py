@@ -29,8 +29,8 @@ def adopted_semantics_hash(
         {
             "schema": "data-1.3-adopted-semantics-v1",
             "events": tuple(_adopted_event_payload(event) for event in events),
-            "frame_failure": _payload(frame_failure),
-            "entry_failures": tuple(_payload(failure) for failure in entry_failures),
+            "frame_failure": _adopted_failure_payload(frame_failure),
+            "entry_failures": tuple(_adopted_failure_payload(failure) for failure in entry_failures),
         }
     )
 
@@ -64,11 +64,27 @@ def _adopted_event_payload(event: QuoteObservationV1 | ProviderMarketSegmentStat
         }
     return {
         "event_type": event.identity.event_type,
+        "subject_id": event.identity.subject_id,
         "segment": event.segment,
         "provider_status_name": event.provider_status_name,
         "provider_status_numeric": event.provider_status_numeric,
         "status_is_known": event.status_is_known,
         "provider_timestamp": event.provider_timestamp,
+    }
+
+
+def _adopted_failure_payload(failure: NormalizationFailureV1 | None) -> object:
+    if failure is None:
+        return None
+    return {
+        "scope": failure.scope.value,
+        "reason_code": failure.reason_code,
+        "provider_contract_key": failure.provider_contract_key,
+        "segment": failure.segment,
+        "field_paths": failure.field_paths,
+        "safe_detail_code": failure.safe_detail_code,
+        "selected_feed_union": failure.selected_feed_union.value if failure.selected_feed_union else None,
+        "provider_depth_levels_present": failure.provider_depth_levels_present,
     }
 
 
