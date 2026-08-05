@@ -8,12 +8,13 @@ from pathlib import Path
 import shutil
 import tempfile
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from app.core.database_config import DatabaseSettings
 from app.core.hashing import stable_hash
 from app.instruments.catalogue_parser import ParsedCatalogueArtifact, validate_gzip_json_array
 from app.instruments.identity import (
+    ContractVersion,
     FuturesContractIdentity,
     OptionContractIdentity,
     UnderlyingInstrumentIdentity,
@@ -21,8 +22,12 @@ from app.instruments.identity import (
 from app.instruments.provider_catalogue import (
     CatalogueArtifactError,
     CatalogueConflictError,
+    CatalogueDiffCategory,
     CatalogueIdempotencyConflictError,
+    CatalogueItemTransition,
+    CatalogueSemanticDiff,
     CatalogueSourceArtifact,
+    CatalogueTransitionPlan,
 )
 from app.instruments.providers.upstox_catalogue import (
     COMPRESSION,
@@ -31,6 +36,7 @@ from app.instruments.providers.upstox_catalogue import (
     PROFILE_VERSION,
     PROVIDER,
     SOURCE_SCHEMA_VERSION,
+    UpstoxCataloguePlan,
     build_upstox_nifty_catalogue_plan,
 )
 from app.persistence.postgres.engine import (
@@ -70,6 +76,8 @@ class CatalogueIngestionResult:
     ingestion_run_id: str | None = None
     catalogue_record_id: str | None = None
     artifact_object_key: str | None = None
+    semantic_diff: CatalogueSemanticDiff | None = None
+    disappeared_provider_contract_keys: tuple[str, ...] = ()
 
     def as_json(self) -> dict[str, object]:
         return {
@@ -86,6 +94,9 @@ class CatalogueIngestionResult:
             "command_digest": self.command_digest,
             "ingestion_run_id": self.ingestion_run_id,
             "artifact_object_key": self.artifact_object_key,
+            "semantic_diff": self.semantic_diff.as_dict() if self.semantic_diff is not None else None,
+            "disappeared_provider_contract_keys": self.disappeared_provider_contract_keys,
+            "disappearance_is_informational": True,
         }
 
 
@@ -121,10 +132,19 @@ async def ingest_provider_catalogue(
             ingestion_run_id=_ingestion_run_id(command.idempotency_key, command_digest),
         )
         if command.mode == "validate-only":
-            return _result(command, source_artifact, plan, command_digest, None, None, None)
+            return _result(command, source_artifact, plan, command_digest, None, None, None, None)
         if command.mode == "dry-run":
-            await _dry_run(command, settings)
-            return _result(command, source_artifact, plan, command_digest, None, None, None)
+            transition = await _dry_run(command, settings, plan)
+            return _result(
+                command,
+                source_artifact,
+                plan,
+                command_digest,
+                None,
+                None,
+                None,
+                transition,
+            )
         if command.idempotency_key is None:
             raise CatalogueConflictError("commit mode requires an explicit idempotency key")
         artifact_root = Path(settings.require_catalogue_artifact_root())
@@ -140,19 +160,20 @@ async def ingest_provider_catalogue(
         )
 
 
-async def _dry_run(command: CatalogueIngestionCommand, settings: DatabaseSettings) -> None:
+async def _dry_run(
+    command: CatalogueIngestionCommand,
+    settings: DatabaseSettings,
+    plan: UpstoxCataloguePlan,
+) -> CatalogueTransitionPlan:
     engine = create_database_engine(settings)
     try:
         factory = create_session_factory(engine)
-        async with PostgresUnitOfWork(factory) as unit_of_work:
+        async with PostgresUnitOfWork(
+            factory,
+            read_only_repeatable_read=True,
+        ) as unit_of_work:
             await unit_of_work.catalogue_ingestions.lock_provider_profile(PROVIDER, PROFILE_VERSION)
-            predecessor = await unit_of_work.catalogues.resolve(
-                _catalogue_scope(),
-                command.effective_from,
-                None,
-            )
-            if predecessor is not None and command.supersedes_catalogue_record_id is None:
-                raise CatalogueConflictError("dry-run requires an explicit catalogue predecessor")
+            return await _build_transition_plan(unit_of_work, command, plan)
     finally:
         await dispose_database_engine(engine)
 
@@ -161,7 +182,7 @@ async def _commit(
     command: CatalogueIngestionCommand,
     settings: DatabaseSettings,
     source_artifact: CatalogueSourceArtifact,
-    plan,
+    plan: UpstoxCataloguePlan,
     command_digest: str,
     retained_key: str,
     started_at: datetime,
@@ -191,25 +212,29 @@ async def _commit(
                         existing_run.ingestion_run_id,
                         existing_run.catalogue_record_id,
                         retained_key,
+                        None,
                     )
-                existing = await unit_of_work.catalogues.resolve(
-                    _catalogue_scope(),
-                    command.effective_from,
-                    None,
-                )
-                if existing is not None and command.supersedes_catalogue_record_id is None:
-                    raise CatalogueConflictError("commit requires an explicit catalogue predecessor")
-                await _reject_provider_reassignment(unit_of_work, plan.items, command.effective_from)
+                transition = await _build_transition_plan(unit_of_work, command, plan)
                 await unit_of_work.catalogue_ingestions.add_source_artifact(source_artifact)
                 catalogue_record_id = await unit_of_work.catalogues.add(
                     plan.catalogue,
-                    command.supersedes_catalogue_record_id,
+                    transition.catalogue_predecessor_record_id,
                 )
                 await _add_instruments(unit_of_work, plan.items)
-                for item in plan.items:
-                    await unit_of_work.instruments.add_version(item.version)
-                for item in plan.items:
-                    await unit_of_work.instruments.add_provider_mapping(item.mapping)
+                seen_versions: set[str] = set()
+                for item_transition in transition.item_transitions:
+                    if item_transition.item.version_id in seen_versions:
+                        continue
+                    seen_versions.add(item_transition.item.version_id)
+                    await unit_of_work.instruments.add_version(
+                        item_transition.item.version,
+                        item_transition.prior_version_record_id,
+                    )
+                for item_transition in transition.item_transitions:
+                    await unit_of_work.instruments.add_provider_mapping(
+                        item_transition.item.mapping,
+                        item_transition.prior_mapping_record_id,
+                    )
                 run = _run(
                     command,
                     source_artifact,
@@ -223,15 +248,35 @@ async def _commit(
                 await unit_of_work.catalogue_ingestions.add_row_outcomes(plan.outcomes)
                 await unit_of_work.catalogue_ingestions.add_memberships(plan.memberships)
                 await unit_of_work.commit()
-                return _result(command, source_artifact, plan, command_digest, run.ingestion_run_id, catalogue_record_id, retained_key)
-        except (IntegrityError, PersistenceIntegrityError, SemanticCollisionError):
-            existing = await _load_idempotent(settings, command, command_digest)
-            return _result(command, source_artifact, plan, command_digest, existing.ingestion_run_id, existing.catalogue_record_id, retained_key)
+                return _result(
+                    command,
+                    source_artifact,
+                    plan,
+                    command_digest,
+                    run.ingestion_run_id,
+                    catalogue_record_id,
+                    retained_key,
+                    transition,
+                )
+        except (DBAPIError, IntegrityError, PersistenceIntegrityError, SemanticCollisionError):
+            existing = await _load_accepted_idempotent(settings, command, command_digest)
+            if existing is None:
+                raise
+            return _result(
+                command,
+                source_artifact,
+                plan,
+                command_digest,
+                existing.ingestion_run_id,
+                existing.catalogue_record_id,
+                retained_key,
+                None,
+            )
     finally:
         await dispose_database_engine(engine)
 
 
-async def _load_idempotent(
+async def _load_accepted_idempotent(
     settings: DatabaseSettings,
     command: CatalogueIngestionCommand,
     command_digest: str,
@@ -241,15 +286,139 @@ async def _load_idempotent(
         factory = create_session_factory(engine)
         async with PostgresUnitOfWork(factory) as unit_of_work:
             if command.idempotency_key is None:
-                raise CatalogueIdempotencyConflictError("missing idempotency key")
+                return None
             existing = await unit_of_work.catalogue_ingestions.get_ingestion_run_by_idempotency_key(
                 command.idempotency_key
             )
-            if existing is None or existing.command_digest != command_digest:
+            if existing is None:
+                return None
+            if existing.command_digest != command_digest:
                 raise CatalogueIdempotencyConflictError("idempotency key conflicts with another command")
             return existing
     finally:
         await dispose_database_engine(engine)
+
+
+async def _build_transition_plan(
+    unit_of_work,
+    command: CatalogueIngestionCommand,
+    plan: UpstoxCataloguePlan,
+) -> CatalogueTransitionPlan:
+    predecessor = await unit_of_work.catalogues.resolve_state(
+        _catalogue_scope(),
+        command.effective_from,
+        None,
+    )
+    supplied_predecessor = command.supersedes_catalogue_record_id
+    if predecessor is None and supplied_predecessor is not None:
+        raise CatalogueConflictError("catalogue predecessor is not the current eligible leaf")
+    if predecessor is not None and supplied_predecessor != predecessor.record_id:
+        if supplied_predecessor is None:
+            raise CatalogueConflictError("an explicit catalogue predecessor is required")
+        raise CatalogueConflictError("catalogue predecessor is not the current eligible leaf")
+
+    prior_memberships = (
+        await unit_of_work.catalogue_ingestions.list_memberships_for_catalogue(
+            predecessor.value.catalogue_version_id
+        )
+        if predecessor is not None
+        else ()
+    )
+    current_keys = {item.provider_contract_key for item in plan.items}
+    disappeared = tuple(
+        sorted(
+            membership.provider_contract_key
+            for membership in prior_memberships
+            if membership.provider_contract_key not in current_keys
+        )
+    )
+    transitions: list[CatalogueItemTransition] = []
+    category_counts = {category: 0 for category in CatalogueDiffCategory}
+    planned_versions: dict[str, str] = {}
+    for item in sorted(plan.items, key=lambda value: value.provider_contract_key):
+        planned_version_id = planned_versions.get(item.instrument_id)
+        if planned_version_id is not None and planned_version_id != item.version_id:
+            raise CatalogueConflictError(
+                "one economic instrument has conflicting version metadata in the catalogue"
+            )
+        planned_versions[item.instrument_id] = item.version_id
+        bound_instrument_id = await unit_of_work.instruments.resolve_provider_key_instrument_id(
+            PROVIDER,
+            item.provider_contract_key,
+        )
+        if bound_instrument_id is not None and bound_instrument_id != item.instrument_id:
+            raise CatalogueConflictError(
+                "provider key reassignment to another economic instrument is not allowed"
+            )
+        version_state = await unit_of_work.instruments.resolve_version_state(
+            item.instrument_id,
+            command.effective_from,
+            None,
+        )
+        mapping_state = await unit_of_work.instruments.resolve_provider_key_state(
+            PROVIDER,
+            item.provider_contract_key,
+            command.effective_from,
+            None,
+        )
+        if mapping_state is not None and mapping_state.instrument_id != item.instrument_id:
+            raise CatalogueConflictError(
+                "provider key reassignment to another economic instrument is not allowed"
+            )
+        category = _diff_category(version_state, mapping_state, item.version)
+        category_counts[category] += 1
+        transitions.append(
+            CatalogueItemTransition(
+                item=item,
+                economic_instrument_id=item.instrument_id,
+                prior_version_record_id=(
+                    version_state.record_id if version_state is not None else None
+                ),
+                prior_mapping_record_id=(
+                    mapping_state.record_id if mapping_state is not None else None
+                ),
+                diff_category=category,
+            )
+        )
+    semantic_diff = CatalogueSemanticDiff(
+        added=category_counts[CatalogueDiffCategory.ADDED],
+        unchanged=category_counts[CatalogueDiffCategory.UNCHANGED],
+        metadata_changed=category_counts[CatalogueDiffCategory.METADATA_CHANGED],
+        provider_mapping_changed=category_counts[CatalogueDiffCategory.PROVIDER_MAPPING_CHANGED],
+        disappeared=len(disappeared),
+        excluded=plan.excluded_count,
+        exact_duplicates=plan.exact_duplicate_count,
+    )
+    return CatalogueTransitionPlan(
+        catalogue_predecessor_record_id=(predecessor.record_id if predecessor is not None else None),
+        catalogue_predecessor_version_id=(
+            predecessor.value.catalogue_version_id if predecessor is not None else None
+        ),
+        item_transitions=tuple(transitions),
+        disappeared_provider_contract_keys=disappeared,
+        semantic_diff=semantic_diff,
+    )
+
+
+def _diff_category(version_state, mapping_state, version: ContractVersion) -> CatalogueDiffCategory:
+    if version_state is None:
+        return CatalogueDiffCategory.ADDED
+    if _version_metadata(version_state.value) != _version_metadata(version):
+        return CatalogueDiffCategory.METADATA_CHANGED
+    if mapping_state is None:
+        return CatalogueDiffCategory.PROVIDER_MAPPING_CHANGED
+    return CatalogueDiffCategory.UNCHANGED
+
+
+def _version_metadata(version: ContractVersion) -> tuple[object, ...]:
+    return (
+        type(version),
+        version.valid_until,
+        version.lot_size,
+        version.tick_size,
+        version.display_symbol,
+        version.trading_status,
+    )
 
 
 async def _add_instruments(unit_of_work, items) -> None:
@@ -265,19 +434,6 @@ async def _add_instruments(unit_of_work, items) -> None:
             await unit_of_work.instruments.add_future(item.instrument)
         elif isinstance(item.instrument, OptionContractIdentity):
             await unit_of_work.instruments.add_option(item.instrument)
-
-
-async def _reject_provider_reassignment(unit_of_work, items, effective_from: datetime) -> None:
-    for item in sorted(items, key=lambda value: value.provider_contract_key):
-        existing = await unit_of_work.instruments.resolve_provider_key(
-            PROVIDER,
-            item.provider_contract_key,
-            effective_from,
-            None,
-        )
-        if existing is not None and existing.contract_version_id != item.version_id:
-            raise CatalogueConflictError("provider key reassignment is not allowed for this profile")
-
 
 def _run(
     command: CatalogueIngestionCommand,
@@ -321,6 +477,7 @@ def _result(
     ingestion_run_id: str | None,
     catalogue_record_id: str | None,
     artifact_object_key: str | None,
+    transition: CatalogueTransitionPlan | None,
 ) -> CatalogueIngestionResult:
     return CatalogueIngestionResult(
         status="accepted",
@@ -336,6 +493,10 @@ def _result(
         ingestion_run_id=ingestion_run_id,
         catalogue_record_id=catalogue_record_id,
         artifact_object_key=artifact_object_key,
+        semantic_diff=transition.semantic_diff if transition is not None else None,
+        disappeared_provider_contract_keys=(
+            transition.disappeared_provider_contract_keys if transition is not None else ()
+        ),
     )
 
 
