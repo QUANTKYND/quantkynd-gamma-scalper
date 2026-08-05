@@ -35,7 +35,7 @@ class DurableResultIdentity:
             raise ValueError("unsupported normalizer implementation")
     @property
     def result_id(self) -> str:
-        return stable_hash({"entity":"market_normalization_result", "raw_event_id":self.raw_event_id, "schema":self.normalization_schema_version, "implementation":self.normalizer_implementation_version})
+        return stable_hash({"entity":"market_normalization_result", "raw_event_id":self.raw_event_id, "normalization_schema_version":self.normalization_schema_version})
 
 @dataclass(frozen=True)
 class FailureIdentity:
@@ -105,4 +105,3 @@ class PersistenceUnitOfWork(Protocol):
     async def __aexit__(self, exc_type, exc_value, traceback): ...
     async def commit(self) -> None: ...
     async def rollback(self) -> None: ...
-

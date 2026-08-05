@@ -26,6 +26,14 @@ def upgrade() -> None:
             columns += [sa.Column("raw_event_id", sa.String(ID), nullable=False, unique=True), sa.Column("frame_bytes", sa.LargeBinary, nullable=False), sa.Column("frame_content_hash", sa.String(128), nullable=False), sa.Column("source_order", sa.BigInteger, nullable=False)]
         elif name == "market_normalization_results":
             columns += [sa.Column("raw_event_id", sa.String(ID), nullable=False), sa.Column("full_result_hash", sa.String(128), nullable=False), sa.Column("adopted_semantics_hash", sa.String(128), nullable=False), sa.Column("normalization_schema_version", sa.Integer, nullable=False), sa.Column("normalizer_implementation_version", sa.String(128), nullable=False)]
+        elif name == "market_observations":
+            columns += [sa.Column("raw_event_id", sa.String(ID), nullable=False), sa.Column("event_type", sa.String(32), nullable=False), sa.Column("normalization_schema_version", sa.Integer, nullable=False), sa.Column("payload", sa.JSON, nullable=False)]
+        elif name == "market_normalization_result_events":
+            columns += [sa.Column("result_id", sa.String(ID), nullable=False), sa.Column("raw_event_id", sa.String(ID), nullable=False), sa.Column("event_id", sa.String(ID), nullable=False), sa.Column("event_ordinal", sa.Integer, nullable=False)]
+        elif name == "market_normalization_failures":
+            columns += [sa.Column("result_id", sa.String(ID), nullable=False), sa.Column("raw_event_id", sa.String(ID), nullable=False), sa.Column("failure_id", sa.String(ID), nullable=False), sa.Column("payload", sa.JSON, nullable=False)]
+        elif name == "market_normalization_result_failures":
+            columns += [sa.Column("result_id", sa.String(ID), nullable=False), sa.Column("raw_event_id", sa.String(ID), nullable=False), sa.Column("failure_id", sa.String(ID), nullable=False), sa.Column("failure_role", sa.String(16), nullable=False), sa.Column("failure_ordinal", sa.Integer, nullable=False)]
         elif name == "provider_lifecycle_observations":
             columns += [sa.Column("raw_event_id", sa.String(ID), nullable=False), sa.Column("lifecycle_kind", sa.String(32), nullable=False)]
         op.create_table(name, *columns)

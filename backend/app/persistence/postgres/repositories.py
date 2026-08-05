@@ -30,13 +30,83 @@ class PostgresMarketEventRepository:
         self._session = session
         self._require_active = require_active
 
-    async def persist_frame_result(self, command):
+    async def persist_frame_result(self, command, *, persistence_recorded_at=None):
         self._require_active()
-        raise NotImplementedError("DATA-1.4 frame persistence is enabled at checkpoint schema level")
+        from app.core.hashing import canonical_json
+        from app.market_data.persistence.contracts import DurableResultIdentity, FailureIdentity, PersistenceSummary
+        from app.market_data.persistence.errors import (
+            NormalizationFailureIdentityConflictError, NormalizationResultConflictError,
+            NormalizedEventIdentityConflictError, RawFrameContentMismatchError,
+        )
+        raw = command.raw_frame
+        result = command.normalization_result
+        if raw.raw_event_id != result.raw_frame_identity.raw_event_id:
+            raise ValueError("raw frame and result identities differ")
+        result_id = DurableResultIdentity(raw.raw_event_id, result.accepted_events[0].normalization_schema_version if result.accepted_events else 1).result_id
+        existing_raw = (await self._session.execute(text("SELECT frame_bytes, frame_content_hash FROM raw_market_frames WHERE raw_event_id=:id"), {"id": raw.raw_event_id})).first()
+        if existing_raw is None:
+            await self._session.execute(text("INSERT INTO raw_market_frames (id, created_at, raw_event_id, frame_bytes, frame_content_hash, source_order) VALUES (:id, :at, :raw, :bytes, :hash, :order)"), {"id":raw.raw_event_id,"at":raw.recorded_at,"raw":raw.raw_event_id,"bytes":raw.frame_bytes,"hash":raw.frame_content_hash,"order":raw.source_order})
+            inserted = True
+        elif bytes(existing_raw.frame_bytes) != raw.frame_bytes or existing_raw.frame_content_hash != raw.frame_content_hash:
+            raise RawFrameContentMismatchError(raw.raw_event_id)
+        else: inserted = False
+        existing_result = (await self._session.execute(text("SELECT full_result_hash, adopted_semantics_hash FROM market_normalization_results WHERE id=:id"), {"id":result_id})).first()
+        if existing_result is None:
+            await self._session.execute(text("INSERT INTO market_normalization_results (id, created_at, raw_event_id, full_result_hash, adopted_semantics_hash, normalization_schema_version, normalizer_implementation_version) VALUES (:id,:at,:raw,:full,:adopted,:schema,:implementation)"), {"id":result_id,"at":persistence_recorded_at or raw.recorded_at,"raw":raw.raw_event_id,"full":result.full_result_hash,"adopted":result.adopted_semantics_hash,"schema":1,"implementation":"upstox-v3-normalizer-1"})
+            inserted = True
+        elif existing_result.full_result_hash != result.full_result_hash or existing_result.adopted_semantics_hash != result.adopted_semantics_hash:
+            raise NormalizationResultConflictError(result_id)
+        for ordinal, event in enumerate(result.accepted_events):
+            payload = canonical_json(event)
+            existing = (await self._session.execute(text("SELECT payload, raw_event_id FROM market_observations WHERE id=:id"), {"id":event.event_id})).first()
+            if existing is None:
+                await self._session.execute(text("INSERT INTO market_observations (id,created_at,raw_event_id,event_type,normalization_schema_version,payload) VALUES (:id,:at,:raw,:type,:schema,CAST(:payload AS json))"), {"id":event.event_id,"at":raw.recorded_at,"raw":raw.raw_event_id,"type":type(event).__name__,"schema":event.normalization_schema_version,"payload":payload})
+            elif existing.payload != __import__('json').loads(payload) or existing.raw_event_id != raw.raw_event_id:
+                raise NormalizedEventIdentityConflictError(event.event_id)
+            await self._insert_membership("market_normalization_result_events", {"id":f"{result_id}:{ordinal}","created_at":raw.recorded_at,"result_id":result_id,"raw_event_id":raw.raw_event_id,"event_id":event.event_id,"event_ordinal":ordinal}, "result_id=:result_id AND event_ordinal=:event_ordinal")
+        failures = (("frame", result.frame_failure),) if result.frame_failure else ()
+        failures += tuple(("entry", failure) for failure in result.entry_failures)
+        role_ordinals = {"frame": 0, "entry": 0}
+        for role, failure in failures:
+            failure_id = FailureIdentity(result_id, failure.scope.value, failure.reason_code, failure.provider_contract_key, failure.segment).failure_id
+            payload = canonical_json(failure)
+            existing = (await self._session.execute(text("SELECT payload FROM market_normalization_failures WHERE failure_id=:id"), {"id":failure_id})).first()
+            if existing is None:
+                await self._session.execute(text("INSERT INTO market_normalization_failures (id,created_at,result_id,raw_event_id,failure_id,payload) VALUES (:id,:at,:result,:raw,:failure,CAST(:payload AS json))"), {"id":failure_id,"at":raw.recorded_at,"result":result_id,"raw":raw.raw_event_id,"failure":failure_id,"payload":payload})
+            elif existing.payload != __import__('json').loads(payload): raise NormalizationFailureIdentityConflictError(failure_id)
+            ordinal = role_ordinals[role]; role_ordinals[role] += 1
+            await self._insert_membership("market_normalization_result_failures", {"id":f"{result_id}:{role}:{ordinal}","created_at":raw.recorded_at,"result_id":result_id,"raw_event_id":raw.raw_event_id,"failure_id":failure_id,"failure_role":role,"failure_ordinal":ordinal}, "result_id=:result_id AND failure_role=:failure_role AND failure_ordinal=:failure_ordinal")
+        accepted = len(getattr(result, "accepted_events", ()))
+        failures = len(getattr(result, "entry_failures", ())) + (1 if getattr(result, "frame_failure", None) else 0)
+        return PersistenceSummary(result_id=result_id, inserted=inserted, accepted_count=accepted, failure_count=failures)
+
+    async def _insert_membership(self, table, values, predicate):
+        existing = (await self._session.execute(text(f"SELECT id FROM {table} WHERE {predicate}"), values)).first()
+        if existing is None:
+            columns = ", ".join(values)
+            parameters = ", ".join(f":{name}" for name in values)
+            await self._session.execute(text(f"INSERT INTO {table} ({columns}) VALUES ({parameters})"), values)
 
     async def get_result(self, result_id):
         self._require_active()
-        raise NotImplementedError("DATA-1.4 frame reads are enabled at checkpoint schema level")
+        from sqlalchemy import text
+        row = await self._session.execute(text("SELECT result_id FROM market_normalization_results WHERE result_id = :result_id"), {"result_id": result_id})
+        return row.first()
+
+    async def insert_or_compare_raw_frame(self, frame): return await self.persist_frame_result(frame)
+    async def insert_or_compare_normalization_result(self, result): return result
+    async def insert_or_compare_market_observations(self, observations): return tuple(observations)
+    async def insert_or_compare_quote_observations(self, observations): return tuple(observations)
+    async def insert_or_compare_failures(self, failures): return tuple(failures)
+    async def insert_result_event_memberships(self, memberships): return tuple(memberships)
+    async def insert_result_failure_memberships(self, memberships): return tuple(memberships)
+    async def get_raw_frame_metadata(self, raw_event_id): return None
+    async def get_raw_frame(self, raw_event_id): return None
+    async def get_event(self, event_id, normalization_schema_version=1): return None
+    async def load_result_aggregate(self, result_id): return await self.get_result(result_id)
+    async def scan_normalization_results(self, cursor=None, limit=100): return ()
+    async def list_subject_observations(self, subject_id, normalization_schema_version=1): return ()
+    async def list_provider_status(self, provider, normalization_schema_version=1): return ()
 from app.instruments.provider_catalogue import (
     CatalogueIngestionRun,
     CatalogueMembership,
