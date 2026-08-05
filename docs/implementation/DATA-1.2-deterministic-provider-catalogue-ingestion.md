@@ -1,6 +1,10 @@
 # DATA-1.2 Deterministic Provider Catalogue Ingestion Evidence
 
-Status: implementation complete; acceptance evidence recorded; independent review pending. DATA-1.2 is not marked accepted.
+DATA-1.2 status: ACCEPTED
+
+## Independent Acceptance — 2026-08-05
+
+Independent review accepted corrected implementation SHA `0f6543e65b359eda731ca8a49aea95691a40e975` and reviewed evidence SHA `1f3e94bf55d2aa4b1e098e1228d6ff5cc14d6efc`. The review inspected the published commits, commit-specific source, temporal resolver, PostgreSQL lifecycle tests, restore verifier, documentation, and acceptance evidence. It found no remaining correctness, architecture, research-validity, security, or operational blocker within DATA-1.2's approved scope. The reviewer did not independently execute the test suite; acceptance relies on the committed PostgreSQL 17.10 evidence reporting `443 passed`, zero skips, migration head `20260804_03`, and restore digest `sha256:941b2c94406bd8b0d3555d8fd1090a2c73a6622ce0656d3ff200a1b7a48af6e6`.
 
 ## Transitive Market-Time Supersession Correction — 2026-08-05
 
@@ -145,7 +149,7 @@ target_safety_rechecked=true
 
 Before H was known, the overlapping historical catalogue, instrument-version, and mapping queries returned A. After H was known, the same queries returned H through ineligible intermediate B. At B's market start, the three queries returned B. Source and restored results were identical; exact semantic IDs are recorded in the transitive-correction evidence above.
 
-Frontend `pnpm lint` passed. `pnpm build` passed under Vite `8.2.0`; the existing warning for a minified chunk larger than 500 kB remained. `git diff --check` passed. The evidence commit, final pushed branch SHA, and clean post-push worktree are reported in the handoff because a commit cannot contain its own SHA. PostgreSQL 18.4 results below remain supplementary and do not replace this PostgreSQL 17 acceptance run. Status remains: implementation complete; acceptance evidence recorded; independent review pending.
+Frontend `pnpm lint` passed. `pnpm build` passed under Vite `8.2.0`; the existing warning for a minified chunk larger than 500 kB remained. `git diff --check` passed. The evidence commit, final pushed branch SHA, and clean post-push worktree are reported in the implementation handoff because a commit cannot contain its own SHA. PostgreSQL 18.4 results below remain supplementary and do not replace this PostgreSQL 17 acceptance run. DATA-1.2 status: ACCEPTED.
 
 ## Review Correction Evidence — 2026-08-05
 
@@ -259,7 +263,7 @@ Validate-only ran from `/tmp` with `DATABASE_URL`, `DATABASE_RESTORE_TEST_URL`, 
 
 Earlier supplementary evidence used PostgreSQL `18.4` server with host `/usr/bin` `psql`, `pg_dump`, and `pg_restore` version `18.4`. The final acceptance evidence above supersedes it with the declared PostgreSQL 17 service and PostgreSQL 17.10 client tools.
 
-The final evidence commit, pushed branch SHA, and clean worktree are reported in the implementation handoff because a Git commit cannot contain its own SHA. The status remains implementation complete; acceptance evidence recorded; independent review pending.
+The final evidence commit, pushed branch SHA, and clean worktree are reported in the implementation handoff because a Git commit cannot contain its own SHA. DATA-1.2 status: ACCEPTED.
 
 ## Provenance
 
@@ -529,4 +533,4 @@ Reasonable pattern scan was run with `rg` across tracked files. It is not a full
 
 - Real Upstox BOD files are not committed. Repository acceptance uses the schema-faithful sanitized fixture, and local acceptance may use a user-supplied official `NSE.json.gz`.
 - DATA-1.2 does not download provider catalogues, ingest other formats, or introduce live-capital paths.
-- DATA-1.2 remains independent review pending and must not be marked accepted until independent review is complete.
+- DATA-1.2 status: ACCEPTED.
