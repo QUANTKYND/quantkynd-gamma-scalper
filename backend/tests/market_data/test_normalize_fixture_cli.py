@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from pathlib import Path
 
 import pytest
 
@@ -140,3 +141,75 @@ def test_fixture_cli_rejects_boolean_subject_lot_size(tmp_path) -> None:
     args = _arguments("nifty-index-direct-ltpc")
     args[5] = str(path)
     assert run(args)[0] == 2
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda payload: payload.pop("available_at"),
+        lambda payload: payload.__setitem__("available_at", 1),
+        lambda payload: payload.pop("capture_basis"),
+        lambda payload: payload.__setitem__("capture_basis", {}),
+    ],
+)
+def test_fixture_cli_rejects_malformed_capture_configuration_canonically(tmp_path, mutation) -> None:
+    capture = json.loads((FIXTURE_DIR / "nifty-index-direct-ltpc.capture.json").read_text(encoding="utf-8"))
+    mutation(capture)
+    path = tmp_path / "capture.json"
+    path.write_text(json.dumps(capture), encoding="utf-8")
+    args = _arguments("nifty-index-direct-ltpc")
+    args[3] = str(path)
+    code, output = run(args)
+    assert code == 2
+    assert json.loads(output) == {"error": "manifest_configuration_error"}
+    assert "traceback" not in output.lower()
+    assert "frame_bytes" not in output
+
+
+def _option_subject(payload):
+    return next(item for item in payload["subjects"] if item["instrument_kind"] == "option")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda payload: payload.pop("subjects"),
+        lambda payload: payload.__setitem__("subjects", {}),
+        lambda payload: payload["subjects"][0].pop("economic_identity"),
+        lambda payload: _option_subject(payload)["economic_identity"].pop("expiry"),
+        lambda payload: _option_subject(payload)["economic_identity"].__setitem__("strike", 1),
+        lambda payload: _option_subject(payload)["economic_identity"].__setitem__("strike", 0.05),
+        lambda payload: _option_subject(payload)["economic_identity"].__setitem__("multiplier", True),
+        lambda payload: payload["subjects"][0]["contract_version"].__setitem__("tick_size", 0.05),
+        lambda payload: payload["subjects"][0]["provider_mapping"].pop("recorded_at"),
+        lambda payload: payload["subjects"][0]["provider_mapping"].__setitem__("effective_from", 1),
+    ],
+)
+def test_fixture_cli_rejects_hostile_subject_manifest_canonically(tmp_path, mutation) -> None:
+    subjects = json.loads((FIXTURE_DIR / "subjects.json").read_text(encoding="utf-8"))
+    mutation(subjects)
+    path = tmp_path / "subjects.json"
+    path.write_text(json.dumps(subjects), encoding="utf-8")
+    args = _arguments("nifty-index-direct-ltpc")
+    args[5] = str(path)
+    code, output = run(args)
+    assert code == 2
+    assert json.loads(output) == {"error": "manifest_configuration_error"}
+    assert "traceback" not in output.lower()
+    assert "frame_bytes" not in output
+
+
+def test_expected_hashes_cannot_approve_structural_frame_failure(tmp_path) -> None:
+    args = _structural_failure_args(tmp_path, b"\x80")
+    code, output = run(args)
+    assert code == 1
+    result = json.loads(output)["result"]
+    capture_path = Path(args[3])
+    capture = json.loads(capture_path.read_text(encoding="utf-8"))
+    capture["expected_event_ids"] = []
+    capture["expected_full_result_sha256"] = result["full_result_hash"]
+    capture["expected_adopted_semantics_sha256"] = result["adopted_semantics_hash"]
+    capture_path.write_text(json.dumps(capture), encoding="utf-8")
+    code, output = run(args + ["--verify-expected-hash"])
+    assert code == 1
+    assert json.loads(output)["result"]["frame_failure"] is not None

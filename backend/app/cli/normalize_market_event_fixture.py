@@ -9,7 +9,7 @@ from pathlib import Path
 from app.core.hashing import canonical_json
 from app.market_data.normalization.errors import ConflictingRawIdentityError
 from app.market_data.normalization.identities import validate_raw_frame_identity_batch
-from app.market_data.normalization.manifests import load_capture_manifest, load_subject_manifest
+from app.market_data.normalization.manifests import ManifestOwnershipError, load_capture_manifest, load_subject_manifest
 from app.market_data.normalization.serialization import canonical_normalization_json
 from app.market_data.upstox.schema_verification import verify_upstox_v3_schema
 from app.services.market_frame_normalization_service import MarketFrameNormalizationService
@@ -51,12 +51,10 @@ def run(argv: list[str] | None = None) -> tuple[int, str]:
             validate_raw_frame_identity_batch((baseline, frame))
     except ConflictingRawIdentityError:
         return 4, canonical_json({"error": "raw_identity_conflict"})
-    except FileNotFoundError:
+    except ManifestOwnershipError:
+        return 3, canonical_json({"error": "schema_hash_verification_error"})
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, AttributeError, ValueError):
         return 2, canonical_json({"error": "manifest_configuration_error"})
-    except ValueError as error:
-        code = 3 if any(term in str(error) for term in ("frame hash", "schema", "provider mismatch")) else 2
-        reason = "schema_hash_verification_error" if code == 3 else "manifest_configuration_error"
-        return code, canonical_json({"error": reason})
     result = asyncio.run(
         MarketFrameNormalizationService(resolver).normalize(
             frame,
@@ -70,6 +68,8 @@ def run(argv: list[str] | None = None) -> tuple[int, str]:
         "response_type": result.response_type.value if result.response_type is not None else None,
         "result": result_payload,
     }
+    if result.frame_failure is not None:
+        return 1, canonical_json({"error": "normalization_result_mismatch", "result": result_payload})
     if args.verify_expected_hash:
         expected = (
             tuple(capture.get("expected_event_ids", ())),
@@ -83,8 +83,6 @@ def run(argv: list[str] | None = None) -> tuple[int, str]:
         )
         if actual != expected:
             return 1, canonical_json({"error": "normalization_result_mismatch"})
-    elif result.frame_failure is not None:
-        return 1, canonical_json({"error": "normalization_result_mismatch", "result": result_payload})
     return 0, canonical_json(payload)
 
 

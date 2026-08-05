@@ -8,6 +8,7 @@ from app.market_data.normalization.identities import RawMarketFrameV1
 from app.market_data.normalization.ports import MarketSubjectResolver
 from app.market_data.normalization.results import (
     FrameNormalizationResultV1,
+    FrameCaptureProvenanceV1,
     NormalizationFailureV1,
     failed_entry_scope_count,
 )
@@ -118,20 +119,20 @@ def _result(frame, response_type, events, frame_failure, entry_failures, unadopt
         else FrameNormalizationStatus.FAILED
     )
     adopted_hash = adopted_semantics_hash(events, frame_failure, entry_failures)
-    full_hash = full_result_hash(
-        {
+    capture_provenance = FrameCaptureProvenanceV1(
+        provider_schema_sha256=frame.provider_schema_sha256,
+        received_at=frame.received_at,
+        available_at=frame.available_at,
+        recorded_at=frame.recorded_at,
+        capture_basis=frame.capture_basis,
+        source_file_id=frame.source_file_id,
+        source_record_id=frame.source_record_id,
+    )
+    full_projection = {
             "schema": "data-1.3-full-result-v1",
             "raw_frame_identity": frame.identity,
             "frame_content_hash": frame.frame_content_hash,
-            "capture_provenance": {
-                "provider_schema_sha256": frame.provider_schema_sha256,
-                "received_at": frame.received_at,
-                "available_at": frame.available_at,
-                "recorded_at": frame.recorded_at,
-                "capture_basis": frame.capture_basis,
-                "source_file_id": frame.source_file_id,
-                "source_record_id": frame.source_record_id,
-            },
+            "capture_provenance": capture_provenance,
             "accepted_events": events,
             "frame_failure": frame_failure,
             "entry_failures": entry_failures,
@@ -144,10 +145,11 @@ def _result(frame, response_type, events, frame_failure, entry_failures, unadopt
             "present_unadopted_message_paths": present,
             "secondary_payload_paths_present": secondary,
         }
-    )
+    full_hash = full_result_hash(full_projection)
     return FrameNormalizationResultV1(
         raw_frame_identity=frame.identity,
         frame_content_hash=frame.frame_content_hash,
+        capture_provenance=capture_provenance,
         status=status,
         response_type=response_type,
         accepted_events=events,

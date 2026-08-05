@@ -47,6 +47,8 @@ class SubscriptionInstrumentSetV1:
 
     def __post_init__(self) -> None:
         keys = self.provider_contract_keys
+        if not keys:
+            raise ValueError("subscription instrument set must not be empty")
         if any(not isinstance(key, str) or not key.strip() for key in keys):
             raise ValueError("instrument keys must be non-empty text")
         if len(set(keys)) != len(keys):
@@ -377,50 +379,68 @@ def instrument_keys_digest(provider_contract_keys: tuple[str, ...]) -> str:
 def validate_connection_lifecycle_sequence(
     events: tuple[RawProviderConnectionLifecycleEventV1 | ProviderConnectionLifecycleObservationV1, ...],
 ) -> None:
-    for previous, current in zip(events, events[1:], strict=False):
-        if current.provider != previous.provider:
-            raise ValueError("invalid_connection_lifecycle_sequence")
-        if current.connection_session_id == previous.connection_session_id:
-            if (
-                current.source_order_scope_id != previous.source_order_scope_id
-                or current.source_order <= previous.source_order
-                or current.previous_state is not previous.state
-            ):
-                raise ValueError("invalid_connection_lifecycle_sequence")
-        elif (
+    session_scopes: dict[str, str] = {}
+    scope_sessions: dict[str, str] = {}
+    scope_orders: dict[str, int] = {}
+    previous = None
+    for current in events:
+        bound_scope = session_scopes.get(current.connection_session_id)
+        bound_session = scope_sessions.get(current.source_order_scope_id)
+        if previous is not None and current.connection_session_id != previous.connection_session_id and (
             previous.state is not ConnectionLifecycleState.RECONNECTING
             or current.previous_state is not None
             or current.state is not ConnectionLifecycleState.CONNECTING
-            or current.source_order_scope_id == previous.source_order_scope_id
+            or bound_scope is not None
+            or bound_session is not None
         ):
             raise ValueError("invalid_connection_reconnect_sequence")
+        if bound_scope is not None and bound_scope != current.source_order_scope_id:
+            raise ValueError("invalid_connection_lifecycle_sequence")
+        if bound_session is not None and bound_session != current.connection_session_id:
+            raise ValueError("invalid_connection_lifecycle_sequence")
+        prior_order = scope_orders.get(current.source_order_scope_id)
+        if prior_order is not None and current.source_order <= prior_order:
+            raise ValueError("invalid_connection_lifecycle_sequence")
+        if previous is not None and current.connection_session_id == previous.connection_session_id:
+            if current.previous_state is not previous.state:
+                raise ValueError("invalid_connection_lifecycle_sequence")
+        if previous is not None and current.provider != previous.provider:
+            raise ValueError("invalid_connection_lifecycle_sequence")
+        session_scopes[current.connection_session_id] = current.source_order_scope_id
+        scope_sessions[current.source_order_scope_id] = current.connection_session_id
+        scope_orders[current.source_order_scope_id] = current.source_order
+        previous = current
 
 
 def validate_subscription_lifecycle_sequence(
     events: tuple[RawProviderSubscriptionLifecycleEventV1 | ProviderSubscriptionLifecycleObservationV1, ...],
 ) -> None:
-    for previous, current in zip(events, events[1:], strict=False):
-        if current.subscription_scope_id != previous.subscription_scope_id:
-            if (
-                current.provider == previous.provider
-                and current.connection_session_id == previous.connection_session_id
-                and current.source_order_scope_id == previous.source_order_scope_id
-                and current.source_order > previous.source_order
-                and current.previous_state is None
-                and current.state is SubscriptionLifecycleState.SUBSCRIBE_REQUESTED
-            ):
-                continue
+    scope_events = {}
+    source_scope_bindings: dict[str, tuple[str, str]] = {}
+    source_scope_orders: dict[str, int] = {}
+    for current in events:
+        source_binding = (current.provider, current.connection_session_id)
+        if source_scope_bindings.get(current.source_order_scope_id, source_binding) != source_binding:
             raise ValueError("invalid_subscription_lifecycle_sequence")
-        if (
+        prior_order = source_scope_orders.get(current.source_order_scope_id)
+        if prior_order is not None and current.source_order <= prior_order:
+            raise ValueError("invalid_subscription_lifecycle_sequence")
+        previous = scope_events.get(current.subscription_scope_id)
+        if previous is None:
+            if current.previous_state is not None or current.state is not SubscriptionLifecycleState.SUBSCRIBE_REQUESTED:
+                raise ValueError("invalid_subscription_lifecycle_sequence")
+        elif (
             current.provider != previous.provider
             or current.connection_session_id != previous.connection_session_id
             or current.source_order_scope_id != previous.source_order_scope_id
-            or current.source_order <= previous.source_order
             or current.previous_state is not previous.state
             or current.instrument_set != previous.instrument_set
             or not _subscription_modes_agree(previous, current)
         ):
             raise ValueError("invalid_subscription_lifecycle_sequence")
+        source_scope_bindings[current.source_order_scope_id] = source_binding
+        source_scope_orders[current.source_order_scope_id] = current.source_order
+        scope_events[current.subscription_scope_id] = current
 
 
 @dataclass(frozen=True)
@@ -441,7 +461,7 @@ def validate_raw_lifecycle_identity_batch(events):
         else:
             by_id[event.raw_event_id] = event
     return RawLifecycleIdentityBatchValidationV1(
-        tuple(sorted(by_id.values(), key=lambda event: event.raw_event_id)),
+        tuple(by_id.values()),
         tuple(sorted(duplicates)),
     )
 

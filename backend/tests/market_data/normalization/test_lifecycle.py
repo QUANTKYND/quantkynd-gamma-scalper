@@ -36,14 +36,25 @@ def connection(previous, state, order, *, session="session-1", scope="scope-1", 
     )
 
 
-def subscription(previous, state, order, *, reason=None, mode="full_d5", keys=("NSE_FO|future", "NSE_FO|option"), subscription_scope="subscription-1"):
+def subscription(
+    previous,
+    state,
+    order,
+    *,
+    reason=None,
+    mode="full_d5",
+    keys=("NSE_FO|future", "NSE_FO|option"),
+    subscription_scope="subscription-1",
+    session="session-1",
+    source_scope="scope-1",
+):
     return RawProviderSubscriptionLifecycleEventV1(
         provider="upstox",
-        connection_session_id="session-1",
+        connection_session_id=session,
         subscription_scope_id=subscription_scope,
         previous_state=previous,
         state=state,
-        source_order_scope_id="scope-1",
+        source_order_scope_id=source_scope,
         source_order=order,
         occurred_at=AT + timedelta(seconds=order),
         available_at=AT + timedelta(seconds=order),
@@ -111,6 +122,9 @@ def test_subscription_sequence_digest_and_normalized_identity() -> None:
 
 
 def test_subscription_digest_is_sorted_and_rejects_duplicates() -> None:
+    with pytest.raises(ValueError, match="must not be empty"):
+        SubscriptionInstrumentSetV1(())
+    assert SubscriptionInstrumentSetV1(("a",)).instrument_key_count == 1
     assert instrument_keys_digest(("b", "a")) == instrument_keys_digest(("a", "b"))
     with pytest.raises(ValueError, match="duplicate_instrument_key"):
         instrument_keys_digest(("a", "a"))
@@ -119,6 +133,55 @@ def test_subscription_digest_is_sorted_and_rejects_duplicates() -> None:
     assert SubscriptionInstrumentSetV1(("b", "a")).provider_contract_keys == ("a", "b")
     with pytest.raises(TypeError):
         SubscriptionInstrumentSetV1(("a",), instrument_keys_digest="forged")
+
+
+def test_interleaved_subscription_scopes_validate_independently() -> None:
+    events = (
+        subscription(None, SubscriptionLifecycleState.SUBSCRIBE_REQUESTED, 0, subscription_scope="A"),
+        subscription(None, SubscriptionLifecycleState.SUBSCRIBE_REQUESTED, 1, subscription_scope="B"),
+        subscription(SubscriptionLifecycleState.SUBSCRIBE_REQUESTED, SubscriptionLifecycleState.SUBSCRIBED, 2, subscription_scope="A"),
+        subscription(SubscriptionLifecycleState.SUBSCRIBE_REQUESTED, SubscriptionLifecycleState.SUBSCRIBED, 3, subscription_scope="B"),
+    )
+    validate_subscription_lifecycle_sequence(events)
+
+
+def test_interleaved_mode_change_and_subscription_scope_bindings() -> None:
+    events = (
+        subscription(None, SubscriptionLifecycleState.SUBSCRIBE_REQUESTED, 0, subscription_scope="A"),
+        subscription(None, SubscriptionLifecycleState.SUBSCRIBE_REQUESTED, 1, subscription_scope="B"),
+        subscription(SubscriptionLifecycleState.SUBSCRIBE_REQUESTED, SubscriptionLifecycleState.SUBSCRIBED, 2, subscription_scope="A"),
+        subscription(SubscriptionLifecycleState.SUBSCRIBED, SubscriptionLifecycleState.MODE_CHANGE_REQUESTED, 3, subscription_scope="A", mode="ltpc"),
+        subscription(SubscriptionLifecycleState.SUBSCRIBE_REQUESTED, SubscriptionLifecycleState.SUBSCRIBED, 4, subscription_scope="B"),
+        subscription(SubscriptionLifecycleState.MODE_CHANGE_REQUESTED, SubscriptionLifecycleState.MODE_CHANGED, 5, subscription_scope="A", mode="ltpc"),
+    )
+    validate_subscription_lifecycle_sequence(events)
+    with pytest.raises(ValueError):
+        validate_subscription_lifecycle_sequence(events + (replace(events[-1], source_order=4),))
+    with pytest.raises(ValueError):
+        validate_subscription_lifecycle_sequence((events[0], replace(events[2], connection_session_id="session-2")))
+    with pytest.raises(ValueError):
+        validate_subscription_lifecycle_sequence((events[0], replace(events[2], source_order_scope_id="scope-2")))
+    with pytest.raises(ValueError):
+        validate_subscription_lifecycle_sequence((events[0], replace(events[2], instrument_set=SubscriptionInstrumentSetV1(("other",)))))
+
+
+def test_completed_subscription_scope_cannot_restart_or_be_reintroduced() -> None:
+    completed = (
+        subscription(None, SubscriptionLifecycleState.SUBSCRIBE_REQUESTED, 0, subscription_scope="A"),
+        subscription(SubscriptionLifecycleState.SUBSCRIBE_REQUESTED, SubscriptionLifecycleState.SUBSCRIBED, 1, subscription_scope="A"),
+        subscription(SubscriptionLifecycleState.SUBSCRIBED, SubscriptionLifecycleState.UNSUBSCRIBE_REQUESTED, 2, subscription_scope="A"),
+        subscription(SubscriptionLifecycleState.UNSUBSCRIBE_REQUESTED, SubscriptionLifecycleState.UNSUBSCRIBED, 3, subscription_scope="A"),
+    )
+    with pytest.raises(ValueError):
+        validate_subscription_lifecycle_sequence(completed + (subscription(None, SubscriptionLifecycleState.SUBSCRIBE_REQUESTED, 4, subscription_scope="A"),))
+    failed = (
+        subscription(None, SubscriptionLifecycleState.SUBSCRIBE_REQUESTED, 0, subscription_scope="A"),
+        subscription(SubscriptionLifecycleState.SUBSCRIBE_REQUESTED, SubscriptionLifecycleState.SUBSCRIPTION_FAILED, 1, subscription_scope="A", reason="provider_rejected"),
+        subscription(None, SubscriptionLifecycleState.SUBSCRIBE_REQUESTED, 2, subscription_scope="B"),
+        subscription(None, SubscriptionLifecycleState.SUBSCRIBE_REQUESTED, 3, subscription_scope="A"),
+    )
+    with pytest.raises(ValueError):
+        validate_subscription_lifecycle_sequence(failed)
 
 
 def test_invalid_subscription_transition_and_sequence_are_rejected() -> None:
@@ -193,3 +256,22 @@ def test_raw_lifecycle_identity_collisions_fail_closed() -> None:
         validate_raw_lifecycle_identity_batch((event, replace(event, occurred_at=AT - timedelta(seconds=1))))
     independent = replace(event, source_order=1)
     assert len(validate_raw_lifecycle_identity_batch((event, independent)).unique_events) == 2
+
+
+def test_three_session_reconnect_chain_rejects_non_adjacent_reuse() -> None:
+    chain = (
+        connection(None, ConnectionLifecycleState.CONNECTING, 0),
+        connection(ConnectionLifecycleState.CONNECTING, ConnectionLifecycleState.CONNECTED, 1),
+        connection(ConnectionLifecycleState.CONNECTED, ConnectionLifecycleState.AUTHORIZED, 2),
+        connection(ConnectionLifecycleState.AUTHORIZED, ConnectionLifecycleState.RECONNECTING, 3),
+        connection(None, ConnectionLifecycleState.CONNECTING, 0, session="session-2", scope="scope-2"),
+        connection(ConnectionLifecycleState.CONNECTING, ConnectionLifecycleState.CONNECTED, 1, session="session-2", scope="scope-2"),
+        connection(ConnectionLifecycleState.CONNECTED, ConnectionLifecycleState.AUTHORIZED, 2, session="session-2", scope="scope-2"),
+        connection(ConnectionLifecycleState.AUTHORIZED, ConnectionLifecycleState.RECONNECTING, 3, session="session-2", scope="scope-2"),
+        connection(None, ConnectionLifecycleState.CONNECTING, 0, session="session-3", scope="scope-3"),
+    )
+    validate_connection_lifecycle_sequence(chain)
+    with pytest.raises(ValueError, match="reconnect"):
+        validate_connection_lifecycle_sequence(chain[:-1] + (replace(chain[-1], source_order_scope_id="scope-1"),))
+    with pytest.raises(ValueError, match="reconnect"):
+        validate_connection_lifecycle_sequence(chain[:-1] + (replace(chain[-1], connection_session_id="session-1"),))

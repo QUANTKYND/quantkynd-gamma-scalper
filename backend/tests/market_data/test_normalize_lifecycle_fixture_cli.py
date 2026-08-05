@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from app.cli.normalize_market_lifecycle_fixture import run
 from tools.generate_market_event_fixtures import FIXTURE_DIR
 
@@ -50,4 +52,48 @@ def test_lifecycle_cli_rejects_boolean_source_order(tmp_path) -> None:
     payload["events"][0]["source_order"] = True
     path = tmp_path / "boolean-order.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
-    assert run(["--fixture", str(path), "--output", "json"])[0] == 1
+    assert run(["--fixture", str(path), "--output", "json"])[0] == 2
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda payload: payload.pop("fixture_schema_version"),
+        lambda payload: payload.__setitem__("fixture_schema_version", "wrong"),
+        lambda payload: payload["events"][0].__setitem__("occurred_at", 1),
+        lambda payload: payload["events"][0].__setitem__("occurred_at", {}),
+        lambda payload: payload.pop("events"),
+        lambda payload: payload.__setitem__("events", {}),
+    ],
+)
+def test_lifecycle_cli_hostile_configuration_is_canonical(tmp_path, mutation) -> None:
+    payload = json.loads((FIXTURE_DIR / "connection-lifecycle.json").read_text(encoding="utf-8"))
+    mutation(payload)
+    path = tmp_path / "hostile.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    code, output = run(["--fixture", str(path), "--output", "json"])
+    assert code == 2
+    assert json.loads(output) == {"error": "lifecycle_fixture_configuration_error"}
+    assert "traceback" not in output.lower()
+
+
+@pytest.mark.parametrize("value", [{}, "not-an-array", [True]])
+def test_lifecycle_cli_rejects_hostile_provider_keys(tmp_path, value) -> None:
+    payload = json.loads((FIXTURE_DIR / "subscription-lifecycle.json").read_text(encoding="utf-8"))
+    payload["events"][0]["provider_contract_keys"] = value
+    path = tmp_path / "hostile-subscription.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert run(["--fixture", str(path), "--output", "json"])[0] == 2
+
+
+@pytest.mark.parametrize("fixture", ["connection-lifecycle.json", "subscription-lifecycle.json"])
+def test_lifecycle_cli_deduplicates_exact_raw_identity_in_capture_order(tmp_path, fixture) -> None:
+    payload = json.loads((FIXTURE_DIR / fixture).read_text(encoding="utf-8"))
+    payload["events"].insert(1, dict(payload["events"][0]))
+    path = tmp_path / fixture
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    code, output = run(["--fixture", str(path), "--output", "json"])
+    assert code == 0
+    result = json.loads(output)
+    assert len(result["events"]) == len(payload["events"]) - 1
+    assert len(result["exact_duplicate_raw_event_ids"]) == 1

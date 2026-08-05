@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from app.market_data.normalization.enums import (
     FrameNormalizationStatus,
     FeedResponseType,
     NormalizationFailureScope,
     ProviderFeedUnion,
+    RawCaptureBasis,
 )
 from app.market_data.normalization.identities import RawMarketFrameIdentityV1
 from app.market_data.normalization.models import MarketObservationV1
+from app.market_data.normalization.result_hashing import adopted_semantics_hash, full_result_hash
 
 
 @dataclass(frozen=True)
@@ -73,9 +76,39 @@ class NormalizationFailureV1:
 
 
 @dataclass(frozen=True)
+class FrameCaptureProvenanceV1:
+    provider_schema_sha256: str
+    received_at: datetime | None
+    available_at: datetime
+    recorded_at: datetime
+    capture_basis: RawCaptureBasis
+    source_file_id: str | None
+    source_record_id: str | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.provider_schema_sha256, str) or not self.provider_schema_sha256.strip():
+            raise ValueError("provider schema hash is required")
+        object.__setattr__(self, "capture_basis", RawCaptureBasis(self.capture_basis))
+        for name in ("available_at", "recorded_at"):
+            object.__setattr__(self, name, _utc(getattr(self, name), name))
+        if self.received_at is not None:
+            object.__setattr__(self, "received_at", _utc(self.received_at, "received_at"))
+        if self.recorded_at < self.available_at:
+            raise ValueError("recorded_at cannot precede available_at")
+        if (self.source_file_id is None) != (self.source_record_id is None):
+            raise ValueError("source file and record IDs must appear together")
+        if self.source_file_id is not None and any(
+            not isinstance(value, str) or not value.strip()
+            for value in (self.source_file_id, self.source_record_id)
+        ):
+            raise ValueError("source file and record IDs must be non-empty text")
+
+
+@dataclass(frozen=True)
 class FrameNormalizationResultV1:
     raw_frame_identity: RawMarketFrameIdentityV1
     frame_content_hash: str
+    capture_provenance: FrameCaptureProvenanceV1
     status: FrameNormalizationStatus
     response_type: FeedResponseType | None
     accepted_events: tuple[MarketObservationV1, ...]
@@ -91,6 +124,8 @@ class FrameNormalizationResultV1:
     adopted_semantics_hash: str
 
     def __post_init__(self) -> None:
+        if not isinstance(self.capture_provenance, FrameCaptureProvenanceV1):
+            raise TypeError("frame capture provenance is required")
         object.__setattr__(self, "status", FrameNormalizationStatus(self.status))
         if self.response_type is not None:
             object.__setattr__(self, "response_type", FeedResponseType(self.response_type))
@@ -132,6 +167,35 @@ class FrameNormalizationResultV1:
             values = getattr(self, name)
             if tuple(sorted(set(values))) != values:
                 raise ValueError(f"{name} must be sorted and unique")
+        expected_adopted_hash = adopted_semantics_hash(
+            self.accepted_events,
+            self.frame_failure,
+            self.entry_failures,
+        )
+        if self.adopted_semantics_hash != expected_adopted_hash:
+            raise ValueError("adopted semantics hash mismatch")
+        expected_full_hash = full_result_hash(self.full_hash_projection())
+        if self.full_result_hash != expected_full_hash:
+            raise ValueError("full result hash mismatch")
+
+    def full_hash_projection(self) -> dict:
+        return {
+            "schema": "data-1.3-full-result-v1",
+            "raw_frame_identity": self.raw_frame_identity,
+            "frame_content_hash": self.frame_content_hash,
+            "capture_provenance": self.capture_provenance,
+            "accepted_events": self.accepted_events,
+            "frame_failure": self.frame_failure,
+            "entry_failures": self.entry_failures,
+            "status": self.status,
+            "response_type": self.response_type,
+            "decoded_entry_count": self.decoded_entry_count,
+            "accepted_entry_count": self.accepted_entry_count,
+            "failed_entry_count": self.failed_entry_count,
+            "unadopted_schema_paths": self.unadopted_schema_paths,
+            "present_unadopted_message_paths": self.present_unadopted_message_paths,
+            "secondary_payload_paths_present": self.secondary_payload_paths_present,
+        }
 
 
 @dataclass(frozen=True)
@@ -146,3 +210,9 @@ class FrameNormalizationDraftV1:
 
 def failed_entry_scope_count(failures: tuple[NormalizationFailureV1, ...]) -> int:
     return len({failure.entry_scope_key for failure in failures if failure.entry_scope_key is not None})
+
+
+def _utc(value: datetime, field_name: str) -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field_name} must be timezone-aware")
+    return value.astimezone(UTC)

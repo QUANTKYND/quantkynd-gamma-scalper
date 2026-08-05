@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import replace
+from datetime import timedelta
 
 import pytest
 
@@ -84,12 +85,24 @@ def test_partial_two_feed_result_reconciles_entries() -> None:
         result.entry_failures[0],
         reason_code="missing_sequence",
     )
-    multi_diagnostic = replace(
-        result,
-        entry_failures=(result.entry_failures[0], second_diagnostic),
-    )
-    assert multi_diagnostic.failed_entry_count == 1
-    assert len(multi_diagnostic.entry_failures) == 2
+    with pytest.raises(ValueError, match="adopted semantics hash mismatch"):
+        replace(result, entry_failures=(result.entry_failures[0], second_diagnostic))
+
+
+def test_result_hashes_reject_forgery_and_stale_contents() -> None:
+    response = feed_response(MarketDataFeed_pb2.market_info)
+    response.marketInfo.segmentStatus["NSE_FO"] = MarketDataFeed_pb2.NORMAL_OPEN
+    result = normalize(response)
+    with pytest.raises(ValueError, match="full result hash mismatch"):
+        replace(result, full_result_hash="sha256:" + "0" * 64)
+    with pytest.raises(ValueError, match="adopted semantics hash mismatch"):
+        replace(result, adopted_semantics_hash="sha256:" + "0" * 64)
+    changed_event = replace(result.accepted_events[0], provider_timestamp=result.accepted_events[0].provider_timestamp + timedelta(seconds=1))
+    with pytest.raises(ValueError, match="adopted semantics hash mismatch"):
+        replace(result, accepted_events=(changed_event,))
+    changed_provenance = replace(result.capture_provenance, provider_schema_sha256="different")
+    with pytest.raises(ValueError, match="full result hash mismatch"):
+        replace(result, capture_provenance=changed_provenance)
 
 
 def test_market_info_result_reconciles_segments_and_structural_failure() -> None:

@@ -5,9 +5,10 @@ from app.market_data.normalization.models import (
     ProviderMarketSegmentStatusObservationV1,
     UnderlyingQuoteObservationV1,
 )
-from app.market_data.normalization.results import FrameNormalizationResultV1
+from app.market_data.normalization.results import FrameCaptureProvenanceV1, FrameNormalizationResultV1
 
 __all__ = [
+    "FrameCaptureProvenanceV1",
     "FrameNormalizationResultV1",
     "FuturesQuoteObservationV1",
     "OptionQuoteObservationV1",
