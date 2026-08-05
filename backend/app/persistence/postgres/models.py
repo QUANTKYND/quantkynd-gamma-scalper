@@ -32,8 +32,200 @@ KEY_LENGTH = 512
 HASH_LENGTH = 128
 DECIMAL_TYPE = Numeric(38, 18)
 
+RAW_MARKET_FRAMES_TABLE = Table(
+    "raw_market_frames",
+    Base.metadata,
+    Column(
+        "raw_event_id",
+        String(ID_LENGTH),
+        primary_key=True,
+    ),
+    Column("provider", String(NAME_LENGTH), nullable=False),
+    Column(
+        "provider_schema_id",
+        String(KEY_LENGTH),
+        nullable=False,
+    ),
+    Column(
+        "provider_schema_sha256",
+        String(64),
+        nullable=False,
+    ),
+    Column(
+        "connection_session_id",
+        String(KEY_LENGTH),
+        nullable=False,
+    ),
+    Column(
+        "source_order_scope_id",
+        String(KEY_LENGTH),
+        nullable=False,
+    ),
+    Column("source_order", BigInteger, nullable=False),
+    Column("frame_bytes", LargeBinary, nullable=False),
+    Column(
+        "frame_content_hash",
+        String(ID_LENGTH),
+        nullable=False,
+    ),
+    Column(
+        "received_at",
+        DateTime(timezone=True),
+        nullable=True,
+    ),
+    Column(
+        "available_at",
+        DateTime(timezone=True),
+        nullable=False,
+    ),
+    Column(
+        "recorded_at",
+        DateTime(timezone=True),
+        nullable=False,
+    ),
+    Column("capture_basis", String(64), nullable=False),
+    Column(
+        "source_file_id",
+        String(KEY_LENGTH),
+        nullable=True,
+    ),
+    Column(
+        "source_record_id",
+        String(KEY_LENGTH),
+        nullable=True,
+    ),
+    Column(
+        "persistence_recorded_at",
+        DateTime(timezone=True),
+        nullable=False,
+    ),
+    CheckConstraint(
+        "raw_event_id ~ '^sha256:[0-9a-f]{64}$'",
+        name="raw_market_frames_id_sha256",
+    ),
+    CheckConstraint(
+        "provider = 'upstox'",
+        name="raw_market_frames_provider",
+    ),
+    CheckConstraint(
+        "octet_length(provider_schema_id) BETWEEN 1 AND 512",
+        name="raw_market_frames_schema_id_bytes",
+    ),
+    CheckConstraint(
+        "provider_schema_sha256 ~ '^[0-9a-f]{64}$'",
+        name="raw_market_frames_schema_sha256",
+    ),
+    CheckConstraint(
+        "octet_length(connection_session_id) BETWEEN 1 AND 512",
+        name="raw_market_frames_connection_bytes",
+    ),
+    CheckConstraint(
+        "octet_length(source_order_scope_id) BETWEEN 1 AND 512",
+        name="raw_market_frames_scope_bytes",
+    ),
+    CheckConstraint(
+        "source_order BETWEEN 0 AND 9223372036854775807",
+        name="raw_market_frames_source_order",
+    ),
+    CheckConstraint(
+        "octet_length(frame_bytes) BETWEEN 1 AND 16777216",
+        name="raw_market_frames_frame_bytes",
+    ),
+    CheckConstraint(
+        "frame_content_hash ~ '^sha256:[0-9a-f]{64}$'",
+        name="raw_market_frames_content_sha256",
+    ),
+    CheckConstraint(
+        "received_at IS NULL OR "
+        "(received_at <> 'infinity'::timestamptz "
+        "AND received_at <> '-infinity'::timestamptz)",
+        name="raw_market_frames_received_finite",
+    ),
+    CheckConstraint(
+        "available_at <> 'infinity'::timestamptz "
+        "AND available_at <> '-infinity'::timestamptz",
+        name="raw_market_frames_available_finite",
+    ),
+    CheckConstraint(
+        "recorded_at <> 'infinity'::timestamptz "
+        "AND recorded_at <> '-infinity'::timestamptz",
+        name="raw_market_frames_recorded_finite",
+    ),
+    CheckConstraint(
+        "persistence_recorded_at <> 'infinity'::timestamptz "
+        "AND persistence_recorded_at <> '-infinity'::timestamptz",
+        name="raw_market_frames_persistence_finite",
+    ),
+    CheckConstraint(
+        "recorded_at >= available_at",
+        name="raw_market_frames_recorded_after_available",
+    ),
+    CheckConstraint(
+        "received_at IS NULL OR available_at >= received_at",
+        name="raw_market_frames_available_after_received",
+    ),
+    CheckConstraint(
+        "capture_basis IN "
+        "('live_received', "
+        "'recorded_with_original_receipt', "
+        "'historical_import')",
+        name="raw_market_frames_capture_basis",
+    ),
+    CheckConstraint(
+        "("
+        "capture_basis IN "
+        "('live_received', 'recorded_with_original_receipt') "
+        "AND received_at IS NOT NULL "
+        "AND available_at = received_at"
+        ") OR ("
+        "capture_basis = 'historical_import' "
+        "AND received_at IS NULL"
+        ")",
+        name="raw_market_frames_capture_clock_shape",
+    ),
+    CheckConstraint(
+        "(source_file_id IS NULL) = "
+        "(source_record_id IS NULL)",
+        name="raw_market_frames_source_pair",
+    ),
+    CheckConstraint(
+        "source_file_id IS NULL OR "
+        "octet_length(source_file_id) BETWEEN 1 AND 512",
+        name="raw_market_frames_source_file_bytes",
+    ),
+    CheckConstraint(
+        "source_record_id IS NULL OR "
+        "octet_length(source_record_id) BETWEEN 1 AND 512",
+        name="raw_market_frames_source_record_bytes",
+    ),
+    UniqueConstraint(
+        "provider",
+        "provider_schema_id",
+        "connection_session_id",
+        "source_order_scope_id",
+        "source_order",
+        name="uq_raw_market_frames_capture_identity",
+    ),
+    Index(
+        "ix_raw_market_frames_capture_order",
+        "provider",
+        "connection_session_id",
+        "source_order_scope_id",
+        "source_order",
+        "raw_event_id",
+    ),
+    Index(
+        "ix_raw_market_frames_content_hash",
+        "frame_content_hash",
+    ),
+    Index(
+        "ix_raw_market_frames_persistence_order",
+        "persistence_recorded_at",
+        "raw_event_id",
+    ),
+)
+
 DATA14_TABLE_COLUMNS = {
-    "raw_market_frames": (Column("raw_event_id", String(ID_LENGTH), nullable=False, unique=True), Column("frame_bytes", LargeBinary, nullable=False), Column("frame_content_hash", String(HASH_LENGTH), nullable=False), Column("source_order", BigInteger, nullable=False)),
     "market_normalization_results": (Column("raw_event_id", String(ID_LENGTH), nullable=False), Column("full_result_hash", String(HASH_LENGTH), nullable=False), Column("adopted_semantics_hash", String(HASH_LENGTH), nullable=False), Column("normalization_schema_version", Integer, nullable=False), Column("normalizer_implementation_version", String(NAME_LENGTH), nullable=False)),
     "market_observations": (Column("raw_event_id", String(ID_LENGTH), nullable=False), Column("event_type", String(32), nullable=False), Column("normalization_schema_version", Integer, nullable=False), Column("payload", JSON, nullable=False)),
     "market_normalization_result_events": (Column("result_id", String(ID_LENGTH), nullable=False), Column("raw_event_id", String(ID_LENGTH), nullable=False), Column("event_id", String(ID_LENGTH), nullable=False), Column("event_ordinal", Integer, nullable=False)),
@@ -43,14 +235,24 @@ DATA14_TABLE_COLUMNS = {
 }
 
 DATA14_TABLES = (
-    "raw_market_frames", "market_normalization_results", "market_observations",
-    "underlying_quote_observations", "futures_quote_observations", "option_quote_observations",
-    "market_segment_status_observations", "market_normalization_result_events",
-    "market_normalization_failures", "market_normalization_result_failures",
-    "provider_subscription_instrument_sets", "provider_subscription_instrument_set_keys",
-    "provider_lifecycle_batches", "raw_provider_lifecycle_events", "provider_lifecycle_batch_events",
-    "provider_lifecycle_observations", "provider_connection_lifecycle_observations",
-    "provider_subscription_lifecycle_observations", "provider_lifecycle_batch_observations",
+    "market_normalization_results",
+    "market_observations",
+    "underlying_quote_observations",
+    "futures_quote_observations",
+    "option_quote_observations",
+    "market_segment_status_observations",
+    "market_normalization_result_events",
+    "market_normalization_failures",
+    "market_normalization_result_failures",
+    "provider_subscription_instrument_sets",
+    "provider_subscription_instrument_set_keys",
+    "provider_lifecycle_batches",
+    "raw_provider_lifecycle_events",
+    "provider_lifecycle_batch_events",
+    "provider_lifecycle_observations",
+    "provider_connection_lifecycle_observations",
+    "provider_subscription_lifecycle_observations",
+    "provider_lifecycle_batch_observations",
 )
 
 for _data14_table in DATA14_TABLES:

@@ -2,6 +2,8 @@ import hashlib
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import BigInteger, LargeBinary, UniqueConstraint
+from app.persistence.postgres.base import Base
 
 from app.market_data.persistence.errors import (
     MarketEventDurableCorruptionError,
@@ -261,3 +263,51 @@ def test_market_event_repository_does_not_expose_placeholder_writes() -> None:
         for method_name in REMOVED_PLACEHOLDER_METHODS
     )
     assert callable(repository.persist_frame_result)
+
+
+def test_raw_market_frames_metadata_uses_durable_identity() -> None:
+    table = Base.metadata.tables["raw_market_frames"]
+
+    assert tuple(table.primary_key.columns.keys()) == (
+        "raw_event_id",
+    )
+    assert "id" not in table.c
+    assert "created_at" not in table.c
+    assert "persistence_recorded_at" in table.c
+    assert isinstance(table.c.source_order.type, BigInteger)
+    assert isinstance(table.c.frame_bytes.type, LargeBinary)
+
+    expected_columns = {
+        "raw_event_id",
+        "provider",
+        "provider_schema_id",
+        "provider_schema_sha256",
+        "connection_session_id",
+        "source_order_scope_id",
+        "source_order",
+        "frame_bytes",
+        "frame_content_hash",
+        "received_at",
+        "available_at",
+        "recorded_at",
+        "capture_basis",
+        "source_file_id",
+        "source_record_id",
+        "persistence_recorded_at",
+    }
+
+    assert set(table.c.keys()) == expected_columns
+
+    unique_columns = {
+        tuple(constraint.columns.keys())
+        for constraint in table.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+
+    assert (
+        "provider",
+        "provider_schema_id",
+        "connection_session_id",
+        "source_order_scope_id",
+        "source_order",
+    ) in unique_columns

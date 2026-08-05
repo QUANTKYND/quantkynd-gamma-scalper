@@ -66,6 +66,7 @@ class PostgresMarketEventRepository:
         from app.market_data.persistence.errors import (
             NormalizationFailureIdentityConflictError, NormalizationResultConflictError,
             NormalizedEventIdentityConflictError, RawFrameContentMismatchError,
+            RawCaptureIdentityConflictError
         )
         raw = command.raw_frame
         result = command.normalization_result
@@ -100,14 +101,149 @@ class PostgresMarketEventRepository:
         for stripe in derive_lock_stripes(roots):
             await self._session.execute(text("SELECT pg_advisory_xact_lock(CAST(:data14_namespace AS integer), CAST(:stripe AS integer))"), {"data14_namespace":-1377601296,"stripe":stripe})
 
-        existing_raw = (await self._session.execute(text("SELECT frame_bytes, frame_content_hash FROM raw_market_frames WHERE raw_event_id=:id"), {"id": raw.raw_event_id})).first()
-        if existing_raw is None:
-            await self._session.execute(text("INSERT INTO raw_market_frames (id, created_at, raw_event_id, frame_bytes, frame_content_hash, source_order) VALUES (:id, :at, :raw, :bytes, :hash, :order)"), {"id":raw.raw_event_id,"at":raw.recorded_at,"raw":raw.raw_event_id,"bytes":raw.frame_bytes,"hash":raw.frame_content_hash,"order":raw.source_order})
-            inserted = True
-        elif bytes(existing_raw.frame_bytes) != raw.frame_bytes or existing_raw.frame_content_hash != raw.frame_content_hash:
-            raise RawFrameContentMismatchError(raw.raw_event_id)
-        else:
+            raw_values: dict[str, object] = {
+                "raw_event_id": raw.raw_event_id,
+                "provider": raw.provider,
+                "provider_schema_id": raw.provider_schema_id,
+                "provider_schema_sha256": raw.provider_schema_sha256,
+                "connection_session_id": raw.connection_session_id,
+                "source_order_scope_id": raw.source_order_scope_id,
+                "source_order": raw.source_order,
+                "frame_bytes": raw.frame_bytes,
+                "frame_content_hash": raw.frame_content_hash,
+                "received_at": raw.received_at,
+                "available_at": raw.available_at,
+                "recorded_at": raw.recorded_at,
+                "capture_basis": raw.capture_basis.value,
+                "source_file_id": raw.source_file_id,
+                "source_record_id": raw.source_record_id,
+            }
+
+            existing_raw = (
+                await self._session.execute(
+                    text(
+                        """
+                        SELECT
+                            provider,
+                            provider_schema_id,
+                            provider_schema_sha256,
+                            connection_session_id,
+                            source_order_scope_id,
+                            source_order,
+                            frame_bytes,
+                            frame_content_hash,
+                            received_at,
+                            available_at,
+                            recorded_at,
+                            capture_basis,
+                            source_file_id,
+                            source_record_id
+                        FROM raw_market_frames
+                        WHERE raw_event_id = :raw_event_id
+                        """
+                    ),
+                    {
+                        "raw_event_id": raw.raw_event_id,
+                    },
+                )
+            ).first()
+
             inserted = False
+
+            if existing_raw is None:
+                raw_insert_values = {
+                    **raw_values,
+                    "persistence_recorded_at": (
+                        persistence_recorded_at
+                        or raw.recorded_at
+                    ),
+                }
+
+                await self._session.execute(
+                    text(
+                        """
+                        INSERT INTO raw_market_frames (
+                            raw_event_id,
+                            provider,
+                            provider_schema_id,
+                            provider_schema_sha256,
+                            connection_session_id,
+                            source_order_scope_id,
+                            source_order,
+                            frame_bytes,
+                            frame_content_hash,
+                            received_at,
+                            available_at,
+                            recorded_at,
+                            capture_basis,
+                            source_file_id,
+                            source_record_id,
+                            persistence_recorded_at
+                        )
+                        VALUES (
+                            :raw_event_id,
+                            :provider,
+                            :provider_schema_id,
+                            :provider_schema_sha256,
+                            :connection_session_id,
+                            :source_order_scope_id,
+                            :source_order,
+                            :frame_bytes,
+                            :frame_content_hash,
+                            :received_at,
+                            :available_at,
+                            :recorded_at,
+                            :capture_basis,
+                            :source_file_id,
+                            :source_record_id,
+                            :persistence_recorded_at
+                        )
+                        """
+                    ),
+                    raw_insert_values,
+                )
+
+                inserted = True
+            else:
+                existing_values = dict(existing_raw._mapping)
+
+                existing_frame_bytes = bytes(
+                    existing_values["frame_bytes"]
+                )
+
+                if (
+                    existing_frame_bytes != raw.frame_bytes
+                    or existing_values["frame_content_hash"]
+                    != raw.frame_content_hash
+                ):
+                    raise RawFrameContentMismatchError(
+                        raw.raw_event_id
+                    )
+
+                immutable_metadata_fields = (
+                    "provider",
+                    "provider_schema_id",
+                    "provider_schema_sha256",
+                    "connection_session_id",
+                    "source_order_scope_id",
+                    "source_order",
+                    "frame_content_hash",
+                    "received_at",
+                    "available_at",
+                    "recorded_at",
+                    "capture_basis",
+                    "source_file_id",
+                    "source_record_id",
+                )
+
+                if any(
+                    existing_values[field_name]
+                    != raw_values[field_name]
+                    for field_name in immutable_metadata_fields
+                ):
+                    raise RawCaptureIdentityConflictError(
+                        raw.raw_event_id
+                    )
 
         existing_result = (await self._session.execute(text("SELECT full_result_hash, adopted_semantics_hash FROM market_normalization_results WHERE id=:id"), {"id":result_id})).first()
         if existing_result is None:
@@ -335,8 +471,29 @@ class PostgresMarketEventRepository:
         row = await self._session.execute(text("SELECT * FROM market_normalization_results WHERE raw_event_id=:raw AND normalization_schema_version=:schema"), {"raw":raw_event_id,"schema":normalization_schema_version})
         return row.first()
 
-    async def get_raw_frame_metadata(self, raw_event_id):
-        row = await self._session.execute(text("SELECT raw_event_id,frame_content_hash,source_order,created_at FROM raw_market_frames WHERE raw_event_id=:id"), {"id":raw_event_id})
+    async def get_raw_frame_metadata(
+        self,
+        raw_event_id: str,
+    ):
+        self._require_active()
+
+        row = await self._session.execute(
+            text(
+                """
+                SELECT
+                    raw_event_id,
+                    frame_content_hash,
+                    source_order,
+                    persistence_recorded_at
+                FROM raw_market_frames
+                WHERE raw_event_id = :raw_event_id
+                """
+            ),
+            {
+                "raw_event_id": raw_event_id,
+            },
+        )
+
         return row.first()
     async def get_raw_frame(self, raw_event_id):
         row = await self._session.execute(text("SELECT * FROM raw_market_frames WHERE raw_event_id=:id"), {"id":raw_event_id})
