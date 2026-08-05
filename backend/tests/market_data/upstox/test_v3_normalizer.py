@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -257,6 +258,59 @@ def test_unknown_wire_field_changes_full_provenance_only() -> None:
     unknown = asyncio.run(service.normalize(raw_frame(unknown_bytes, source_order=21), market_as_of=AT, known_as_of=AT))
     assert base.full_result_hash != unknown.full_result_hash
     assert base.adopted_semantics_hash == unknown.adopted_semantics_hash
+
+
+def test_resolver_cutoff_mismatch_is_a_whole_frame_failure() -> None:
+    response = feed_response()
+    feed = response.feeds["NSE_INDEX|Nifty 50"]
+    feed.requestMode = MarketDataFeed_pb2.ltpc
+    feed.ltpc.CopyFrom(ltpc())
+    stale_subject = replace(subjects()[0], resolution_known_as_of=AT + timedelta(seconds=1))
+
+    class IncorrectResolver:
+        async def resolve_many(self, provider, provider_contract_keys, market_as_of, known_as_of):
+            from app.market_data.normalization.ports import SubjectResolutionBatch
+
+            return SubjectResolutionBatch((stale_subject,), ())
+
+    service = MarketFrameNormalizationService(IncorrectResolver())
+    result = asyncio.run(service.normalize(raw_frame(response.SerializeToString()), market_as_of=AT, known_as_of=AT))
+    assert result.frame_failure is not None
+    assert result.frame_failure.reason_code == "invalid_subject_resolution_batch"
+    assert result.accepted_events == ()
+
+
+def test_failed_subject_preserves_union_scoped_structural_metadata() -> None:
+    response = feed_response()
+    feed = response.feeds["NSE_FO|unknown"]
+    feed.requestMode = MarketDataFeed_pb2.full_d5
+    feed.fullFeed.marketFF.ltpc.CopyFrom(ltpc())
+    for _ in range(3):
+        feed.fullFeed.marketFF.marketLevel.bidAskQuote.add()
+    feed.fullFeed.marketFF.optionGreeks.delta = float("nan")
+    result = normalize(response)
+    failure = result.entry_failures[0]
+    assert failure.selected_feed_union.value == "marketFF"
+    assert failure.provider_depth_levels_present == 3
+    assert "MarketFullFeed.iv" in failure.unadopted_schema_paths
+    assert failure.present_unadopted_message_paths == ("MarketFullFeed.optionGreeks",)
+    assert result.unadopted_schema_paths == failure.unadopted_schema_paths
+
+
+def test_unadopted_declarations_are_scoped_to_selected_unions() -> None:
+    response = feed_response()
+    direct = response.feeds["NSE_INDEX|Nifty 50"]
+    direct.requestMode = MarketDataFeed_pb2.ltpc
+    direct.ltpc.CopyFrom(ltpc())
+    assert normalize(response).unadopted_schema_paths == ()
+
+    response = feed_response()
+    index = response.feeds["NSE_INDEX|Nifty 50"]
+    index.requestMode = MarketDataFeed_pb2.full_d5
+    index.fullFeed.indexFF.ltpc.CopyFrom(ltpc())
+    result = normalize(response)
+    assert "IndexFullFeed.marketOHLC.ohlc" in result.unadopted_schema_paths
+    assert "MarketFullFeed.iv" not in result.unadopted_schema_paths
 
 
 def test_provider_timestamp_can_be_later_than_local_capture_clock() -> None:

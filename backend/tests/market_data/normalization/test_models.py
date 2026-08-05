@@ -10,6 +10,8 @@ from app.market_data.normalization.enums import (
     FeedResponseType,
     MarketSubjectKind,
     NormalizedAvailabilityBasis,
+    ProviderFeedUnion,
+    ProviderRequestMode,
 )
 from app.market_data.normalization.models import (
     FuturesQuoteObservationV1,
@@ -146,3 +148,55 @@ def test_normalized_event_time_enforces_availability_basis() -> None:
         replace(received, available_at=AT + timedelta(seconds=1), recorded_at=AT + timedelta(seconds=1))
     with pytest.raises(ValueError, match="absent received"):
         replace(received, availability_basis=NormalizedAvailabilityBasis.HISTORICAL_IMPORT)
+
+
+@pytest.mark.parametrize(
+    "field,value,pattern",
+    [
+        ("bid_size", True, "signed 64-bit"),
+        ("ask_size", 2**63, "signed 64-bit"),
+        ("last_size", -1, "signed 64-bit"),
+        ("reported_volume", 2**63, "signed 64-bit"),
+        ("open_interest", True, "safe range"),
+        ("open_interest", 2**53 + 1, "safe range"),
+        ("provider_depth_levels_present", True, "provider depth"),
+        ("provider_depth_levels_present", 31, "provider depth"),
+        ("normalized_depth_levels", 2, "normalized depth"),
+        ("unadopted_depth_level_count", True, "unadopted depth"),
+        ("unadopted_depth_level_count", -1, "unadopted depth"),
+    ],
+)
+def test_quote_direct_construction_rejects_numeric_and_depth_bypass(field, value, pattern) -> None:
+    with pytest.raises(ValueError, match=pattern):
+        replace(_underlying_event(), **{field: value})
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"provider_depth_levels_present": 1, "normalized_depth_levels": 1, "unadopted_depth_level_count": 0},
+        {
+            "feed_union": ProviderFeedUnion.MARKET_FULL_FEED,
+            "request_mode": ProviderRequestMode.FULL_D5,
+            "provider_depth_levels_present": 6,
+            "normalized_depth_levels": 1,
+            "unadopted_depth_level_count": 5,
+        },
+        {
+            "feed_union": ProviderFeedUnion.FIRST_LEVEL_WITH_GREEKS,
+            "request_mode": ProviderRequestMode.OPTION_GREEKS,
+            "provider_depth_levels_present": 1,
+            "normalized_depth_levels": 0,
+            "unadopted_depth_level_count": 1,
+        },
+    ],
+)
+def test_quote_direct_construction_rejects_feed_union_depth_mismatch(changes) -> None:
+    with pytest.raises(ValueError, match="feed union depth mismatch"):
+        replace(_underlying_event(), **changes)
+
+
+@pytest.mark.parametrize("value", [("",), ("bad path",), ("bad\npath",), (1,)])
+def test_quote_direct_construction_rejects_uncontrolled_paths(value) -> None:
+    with pytest.raises(ValueError, match="controlled paths"):
+        replace(_underlying_event(), unadopted_schema_paths=value)

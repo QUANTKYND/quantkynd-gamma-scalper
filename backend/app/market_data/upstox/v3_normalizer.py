@@ -44,7 +44,10 @@ from app.market_data.normalization.results import (
 from app.market_data.point_in_time import NormalizedMarketEventIdentity
 from app.market_data.upstox.proto import MarketDataFeed_pb2
 from app.market_data.upstox.v3_decoder import DecodedUpstoxV3Frame
-from app.market_data.upstox.v3_schema import UNADOPTED_SCHEMA_PATHS, UPSTOX_V3_MAX_DEPTH_LEVELS
+from app.market_data.upstox.v3_schema import (
+    UNADOPTED_SCHEMA_PATHS_BY_FEED_UNION,
+    UPSTOX_V3_MAX_DEPTH_LEVELS,
+)
 
 
 RESPONSE_TYPES = {
@@ -89,16 +92,9 @@ def normalize_upstox_v3_frame(
         if subjects is None:
             raise ValueError("quote normalization requires subject resolutions")
         events, failures = _normalize_quotes(decoded, frame, subjects, response_type, secondary_paths)
-    present_paths = tuple(
-        sorted(
-            {
-                path
-                for event in events
-                if isinstance(event, QuoteObservationV1)
-                for path in event.present_unadopted_message_paths
-            }
-        )
-    )
+    structural = tuple(_structural_metadata(decoded.response.feeds[key]) for key in decoded.provider_contract_keys)
+    unadopted_paths = tuple(sorted({path for item in structural for path in item[1]}))
+    present_paths = tuple(sorted({path for item in structural for path in item[2]}))
     ordered_events = tuple(sorted(events, key=_event_order_key))
     ordered_failures = tuple(
         sorted(failures, key=lambda item: (item.provider_contract_key or "", item.segment or "", item.reason_code))
@@ -106,7 +102,7 @@ def normalize_upstox_v3_frame(
     return FrameNormalizationDraftV1(
         accepted_events=ordered_events,
         entry_failures=ordered_failures,
-        unadopted_schema_paths=UNADOPTED_SCHEMA_PATHS,
+        unadopted_schema_paths=unadopted_paths,
         present_unadopted_message_paths=present_paths,
         secondary_payload_paths_present=secondary_paths,
         decoded_entry_count=len(ordered_events) + failed_entry_scope_count(ordered_failures),
@@ -158,6 +154,15 @@ def _normalize_quotes(
     events: list[QuoteObservationV1] = []
     failures: list[NormalizationFailureV1] = []
     for key in decoded.provider_contract_keys:
+        selected_union, unadopted_paths, present_paths, depth_count = _structural_metadata(
+            decoded.response.feeds[key]
+        )
+        failure_metadata = {
+            "selected_feed_union": selected_union,
+            "unadopted_schema_paths": unadopted_paths,
+            "present_unadopted_message_paths": present_paths,
+            "provider_depth_levels_present": depth_count,
+        }
         resolution_failure = subjects.failure_for(key)
         if resolution_failure is not None:
             failures.append(
@@ -165,6 +170,7 @@ def _normalize_quotes(
                     scope=NormalizationFailureScope.SUBJECT,
                     reason_code=resolution_failure.reason_code,
                     provider_contract_key=key,
+                    **failure_metadata,
                 )
             )
             continue
@@ -175,6 +181,7 @@ def _normalize_quotes(
                     scope=NormalizationFailureScope.SUBJECT,
                     reason_code="unknown_provider_key",
                     provider_contract_key=key,
+                    **failure_metadata,
                 )
             )
             continue
@@ -209,6 +216,7 @@ def _normalize_quotes(
                     scope=NormalizationFailureScope.SUBJECT,
                     reason_code=reason,
                     provider_contract_key=key,
+                    **failure_metadata,
                 )
             )
         else:
@@ -281,7 +289,7 @@ def _normalize_quote(feed, frame, subject, response_type, provider_timestamp, se
         provider_depth_levels_present=adopted.provider_depth_levels_present,
         normalized_depth_levels=adopted.normalized_depth_levels,
         unadopted_depth_level_count=adopted.provider_depth_levels_present - adopted.normalized_depth_levels,
-        unadopted_schema_paths=UNADOPTED_SCHEMA_PATHS,
+        unadopted_schema_paths=UNADOPTED_SCHEMA_PATHS_BY_FEED_UNION[adopted.feed_union.value],
         present_unadopted_message_paths=adopted.present_unadopted_message_paths,
         secondary_payload_paths_present=secondary_paths,
     )
@@ -402,6 +410,39 @@ def _secondary_payload_paths(decoded: DecodedUpstoxV3Frame) -> tuple[str, ...]:
         if decoded.response.marketInfo.segmentStatus:
             paths.append("FeedResponse.marketInfo.segmentStatus")
     return tuple(paths)
+
+
+def _structural_metadata(feed):
+    union = feed.WhichOneof("FeedUnion")
+    selected = None
+    present: list[str] = []
+    depth_count = None
+    if union == "ltpc":
+        selected = ProviderFeedUnion.LTPC
+        depth_count = 0
+    elif union == "firstLevelWithGreeks":
+        selected = ProviderFeedUnion.FIRST_LEVEL_WITH_GREEKS
+        payload = feed.firstLevelWithGreeks
+        depth_count = int(payload.HasField("firstDepth"))
+        if payload.HasField("optionGreeks"):
+            present.append("FirstLevelWithGreeks.optionGreeks")
+    elif union == "fullFeed":
+        full_union = feed.fullFeed.WhichOneof("FullFeedUnion")
+        if full_union == "indexFF":
+            selected = ProviderFeedUnion.INDEX_FULL_FEED
+            depth_count = 0
+            if feed.fullFeed.indexFF.HasField("marketOHLC"):
+                present.append("IndexFullFeed.marketOHLC")
+        elif full_union == "marketFF":
+            selected = ProviderFeedUnion.MARKET_FULL_FEED
+            payload = feed.fullFeed.marketFF
+            depth_count = len(payload.marketLevel.bidAskQuote) if payload.HasField("marketLevel") else 0
+            if payload.HasField("optionGreeks"):
+                present.append("MarketFullFeed.optionGreeks")
+            if payload.HasField("marketOHLC"):
+                present.append("MarketFullFeed.marketOHLC")
+    declarations = UNADOPTED_SCHEMA_PATHS_BY_FEED_UNION.get(selected.value, ()) if selected else ()
+    return selected, declarations, tuple(sorted(present)), depth_count
 
 
 def _event_order_key(event):

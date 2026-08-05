@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+import re
 
 from app.instruments.identity import (
     ContractVersion,
@@ -30,6 +31,10 @@ NORMALIZER_IMPLEMENTATION_VERSION = "upstox-v3-normalizer-1"
 PRESENCE_SEMANTICS = "proto3_parent_implied_v1"
 NUMERIC_BASIS = "protobuf_double_roundtrip_decimal_v1"
 QUANTITY_BASIS = "upstox_reported_quantity_v1"
+MAX_REPORTED_QUANTITY = 2**63 - 1
+MAX_SAFE_OPEN_INTEREST = 2**53
+MAX_PROVIDER_DEPTH_LEVELS = 30
+_CONTROLLED_PATH = re.compile(r"[A-Za-z0-9_.\[\]:*]+")
 PROVIDER_MARKET_STATUS_NAMES = {
     0: "PRE_OPEN_START",
     1: "PRE_OPEN_END",
@@ -221,13 +226,60 @@ class QuoteObservationV1:
         for value in (self.bid_price, self.ask_price, self.last_price, self.previous_close_price):
             if value is not None and (not isinstance(value, Decimal) or not value.is_finite() or value < 0):
                 raise ValueError("quote prices must be finite non-negative Decimal values")
-        for value in (self.bid_size, self.ask_size, self.last_size, self.reported_volume, self.open_interest):
-            if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
-                raise ValueError("quote quantities must be non-negative integers")
-        if self.provider_depth_levels_present < self.normalized_depth_levels:
-            raise ValueError("normalized depth cannot exceed provider depth")
+        for value in (self.bid_size, self.ask_size, self.last_size, self.reported_volume):
+            if (
+                value is not None
+                and (
+                    not isinstance(value, int)
+                    or isinstance(value, bool)
+                    or not 0 <= value <= MAX_REPORTED_QUANTITY
+                )
+            ):
+                raise ValueError("quote quantities must be integers in the signed 64-bit range")
+        if (
+            self.open_interest is not None
+            and (
+                not isinstance(self.open_interest, int)
+                or isinstance(self.open_interest, bool)
+                or not 0 <= self.open_interest <= MAX_SAFE_OPEN_INTEREST
+            )
+        ):
+            raise ValueError("open interest must be an integer in the safe range")
+        if (
+            not isinstance(self.provider_depth_levels_present, int)
+            or isinstance(self.provider_depth_levels_present, bool)
+            or not 0 <= self.provider_depth_levels_present <= MAX_PROVIDER_DEPTH_LEVELS
+        ):
+            raise ValueError("provider depth must be an integer from zero through thirty")
+        if (
+            not isinstance(self.normalized_depth_levels, int)
+            or isinstance(self.normalized_depth_levels, bool)
+            or self.normalized_depth_levels not in (0, 1)
+        ):
+            raise ValueError("normalized depth must be zero or one")
+        if (
+            not isinstance(self.unadopted_depth_level_count, int)
+            or isinstance(self.unadopted_depth_level_count, bool)
+            or self.unadopted_depth_level_count < 0
+        ):
+            raise ValueError("unadopted depth must be a non-negative integer")
         if self.unadopted_depth_level_count != self.provider_depth_levels_present - self.normalized_depth_levels:
             raise ValueError("unadopted depth reconciliation failed")
+        if self.feed_union in (ProviderFeedUnion.LTPC, ProviderFeedUnion.INDEX_FULL_FEED):
+            if self.provider_depth_levels_present != 0 or self.normalized_depth_levels != 0:
+                raise ValueError("feed union depth mismatch")
+        elif self.feed_union is ProviderFeedUnion.FIRST_LEVEL_WITH_GREEKS:
+            if self.provider_depth_levels_present not in (0, 1) or self.normalized_depth_levels != self.provider_depth_levels_present:
+                raise ValueError("feed union depth mismatch")
+        elif self.feed_union is ProviderFeedUnion.MARKET_FULL_FEED:
+            maximum = 5 if self.request_mode is ProviderRequestMode.FULL_D5 else 30
+            expected_normalized = int(self.provider_depth_levels_present > 0)
+            if (
+                self.request_mode not in (ProviderRequestMode.FULL_D5, ProviderRequestMode.FULL_D30)
+                or self.provider_depth_levels_present > maximum
+                or self.normalized_depth_levels != expected_normalized
+            ):
+                raise ValueError("feed union depth mismatch")
         for name in (
             "unadopted_schema_paths",
             "present_unadopted_message_paths",
@@ -236,6 +288,8 @@ class QuoteObservationV1:
             values = getattr(self, name)
             if tuple(sorted(set(values))) != values:
                 raise ValueError(f"{name} must be sorted and unique")
+            if any(not isinstance(path, str) or _CONTROLLED_PATH.fullmatch(path) is None for path in values):
+                raise ValueError(f"{name} must contain controlled paths")
 
     @property
     def event_id(self) -> str:

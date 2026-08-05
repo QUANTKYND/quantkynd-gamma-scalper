@@ -14,7 +14,6 @@ from app.market_data.normalization.results import (
 from app.market_data.normalization.serialization import adopted_semantics_hash, full_result_hash
 from app.market_data.upstox.v3_decoder import decode_upstox_v3_frame
 from app.market_data.upstox.v3_normalizer import normalize_upstox_v3_frame
-from app.market_data.upstox.v3_schema import UNADOPTED_SCHEMA_PATHS
 from app.market_data.upstox.proto import MarketDataFeed_pb2
 
 
@@ -38,7 +37,7 @@ class MarketFrameNormalizationService:
                 scope=NormalizationFailureScope.FRAME,
                 reason_code=error.code,
             )
-            return _result(frame, (), frame_failure, (), UNADOPTED_SCHEMA_PATHS, (), (), 0)
+            return _result(frame, (), frame_failure, (), (), (), (), 0)
         subjects = None
         if decoded.response_type_numeric != MarketDataFeed_pb2.market_info:
             subjects = await self._subject_resolver.resolve_many(
@@ -50,6 +49,11 @@ class MarketFrameNormalizationService:
             if (
                 subjects.provider_contract_keys != decoded.provider_contract_keys
                 or any(subject.provider != frame.provider for subject in subjects.resolved)
+                or any(
+                    subject.resolution_market_as_of != market_cutoff
+                    or subject.resolution_known_as_of != knowledge_cutoff
+                    for subject in subjects.resolved
+                )
             ):
                 frame_failure = NormalizationFailureV1(
                     scope=NormalizationFailureScope.FRAME,
@@ -60,7 +64,7 @@ class MarketFrameNormalizationService:
                     (),
                     frame_failure,
                     (),
-                    UNADOPTED_SCHEMA_PATHS,
+                    (),
                     (),
                     (),
                     len(decoded.provider_contract_keys),

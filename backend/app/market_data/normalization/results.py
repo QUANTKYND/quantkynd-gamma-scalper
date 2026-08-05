@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.market_data.normalization.enums import FrameNormalizationStatus, NormalizationFailureScope
+from app.market_data.normalization.enums import (
+    FrameNormalizationStatus,
+    NormalizationFailureScope,
+    ProviderFeedUnion,
+)
 from app.market_data.normalization.identities import RawMarketFrameIdentityV1
 from app.market_data.normalization.models import MarketObservationV1
 
@@ -15,9 +19,15 @@ class NormalizationFailureV1:
     segment: str | None = None
     field_paths: tuple[str, ...] = ()
     safe_detail_code: str | None = None
+    selected_feed_union: ProviderFeedUnion | None = None
+    unadopted_schema_paths: tuple[str, ...] = ()
+    present_unadopted_message_paths: tuple[str, ...] = ()
+    provider_depth_levels_present: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "scope", NormalizationFailureScope(self.scope))
+        if self.selected_feed_union is not None:
+            object.__setattr__(self, "selected_feed_union", ProviderFeedUnion(self.selected_feed_union))
         if not isinstance(self.reason_code, str) or not self.reason_code.strip():
             raise ValueError("failure reason code is required")
         if not self.reason_code.replace("_", "").isalnum():
@@ -30,6 +40,18 @@ class NormalizationFailureV1:
             raise ValueError("safe detail code must be non-empty")
         if self.safe_detail_code is not None and not self.safe_detail_code.replace("_", "").isalnum():
             raise ValueError("safe detail code must be controlled")
+        for name in ("unadopted_schema_paths", "present_unadopted_message_paths"):
+            paths = getattr(self, name)
+            if tuple(sorted(set(paths))) != paths:
+                raise ValueError(f"{name} must be sorted and unique")
+            if any(not isinstance(path, str) or not path.strip() for path in paths):
+                raise ValueError(f"{name} must contain non-empty text")
+        if self.provider_depth_levels_present is not None and (
+            not isinstance(self.provider_depth_levels_present, int)
+            or isinstance(self.provider_depth_levels_present, bool)
+            or self.provider_depth_levels_present < 0
+        ):
+            raise ValueError("provider depth metadata must be a non-negative integer")
         if self.scope is NormalizationFailureScope.FRAME:
             if self.provider_contract_key is not None or self.segment is not None:
                 raise ValueError("frame failure cannot carry entry scope")
