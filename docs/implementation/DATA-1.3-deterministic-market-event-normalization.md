@@ -20,7 +20,7 @@ This evidence does not accept or merge DATA-1.3. The feature branch remains pape
 - Final lifecycle/CLI correction starting SHA: `a7c23f2d74bb15d4c6d425e96e54cb82c523d29a`
 - Final lifecycle/CLI core correction SHA: `a72ffe1c70b8261beee1ccf89dd36ac63b7912ce`
 - Final lifecycle/CLI corrected implementation SHA: `9e0e62dd1e220f2a92ebcaeb4d4b3dbf4efd9069`
-- Final lifecycle/CLI evidence snapshot SHA: `PENDING_FINAL_EVIDENCE_SHA`
+- Final lifecycle/CLI evidence snapshot SHA: `e540b3ed688fec89902760ee47833e5924d8c5e9`
 
 Implementation commits from the original baseline:
 
