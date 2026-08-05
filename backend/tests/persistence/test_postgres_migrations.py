@@ -44,7 +44,21 @@ DATA_1_2_TABLES = {
     "catalogue_row_outcomes",
     "catalogue_memberships",
 }
-DATA_1_1_TABLES = EXPECTED_TABLES - DATA_1_2_TABLES
+DATA_1_1_TABLES = {
+    "catalogue_versions",
+    "market_instruments",
+    "trading_sessions",
+    "instrument_versions",
+    "trading_session_versions",
+    "underlying_instruments",
+    "futures_contracts",
+    "option_contracts",
+    "provider_contract_mappings",
+    "catalogue_version_records",
+    "instrument_version_records",
+    "provider_mapping_records",
+    "trading_session_version_records",
+}
 
 
 @pytest.mark.anyio

@@ -44,16 +44,43 @@ class FailureIdentity:
     reason_code: str
     provider_contract_key: str | None = None
     segment: str | None = None
+    payload: Any | None = None
+
     def __post_init__(self):
         for n in ("result_id", "scope", "reason_code"):
             _text(getattr(self,n), n)
         if self.scope not in {"frame", "subject", "segment"}:
             raise ValueError("unsupported failure scope")
-        if self.scope == "subject" and not self.provider_contract_key: raise ValueError("subject failure key required")
-        if self.scope == "segment" and not self.segment: raise ValueError("segment failure required")
+        if self.scope == "subject" and not self.provider_contract_key:
+            raise ValueError("subject failure key required")
+        if self.scope == "segment" and not self.segment:
+            raise ValueError("segment failure required")
+        if self.payload is None:
+            payload = {
+                "scope": self.scope,
+                "reason_code": self.reason_code,
+                "provider_contract_key": self.provider_contract_key,
+                "segment": self.segment,
+            }
+        elif isinstance(self.payload, str):
+            payload = self.payload
+        else:
+            payload = canonical_json(self.payload)
+        object.__setattr__(self, "payload", payload)
+
     @property
     def failure_id(self) -> str:
-        return stable_hash({"entity":"market_normalization_failure", **self.__dict__})
+        return stable_hash(
+            {
+                "entity": "market_normalization_failure",
+                "result_id": self.result_id,
+                "scope": self.scope,
+                "reason_code": self.reason_code,
+                "provider_contract_key": self.provider_contract_key,
+                "segment": self.segment,
+                "payload": self.payload,
+            }
+        )
 
 @dataclass(frozen=True)
 class LifecycleBatchIdentity:
