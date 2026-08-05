@@ -19,6 +19,13 @@ class CatalogueInstrumentKind(StrEnum):
     OPTION = "option"
 
 
+class CatalogueDiffCategory(StrEnum):
+    ADDED = "added"
+    UNCHANGED = "unchanged"
+    METADATA_CHANGED = "metadata_changed"
+    PROVIDER_MAPPING_CHANGED = "provider_mapping_changed"
+
+
 @dataclass(frozen=True)
 class CatalogueSourceArtifact:
     provider: str
@@ -234,6 +241,46 @@ class NormalizedCatalogueItem:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "kind", CatalogueInstrumentKind(self.kind))
+
+
+@dataclass(frozen=True)
+class CatalogueSemanticDiff:
+    added: int
+    unchanged: int
+    metadata_changed: int
+    provider_mapping_changed: int
+    disappeared: int
+    excluded: int
+    exact_duplicates: int
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "added": self.added,
+            "unchanged": self.unchanged,
+            "metadata_changed": self.metadata_changed,
+            "provider_mapping_changed": self.provider_mapping_changed,
+            "disappeared": self.disappeared,
+            "excluded": self.excluded,
+            "exact_duplicates": self.exact_duplicates,
+        }
+
+
+@dataclass(frozen=True)
+class CatalogueItemTransition:
+    item: NormalizedCatalogueItem
+    economic_instrument_id: str
+    prior_version_record_id: str | None
+    prior_mapping_record_id: str | None
+    diff_category: CatalogueDiffCategory
+
+
+@dataclass(frozen=True)
+class CatalogueTransitionPlan:
+    catalogue_predecessor_record_id: str | None
+    catalogue_predecessor_version_id: str | None
+    item_transitions: tuple[CatalogueItemTransition, ...]
+    disappeared_provider_contract_keys: tuple[str, ...]
+    semantic_diff: CatalogueSemanticDiff
 
 
 class CatalogueIngestionError(ValueError):

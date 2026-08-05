@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import TracebackType
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.instruments.ports import UnitOfWorkStateError
@@ -14,8 +15,14 @@ from app.persistence.postgres.repositories import (
 
 
 class PostgresUnitOfWork:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        read_only_repeatable_read: bool = False,
+    ) -> None:
         self._session_factory = session_factory
+        self._read_only_repeatable_read = read_only_repeatable_read
         self._session: AsyncSession | None = None
         self._closed = False
         self._finalized = False
@@ -52,6 +59,10 @@ class PostgresUnitOfWork:
         if self._closed or self._session is not None:
             raise UnitOfWorkStateError("unit of work instances cannot be reused")
         self._session = self._session_factory()
+        if self._read_only_repeatable_read:
+            await self._session.execute(
+                text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            )
         self._instruments = PostgresInstrumentRepository(self._session, self._require_active)
         self._catalogues = PostgresCatalogueRepository(self._session, self._require_active)
         self._catalogue_ingestions = PostgresCatalogueIngestionRepository(

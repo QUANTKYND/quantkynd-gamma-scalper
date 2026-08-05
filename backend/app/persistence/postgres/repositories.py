@@ -17,7 +17,13 @@ from app.instruments.identity import (
     ProviderContractMapping,
     UnderlyingInstrumentIdentity,
 )
-from app.instruments.ports import PersistenceIntegrityError, SemanticCollisionError
+from app.instruments.ports import (
+    CatalogueVersionState,
+    InstrumentVersionState,
+    PersistenceIntegrityError,
+    ProviderMappingState,
+    SemanticCollisionError,
+)
 from app.instruments.provider_catalogue import (
     CatalogueIngestionRun,
     CatalogueMembership,
@@ -161,6 +167,15 @@ class PostgresCatalogueRepository:
         market_as_of: datetime,
         known_as_of: datetime | None,
     ) -> CatalogueVersion | None:
+        resolved = await self.resolve_state(provider, market_as_of, known_as_of)
+        return resolved.value if resolved is not None else None
+
+    async def resolve_state(
+        self,
+        provider: str,
+        market_as_of: datetime,
+        known_as_of: datetime | None,
+    ) -> CatalogueVersionState | None:
         self._require_active()
         states = await self._states_for_provider(provider, known_as_of)
         resolved = resolve_temporal_state(
@@ -169,7 +184,9 @@ class PostgresCatalogueRepository:
             lambda value: value.effective_from <= market_as_of
             and (value.effective_until is None or market_as_of < value.effective_until),
         )
-        return resolved.value if resolved is not None else None
+        if resolved is None:
+            return None
+        return CatalogueVersionState(resolved.value, resolved.record.record_id)
 
     async def _states_for_provider(
         self,
@@ -347,6 +364,38 @@ class PostgresInstrumentRepository:
         market_as_of: datetime,
         known_as_of: datetime | None,
     ) -> ProviderContractMapping | None:
+        resolved = await self.resolve_provider_key_state(
+            provider,
+            provider_contract_key,
+            market_as_of,
+            known_as_of,
+        )
+        return resolved.value if resolved is not None else None
+
+    async def resolve_version_state(
+        self,
+        instrument_id: str,
+        market_as_of: datetime,
+        known_as_of: datetime | None,
+    ) -> InstrumentVersionState | None:
+        self._require_active()
+        resolved = resolve_temporal_state(
+            await self._version_states(instrument_id, known_as_of),
+            known_as_of,
+            lambda value: value.valid_from <= market_as_of
+            and (value.valid_until is None or market_as_of < value.valid_until),
+        )
+        if resolved is None:
+            return None
+        return InstrumentVersionState(resolved.value, resolved.record.record_id)
+
+    async def resolve_provider_key_state(
+        self,
+        provider: str,
+        provider_contract_key: str,
+        market_as_of: datetime,
+        known_as_of: datetime | None,
+    ) -> ProviderMappingState | None:
         self._require_active()
         mapping_rows = await self._mapping_rows(
             provider,
@@ -385,7 +434,48 @@ class PostgresInstrumentRepository:
             and value.effective_from <= market_as_of
             and (value.effective_until is None or market_as_of < value.effective_until),
         )
-        return resolved.value if resolved is not None else None
+        if resolved is None:
+            return None
+        instrument_ids = {
+            mapping_row.mapping_id: version_row.instrument_id
+            for mapping_row, _, version_row in mapping_rows
+        }
+        return ProviderMappingState(
+            resolved.value,
+            resolved.record.record_id,
+            instrument_ids[resolved.value.mapping_id],
+        )
+
+    async def resolve_provider_key_instrument_id(
+        self,
+        provider: str,
+        provider_contract_key: str,
+    ) -> str | None:
+        self._require_active()
+        instrument_ids = tuple(
+            sorted(
+                set(
+                    await self._session.scalars(
+                        select(InstrumentVersionRow.instrument_id)
+                        .join(
+                            ProviderContractMappingRow,
+                            ProviderContractMappingRow.contract_version_id
+                            == InstrumentVersionRow.version_id,
+                        )
+                        .where(
+                            ProviderContractMappingRow.provider == provider,
+                            ProviderContractMappingRow.provider_contract_key
+                            == provider_contract_key,
+                        )
+                    )
+                )
+            )
+        )
+        if len(instrument_ids) > 1:
+            raise PersistenceIntegrityError(
+                "provider key has conflicting durable economic instrument bindings"
+            )
+        return instrument_ids[0] if instrument_ids else None
 
     async def list_contract_versions(
         self,
@@ -658,6 +748,34 @@ class PostgresCatalogueIngestionRepository:
 
     async def add_memberships(self, memberships: tuple[CatalogueMembership, ...]) -> None:
         self._require_active()
+        provider_key_memberships: dict[tuple[str, str], str] = {}
+        for membership in memberships:
+            key = (membership.catalogue_version_id, membership.provider_contract_key)
+            existing_membership_id = provider_key_memberships.get(key)
+            if existing_membership_id is not None and existing_membership_id != membership.membership_id:
+                raise PersistenceIntegrityError(
+                    "catalogue membership contains a duplicate provider key"
+                )
+            provider_key_memberships[key] = membership.membership_id
+        for catalogue_version_id, provider_contract_key in sorted(provider_key_memberships):
+            existing_membership_ids = tuple(
+                await self._session.scalars(
+                    select(CatalogueMembershipRow.membership_id).where(
+                        CatalogueMembershipRow.catalogue_version_id == catalogue_version_id,
+                        CatalogueMembershipRow.provider_contract_key == provider_contract_key,
+                    )
+                )
+            )
+            expected_membership_id = provider_key_memberships[
+                (catalogue_version_id, provider_contract_key)
+            ]
+            if any(
+                membership_id != expected_membership_id
+                for membership_id in existing_membership_ids
+            ):
+                raise PersistenceIntegrityError(
+                    "catalogue membership conflicts with an existing provider key"
+                )
         for membership in memberships:
             await _insert_immutable(
                 self._session,
@@ -666,6 +784,34 @@ class PostgresCatalogueIngestionRepository:
                 membership_values(membership),
                 "catalogue membership",
             )
+
+    async def list_memberships_for_catalogue(
+        self,
+        catalogue_version_id: str,
+    ) -> tuple[CatalogueMembership, ...]:
+        self._require_active()
+        rows = (
+            await self._session.scalars(
+                select(CatalogueMembershipRow)
+                .where(CatalogueMembershipRow.catalogue_version_id == catalogue_version_id)
+                .order_by(CatalogueMembershipRow.membership_id)
+            )
+        ).all()
+        return tuple(
+            CatalogueMembership(
+                catalogue_version_id=row.catalogue_version_id,
+                row_outcome_id=row.row_outcome_id,
+                source_row_occurrence_id=row.source_row_occurrence_id,
+                source_row_semantic_id=row.source_row_semantic_id,
+                instrument_id=row.instrument_id,
+                version_id=row.version_id,
+                mapping_id=row.mapping_id,
+                provider_contract_key=row.provider_contract_key,
+                raw_row_hash=row.raw_row_hash,
+                normalized_row_hash=row.normalized_row_hash,
+            )
+            for row in rows
+        )
 
     async def get_ingestion_run_by_idempotency_key(
         self,

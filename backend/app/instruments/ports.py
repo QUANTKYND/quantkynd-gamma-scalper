@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Protocol, Self
 
@@ -33,6 +34,25 @@ class PersistenceIntegrityError(ValueError):
     pass
 
 
+@dataclass(frozen=True)
+class CatalogueVersionState:
+    value: CatalogueVersion
+    record_id: str
+
+
+@dataclass(frozen=True)
+class InstrumentVersionState:
+    value: ContractVersion
+    record_id: str
+
+
+@dataclass(frozen=True)
+class ProviderMappingState:
+    value: ProviderContractMapping
+    record_id: str
+    instrument_id: str
+
+
 class CatalogueRepository(Protocol):
     async def add(
         self,
@@ -50,6 +70,13 @@ class CatalogueRepository(Protocol):
         market_as_of: datetime,
         known_as_of: datetime | None,
     ) -> CatalogueVersion | None: ...
+
+    async def resolve_state(
+        self,
+        provider: str,
+        market_as_of: datetime,
+        known_as_of: datetime | None,
+    ) -> CatalogueVersionState | None: ...
 
 
 class InstrumentRepository(Protocol):
@@ -86,6 +113,27 @@ class InstrumentRepository(Protocol):
         known_as_of: datetime | None,
     ) -> ProviderContractMapping | None: ...
 
+    async def resolve_version_state(
+        self,
+        instrument_id: str,
+        market_as_of: datetime,
+        known_as_of: datetime | None,
+    ) -> InstrumentVersionState | None: ...
+
+    async def resolve_provider_key_state(
+        self,
+        provider: str,
+        provider_contract_key: str,
+        market_as_of: datetime,
+        known_as_of: datetime | None,
+    ) -> ProviderMappingState | None: ...
+
+    async def resolve_provider_key_instrument_id(
+        self,
+        provider: str,
+        provider_contract_key: str,
+    ) -> str | None: ...
+
     async def list_contract_versions(
         self,
         underlying_instrument_id: str,
@@ -121,6 +169,11 @@ class CatalogueIngestionRepository(Protocol):
     async def add_row_outcomes(self, outcomes: tuple[CatalogueRowOutcome, ...]) -> None: ...
 
     async def add_memberships(self, memberships: tuple[CatalogueMembership, ...]) -> None: ...
+
+    async def list_memberships_for_catalogue(
+        self,
+        catalogue_version_id: str,
+    ) -> tuple[CatalogueMembership, ...]: ...
 
     async def get_ingestion_run_by_idempotency_key(
         self,
