@@ -72,6 +72,13 @@ class TemporalState(Generic[ValueType]):
     value: ValueType
 
 
+@dataclass(frozen=True)
+class _ValidatedTemporalGraph(Generic[ValueType]):
+    indexed: dict[str, TemporalState[ValueType]]
+    predecessor_by_record_id: dict[str, str | None]
+    successor_by_record_id: dict[str, str]
+
+
 def resolve_temporal_state(
     states: Iterable[TemporalState[ValueType]],
     known_as_of: datetime | None,
@@ -83,13 +90,16 @@ def resolve_temporal_state(
         for state in states
         if knowledge_time is None or state.record.recorded_at <= knowledge_time
     ]
-    indexed = _validated_visible_graph(visible)
-    eligible = [state for state in indexed.values() if market_eligible(state.value)]
-    hidden = {
-        state.record.supersedes_record_id
-        for state in eligible
-        if state.record.supersedes_record_id is not None
-    }
+    graph = _validated_visible_graph(visible)
+    eligible = [state for state in graph.indexed.values() if market_eligible(state.value)]
+    eligible_ids = {state.record.record_id for state in eligible}
+    hidden: set[str] = set()
+    for state in eligible:
+        predecessor_id = graph.predecessor_by_record_id[state.record.record_id]
+        while predecessor_id is not None:
+            if predecessor_id in eligible_ids:
+                hidden.add(predecessor_id)
+            predecessor_id = graph.predecessor_by_record_id[predecessor_id]
     leaves = sorted(
         (state for state in eligible if state.record.record_id not in hidden),
         key=lambda state: state.record.record_id,
@@ -111,14 +121,18 @@ def resolve_temporal_knowledge_leaf(
         for state in states
         if knowledge_time is None or state.record.recorded_at <= knowledge_time
     ]
-    indexed = _validated_visible_graph(visible)
+    graph = _validated_visible_graph(visible)
     superseded = {
         state.record.supersedes_record_id
-        for state in indexed.values()
+        for state in graph.indexed.values()
         if state.record.supersedes_record_id is not None
     }
     leaves = sorted(
-        (state for state in indexed.values() if state.record.record_id not in superseded),
+        (
+            state
+            for state in graph.indexed.values()
+            if state.record.record_id not in superseded
+        ),
         key=lambda state: state.record.record_id,
     )
     if len(leaves) > 1:
@@ -202,7 +216,7 @@ def trading_session_version_temporal_record(
 
 def _validated_visible_graph(
     states: Iterable[TemporalState[ValueType]],
-) -> dict[str, TemporalState[ValueType]]:
+) -> _ValidatedTemporalGraph[ValueType]:
     indexed: dict[str, TemporalState[ValueType]] = {}
     for state in states:
         record_id = state.record.record_id
@@ -213,8 +227,10 @@ def _validated_visible_graph(
             )
         indexed[record_id] = state
     successors: dict[str, str] = {}
+    predecessors: dict[str, str | None] = {}
     for record_id, state in indexed.items():
         target_id = state.record.supersedes_record_id
+        predecessors[record_id] = target_id
         if target_id is None:
             continue
         if target_id == record_id:
@@ -240,7 +256,7 @@ def _validated_visible_graph(
                 raise InvalidTemporalGraphError("temporal successor graph contains a cycle")
             visited.add(current_id)
             current_id = successors.get(current_id)
-    return indexed
+    return _ValidatedTemporalGraph(indexed, predecessors, successors)
 
 
 def _utc(value: datetime, field_name: str) -> datetime:
