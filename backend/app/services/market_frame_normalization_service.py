@@ -34,16 +34,17 @@ class MarketFrameNormalizationService:
         try:
             decoded = decode_upstox_v3_frame(frame)
         except FrameDecodeError as error:
+            response_type = (
+                _response_type(error.response_type_numeric)
+                if error.response_type_numeric is not None
+                else None
+            )
             frame_failure = NormalizationFailureV1(
                 scope=NormalizationFailureScope.FRAME,
                 reason_code=error.code,
             )
-            return _result(frame, None, (), frame_failure, (), (), (), (), 0)
-        response_type = {
-            MarketDataFeed_pb2.initial_feed: FeedResponseType.INITIAL_FEED,
-            MarketDataFeed_pb2.live_feed: FeedResponseType.LIVE_FEED,
-            MarketDataFeed_pb2.market_info: FeedResponseType.MARKET_INFO,
-        }[decoded.response_type_numeric]
+            return _result(frame, response_type, (), frame_failure, (), (), (), (), 0)
+        response_type = _response_type(decoded.response_type_numeric)
         subjects = None
         if decoded.response_type_numeric != MarketDataFeed_pb2.market_info:
             subjects = await self._subject_resolver.resolve_many(
@@ -120,7 +121,7 @@ def _result(frame, response_type, events, frame_failure, entry_failures, unadopt
     )
     adopted_hash = adopted_semantics_hash(events, frame_failure, entry_failures)
     capture_provenance = FrameCaptureProvenanceV1(
-        provider_schema_sha256=frame.provider_schema_sha256,
+        provider_schema_sha256=f"sha256:{frame.provider_schema_sha256}",
         received_at=frame.received_at,
         available_at=frame.available_at,
         recorded_at=frame.recorded_at,
@@ -170,3 +171,11 @@ def _utc(value: datetime, field_name: str) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{field_name} must be timezone-aware")
     return value.astimezone(UTC)
+
+
+def _response_type(response_type_numeric: int) -> FeedResponseType:
+    return {
+        MarketDataFeed_pb2.initial_feed: FeedResponseType.INITIAL_FEED,
+        MarketDataFeed_pb2.live_feed: FeedResponseType.LIVE_FEED,
+        MarketDataFeed_pb2.market_info: FeedResponseType.MARKET_INFO,
+    }[response_type_numeric]

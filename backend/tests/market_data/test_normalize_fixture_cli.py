@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -214,3 +217,92 @@ def test_expected_hashes_cannot_approve_structural_frame_failure(tmp_path) -> No
     code, output = run(args + ["--verify-expected-hash"])
     assert code == 1
     assert json.loads(output)["result"]["frame_failure"] is not None
+
+
+@pytest.mark.parametrize(
+    "frame_bytes,reason,response_type",
+    [
+        (
+            (lambda response: response.SerializeToString())(
+                MarketDataFeed_pb2.FeedResponse(
+                    type=MarketDataFeed_pb2.live_feed,
+                    currentTs=1_754_365_200_123,
+                    feeds={" bad": MarketDataFeed_pb2.Feed(requestMode=MarketDataFeed_pb2.ltpc, ltpc=MarketDataFeed_pb2.LTPC())},
+                )
+            ),
+            "invalid_provider_contract_key",
+            "live_feed",
+        ),
+        (
+            (lambda response: response.SerializeToString())(
+                MarketDataFeed_pb2.FeedResponse(
+                    type=MarketDataFeed_pb2.market_info,
+                    currentTs=1_754_365_200_123,
+                    marketInfo=MarketDataFeed_pb2.MarketInfo(segmentStatus={"bad ": MarketDataFeed_pb2.NORMAL_OPEN}),
+                )
+            ),
+            "invalid_market_segment",
+            "market_info",
+        ),
+    ],
+)
+def test_cli_provider_identity_failures_are_canonical(tmp_path, frame_bytes, reason, response_type) -> None:
+    code, output = run(_structural_failure_args(tmp_path, frame_bytes))
+    assert code == 1
+    assert output == json.dumps(json.loads(output), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    result = json.loads(output)["result"]
+    assert result["frame_failure"]["reason_code"] == reason
+    assert result["response_type"] == response_type
+    assert "traceback" not in output.lower()
+    assert "frame_bytes" not in output
+
+
+def test_hostile_provider_identity_cli_output_is_hash_seed_independent(tmp_path) -> None:
+    frames = []
+    quote = MarketDataFeed_pb2.FeedResponse(type=MarketDataFeed_pb2.live_feed, currentTs=1_754_365_200_123)
+    quote.feeds["\x00bad"].requestMode = MarketDataFeed_pb2.ltpc
+    quote.feeds["\x00bad"].ltpc.CopyFrom(MarketDataFeed_pb2.LTPC())
+    frames.append(quote.SerializeToString())
+    status = MarketDataFeed_pb2.FeedResponse(type=MarketDataFeed_pb2.market_info, currentTs=1_754_365_200_123)
+    status.marketInfo.segmentStatus[" bad"] = MarketDataFeed_pb2.NORMAL_OPEN
+    frames.append(status.SerializeToString())
+    for index, frame_bytes in enumerate(frames):
+        case_path = tmp_path / str(index)
+        case_path.mkdir()
+        arguments = _structural_failure_args(case_path, frame_bytes)
+        outputs = []
+        for seed in ("1", "999"):
+            environment = os.environ.copy()
+            environment["PYTHONHASHSEED"] = seed
+            for name in ("DATABASE_URL", "DATABASE_RESTORE_TEST_URL", "UPSTOX_ACCESS_TOKEN", "REDIS_URL"):
+                environment.pop(name, None)
+            completed = subprocess.run(
+                [sys.executable, "-m", "app.cli.normalize_market_event_fixture", *arguments],
+                check=False,
+                capture_output=True,
+                env=environment,
+            )
+            assert completed.returncode == 1
+            outputs.append(completed.stderr)
+        assert outputs[0] == outputs[1]
+
+
+def test_entry_only_failed_result_is_successful_when_reconciled_and_expected(tmp_path) -> None:
+    response = MarketDataFeed_pb2.FeedResponse(type=MarketDataFeed_pb2.live_feed, currentTs=1_754_365_200_123)
+    response.feeds["NSE_FO|unknown"].requestMode = MarketDataFeed_pb2.ltpc
+    response.feeds["NSE_FO|unknown"].ltpc.CopyFrom(MarketDataFeed_pb2.LTPC())
+    arguments = _structural_failure_args(tmp_path, response.SerializeToString())
+    code, output = run(arguments)
+    assert code == 0
+    result = json.loads(output)["result"]
+    assert result["status"] == "failed"
+    assert result["frame_failure"] is None
+    capture_path = Path(arguments[3])
+    capture = json.loads(capture_path.read_text(encoding="utf-8"))
+    capture["expected_event_ids"] = []
+    capture["expected_full_result_sha256"] = result["full_result_hash"]
+    capture["expected_adopted_semantics_sha256"] = result["adopted_semantics_hash"]
+    capture_path.write_text(json.dumps(capture), encoding="utf-8")
+    verified_code, verified_output = run(arguments + ["--verify-expected-hash"])
+    assert verified_code == 0
+    assert json.loads(verified_output)["result"]["status"] == "failed"

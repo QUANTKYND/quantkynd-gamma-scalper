@@ -1,10 +1,10 @@
 import asyncio
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.market_data.normalization.enums import NormalizationFailureScope
+from app.market_data.normalization.enums import NormalizationFailureScope, RawCaptureBasis
 from app.market_data.normalization.ports import StaticSubjectManifestResolver
 from app.instruments.identity import ProviderContractMapping
 from app.market_data.normalization.results import NormalizationFailureV1
@@ -35,7 +35,7 @@ def test_failure_scope_and_paths_are_explicit() -> None:
             reason_code="failed",
             field_paths=("z", "a"),
         )
-    with pytest.raises(ValueError, match="requires only"):
+    with pytest.raises(ValueError, match="provider contract key"):
         NormalizationFailureV1(
             scope=NormalizationFailureScope.SUBJECT,
             reason_code="failed",
@@ -100,9 +100,76 @@ def test_result_hashes_reject_forgery_and_stale_contents() -> None:
     changed_event = replace(result.accepted_events[0], provider_timestamp=result.accepted_events[0].provider_timestamp + timedelta(seconds=1))
     with pytest.raises(ValueError, match="adopted semantics hash mismatch"):
         replace(result, accepted_events=(changed_event,))
-    changed_provenance = replace(result.capture_provenance, provider_schema_sha256="different")
+    changed_provenance = replace(result.capture_provenance, provider_schema_sha256="sha256:" + "0" * 64)
     with pytest.raises(ValueError, match="full result hash mismatch"):
         replace(result, capture_provenance=changed_provenance)
+
+
+@pytest.mark.parametrize(
+    "scope,field,value",
+    [
+        (NormalizationFailureScope.SUBJECT, "provider_contract_key", None),
+        (NormalizationFailureScope.SUBJECT, "provider_contract_key", ""),
+        (NormalizationFailureScope.SUBJECT, "provider_contract_key", " key"),
+        (NormalizationFailureScope.SUBJECT, "provider_contract_key", "key\n"),
+        (NormalizationFailureScope.SUBJECT, "provider_contract_key", "k" * 513),
+        (NormalizationFailureScope.SEGMENT, "segment", None),
+        (NormalizationFailureScope.SEGMENT, "segment", "   "),
+        (NormalizationFailureScope.SEGMENT, "segment", "segment\x00"),
+        (NormalizationFailureScope.SEGMENT, "segment", "s" * 129),
+    ],
+)
+def test_failure_entry_identifiers_are_controlled(scope, field, value) -> None:
+    arguments = {"scope": scope, "reason_code": "controlled_failure", field: value}
+    with pytest.raises(ValueError):
+        NormalizationFailureV1(**arguments)
+    accepted_value = "k" * 512 if scope is NormalizationFailureScope.SUBJECT else "s" * 128
+    accepted = NormalizationFailureV1(scope=scope, reason_code="controlled_failure", **{field: accepted_value})
+    assert getattr(accepted, field) == accepted_value
+
+
+def test_capture_provenance_enforces_hash_time_basis_and_source_invariants() -> None:
+    result = normalize(feed_response(MarketDataFeed_pb2.market_info))
+    provenance = result.capture_provenance
+    assert provenance.provider_schema_sha256.startswith("sha256:")
+    with pytest.raises(ValueError, match="canonical SHA-256"):
+        replace(provenance, provider_schema_sha256="0" * 64)
+    with pytest.raises(ValueError, match="canonical SHA-256"):
+        replace(provenance, provider_schema_sha256="sha256:" + "A" * 64)
+    with pytest.raises(ValueError, match="equal receipt"):
+        replace(
+            provenance,
+            available_at=provenance.available_at + timedelta(seconds=1),
+            recorded_at=provenance.recorded_at + timedelta(seconds=1),
+        )
+    with pytest.raises(ValueError, match="precede received_at"):
+        replace(provenance, available_at=provenance.available_at - timedelta(seconds=1))
+    with pytest.raises(ValueError, match="equal receipt"):
+        replace(provenance, received_at=None)
+    with pytest.raises(ValueError, match="absent receipt"):
+        replace(provenance, capture_basis=RawCaptureBasis.HISTORICAL_IMPORT)
+    with pytest.raises(ValueError, match="recorded_at"):
+        replace(provenance, recorded_at=provenance.available_at - timedelta(seconds=1))
+    with pytest.raises(ValueError, match="appear together"):
+        replace(provenance, source_file_id="file")
+    historical = replace(
+        provenance,
+        capture_basis=RawCaptureBasis.HISTORICAL_IMPORT,
+        received_at=None,
+        available_at=datetime(2026, 8, 5, 4, 1, tzinfo=UTC),
+        recorded_at=datetime(2026, 8, 5, 4, 1, tzinfo=UTC),
+        source_file_id="file",
+        source_record_id="record",
+    )
+    assert historical.received_at is None
+
+
+def test_recorded_original_receipt_provenance_requires_equal_receipt_and_availability() -> None:
+    result = normalize(feed_response(MarketDataFeed_pb2.market_info))
+    provenance = replace(result.capture_provenance, capture_basis=RawCaptureBasis.RECORDED_WITH_ORIGINAL_RECEIPT)
+    assert provenance.available_at == provenance.received_at
+    with pytest.raises(ValueError, match="equal receipt"):
+        replace(provenance, received_at=None)
 
 
 def test_market_info_result_reconciles_segments_and_structural_failure() -> None:

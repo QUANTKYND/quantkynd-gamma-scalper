@@ -199,6 +199,99 @@ def test_structural_frame_failures_are_explicit(response, reason) -> None:
     assert result.decoded_entry_count == 0
 
 
+class _UncalledResolver:
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    async def resolve_many(self, provider, provider_contract_keys, market_as_of, known_as_of):
+        self.call_count += 1
+        raise AssertionError("resolver must not be called")
+
+
+@pytest.mark.parametrize("key", ("", "   ", " leading", "trailing ", "line\nbreak", "nul\x00key", "k" * 513))
+@pytest.mark.parametrize("response_type", (MarketDataFeed_pb2.live_feed, MarketDataFeed_pb2.initial_feed))
+def test_invalid_primary_provider_contract_key_is_a_frame_failure(key, response_type) -> None:
+    response = feed_response(response_type)
+    response.feeds[key].requestMode = MarketDataFeed_pb2.ltpc
+    response.feeds[key].ltpc.CopyFrom(ltpc())
+    resolver = _UncalledResolver()
+    result = asyncio.run(
+        MarketFrameNormalizationService(resolver).normalize(
+            raw_frame(response.SerializeToString()), market_as_of=AT, known_as_of=AT
+        )
+    )
+    assert resolver.call_count == 0
+    assert result.frame_failure is not None
+    assert result.frame_failure.reason_code == "invalid_provider_contract_key"
+    assert result.response_type.value == ("live_feed" if response_type == MarketDataFeed_pb2.live_feed else "initial_feed")
+    assert (result.decoded_entry_count, result.accepted_entry_count, result.failed_entry_count) == (0, 0, 0)
+
+
+def test_provider_contract_key_utf8_byte_boundary_and_mixed_failure() -> None:
+    accepted_response = feed_response()
+    accepted_response.feeds["k" * 512].requestMode = MarketDataFeed_pb2.ltpc
+    accepted_response.feeds["k" * 512].ltpc.CopyFrom(ltpc())
+    accepted = normalize(accepted_response)
+    assert accepted.frame_failure is None
+    assert accepted.failed_entry_count == 1
+    multibyte = feed_response()
+    multibyte.feeds["é" * 257].requestMode = MarketDataFeed_pb2.ltpc
+    multibyte.feeds["é" * 257].ltpc.CopyFrom(ltpc())
+    assert normalize(multibyte).frame_failure.reason_code == "invalid_provider_contract_key"
+    mixed = feed_response()
+    for key in ("NSE_INDEX|Nifty 50", " bad"):
+        mixed.feeds[key].requestMode = MarketDataFeed_pb2.ltpc
+        mixed.feeds[key].ltpc.CopyFrom(ltpc())
+    result = normalize(mixed)
+    assert result.frame_failure.reason_code == "invalid_provider_contract_key"
+    assert result.accepted_events == ()
+
+
+@pytest.mark.parametrize("segment", ("", "   ", " leading", "trailing ", "line\nbreak", "nul\x00segment", "s" * 129))
+def test_invalid_primary_market_segment_is_a_frame_failure(segment) -> None:
+    response = feed_response(MarketDataFeed_pb2.market_info)
+    response.marketInfo.segmentStatus[segment] = MarketDataFeed_pb2.NORMAL_OPEN
+    result = normalize(response)
+    assert result.frame_failure is not None
+    assert result.frame_failure.reason_code == "invalid_market_segment"
+    assert result.response_type.value == "market_info"
+    assert (result.decoded_entry_count, result.accepted_entry_count, result.failed_entry_count) == (0, 0, 0)
+
+
+def test_market_segment_utf8_byte_boundary_and_mixed_failure() -> None:
+    accepted_response = feed_response(MarketDataFeed_pb2.market_info)
+    accepted_response.marketInfo.segmentStatus["s" * 128] = MarketDataFeed_pb2.NORMAL_OPEN
+    accepted = normalize(accepted_response)
+    assert accepted.frame_failure is None
+    assert accepted.accepted_entry_count == 1
+    multibyte = feed_response(MarketDataFeed_pb2.market_info)
+    multibyte.marketInfo.segmentStatus["é" * 65] = MarketDataFeed_pb2.NORMAL_OPEN
+    assert normalize(multibyte).frame_failure.reason_code == "invalid_market_segment"
+    mixed = feed_response(MarketDataFeed_pb2.market_info)
+    mixed.marketInfo.segmentStatus["NSE_FO"] = MarketDataFeed_pb2.NORMAL_OPEN
+    mixed.marketInfo.segmentStatus["bad "] = MarketDataFeed_pb2.NORMAL_OPEN
+    result = normalize(mixed)
+    assert result.frame_failure.reason_code == "invalid_market_segment"
+    assert result.accepted_events == ()
+
+
+def test_only_selected_primary_payload_identities_are_validated() -> None:
+    market_info = feed_response(MarketDataFeed_pb2.market_info)
+    market_info.marketInfo.segmentStatus["NSE_FO"] = MarketDataFeed_pb2.NORMAL_OPEN
+    market_info.feeds[" bad"].requestMode = MarketDataFeed_pb2.ltpc
+    market_info.feeds[" bad"].ltpc.CopyFrom(ltpc())
+    market_result = normalize(market_info)
+    assert market_result.frame_failure is None
+    assert market_result.secondary_payload_paths_present == ("FeedResponse.feeds",)
+    quote = feed_response()
+    quote.feeds["NSE_INDEX|Nifty 50"].requestMode = MarketDataFeed_pb2.ltpc
+    quote.feeds["NSE_INDEX|Nifty 50"].ltpc.CopyFrom(ltpc())
+    quote.marketInfo.segmentStatus[" bad"] = MarketDataFeed_pb2.NORMAL_OPEN
+    quote_result = normalize(quote)
+    assert quote_result.frame_failure is None
+    assert quote_result.secondary_payload_paths_present == ("FeedResponse.marketInfo.segmentStatus",)
+
+
 def test_malformed_protobuf_is_whole_frame_failure() -> None:
     service = MarketFrameNormalizationService(StaticSubjectManifestResolver(subjects()))
     result = asyncio.run(service.normalize(raw_frame(b"\x80"), market_as_of=AT, known_as_of=AT))

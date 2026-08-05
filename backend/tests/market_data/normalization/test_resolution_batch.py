@@ -4,6 +4,8 @@ import asyncio
 from collections.abc import Iterator, Mapping
 
 from app.market_data.normalization.ports import SubjectResolutionBatch, SubjectResolutionFailureV1
+from app.market_data.normalization.enums import SubjectResolutionFailureReason
+import pytest
 from app.market_data.upstox.proto import MarketDataFeed_pb2
 from app.services.market_frame_normalization_service import MarketFrameNormalizationService
 from tests.market_data.normalization.helpers import AT, raw_frame
@@ -34,6 +36,21 @@ class FixedResolver:
     async def resolve_many(self, provider, provider_contract_keys, market_as_of, known_as_of):
         self.requested_keys = provider_contract_keys
         return self.batch
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ("arbitrary", "UNKNOWN_PROVIDER_KEY", " unknown_provider_key", "unknown-provider-key"),
+)
+def test_subject_resolution_failure_reason_vocabulary_is_closed(reason) -> None:
+    with pytest.raises(ValueError):
+        SubjectResolutionFailureV1("key", reason)
+
+
+@pytest.mark.parametrize("reason", tuple(SubjectResolutionFailureReason))
+def test_subject_resolution_failure_accepts_only_declared_reasons(reason) -> None:
+    failure = SubjectResolutionFailureV1("key", reason)
+    assert failure.reason_code is reason
 
 
 def test_five_thousand_key_batch_uses_one_indexed_lookup_per_key() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+import re
 
 from app.market_data.normalization.enums import (
     FrameNormalizationStatus,
@@ -13,6 +14,10 @@ from app.market_data.normalization.enums import (
 from app.market_data.normalization.identities import RawMarketFrameIdentityV1
 from app.market_data.normalization.models import MarketObservationV1
 from app.market_data.normalization.result_hashing import adopted_semantics_hash, full_result_hash
+from app.market_data.normalization.provider_identifiers import validate_market_segment, validate_provider_contract_key
+
+
+_CANONICAL_SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
@@ -60,11 +65,13 @@ class NormalizationFailureV1:
             if self.provider_contract_key is not None or self.segment is not None:
                 raise ValueError("frame failure cannot carry entry scope")
         elif self.scope is NormalizationFailureScope.SUBJECT:
-            if not self.provider_contract_key or self.segment is not None:
+            if self.segment is not None:
                 raise ValueError("subject failure requires only provider_contract_key")
+            validate_provider_contract_key(self.provider_contract_key)
         elif self.scope is NormalizationFailureScope.SEGMENT:
-            if not self.segment or self.provider_contract_key is not None:
+            if self.provider_contract_key is not None:
                 raise ValueError("segment failure requires only segment")
+            validate_market_segment(self.segment)
 
     @property
     def entry_scope_key(self) -> tuple[str, str] | None:
@@ -86,15 +93,24 @@ class FrameCaptureProvenanceV1:
     source_record_id: str | None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.provider_schema_sha256, str) or not self.provider_schema_sha256.strip():
-            raise ValueError("provider schema hash is required")
+        if not isinstance(self.provider_schema_sha256, str) or _CANONICAL_SHA256.fullmatch(self.provider_schema_sha256) is None:
+            raise ValueError("provider schema hash must be canonical SHA-256")
         object.__setattr__(self, "capture_basis", RawCaptureBasis(self.capture_basis))
         for name in ("available_at", "recorded_at"):
             object.__setattr__(self, name, _utc(getattr(self, name), name))
         if self.received_at is not None:
             object.__setattr__(self, "received_at", _utc(self.received_at, "received_at"))
+            if self.available_at < self.received_at:
+                raise ValueError("available_at cannot precede received_at")
         if self.recorded_at < self.available_at:
             raise ValueError("recorded_at cannot precede available_at")
+        if self.capture_basis in {
+            RawCaptureBasis.LIVE_RECEIVED,
+            RawCaptureBasis.RECORDED_WITH_ORIGINAL_RECEIPT,
+        } and (self.received_at is None or self.available_at != self.received_at):
+            raise ValueError("receipt-based capture requires equal receipt and availability")
+        if self.capture_basis is RawCaptureBasis.HISTORICAL_IMPORT and self.received_at is not None:
+            raise ValueError("historical import requires absent receipt")
         if (self.source_file_id is None) != (self.source_record_id is None):
             raise ValueError("source file and record IDs must appear together")
         if self.source_file_id is not None and any(

@@ -7,18 +7,18 @@ from typing import Mapping
 from typing import Protocol
 
 from app.market_data.normalization.models import ResolvedMarketSubjectV1
+from app.market_data.normalization.enums import SubjectResolutionFailureReason
+from app.market_data.normalization.provider_identifiers import validate_provider_contract_key
 
 
 @dataclass(frozen=True)
 class SubjectResolutionFailureV1:
     provider_contract_key: str
-    reason_code: str
+    reason_code: SubjectResolutionFailureReason
 
     def __post_init__(self) -> None:
-        if not isinstance(self.provider_contract_key, str) or not self.provider_contract_key.strip():
-            raise ValueError("subject resolution key must be non-empty")
-        if not isinstance(self.reason_code, str) or not self.reason_code.strip():
-            raise ValueError("subject resolution reason must be non-empty")
+        validate_provider_contract_key(self.provider_contract_key)
+        object.__setattr__(self, "reason_code", SubjectResolutionFailureReason(self.reason_code))
 
 
 @dataclass(frozen=True)

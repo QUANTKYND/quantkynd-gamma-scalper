@@ -7,6 +7,10 @@ from google.protobuf.message import DecodeError
 from app.market_data.normalization.conversions import epoch_milliseconds
 from app.market_data.normalization.errors import FrameDecodeError
 from app.market_data.normalization.identities import RawMarketFrameV1
+from app.market_data.normalization.provider_identifiers import (
+    validate_market_segment,
+    validate_provider_contract_key,
+)
 from app.market_data.upstox.proto import MarketDataFeed_pb2
 from app.market_data.upstox.v3_schema import (
     UPSTOX_V3_MAX_FEEDS,
@@ -55,4 +59,16 @@ def decode_upstox_v3_frame(frame: RawMarketFrameV1) -> DecodedUpstoxV3Frame:
         raise FrameDecodeError("empty_primary_payload")
     if response_type in (MarketDataFeed_pb2.initial_feed, MarketDataFeed_pb2.live_feed) and not provider_keys:
         raise FrameDecodeError("empty_primary_payload")
+    if response_type == MarketDataFeed_pb2.market_info:
+        try:
+            for segment in status_segments:
+                validate_market_segment(segment)
+        except ValueError as error:
+            raise FrameDecodeError("invalid_market_segment", response_type) from error
+    else:
+        try:
+            for provider_key in provider_keys:
+                validate_provider_contract_key(provider_key)
+        except ValueError as error:
+            raise FrameDecodeError("invalid_provider_contract_key", response_type) from error
     return DecodedUpstoxV3Frame(response, response_type, provider_keys, status_segments)

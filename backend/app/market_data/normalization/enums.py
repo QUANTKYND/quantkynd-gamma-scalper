@@ -50,3 +50,10 @@ class NormalizationFailureScope(StrEnum):
     SEGMENT = "segment"
     CONNECTION_LIFECYCLE = "connection_lifecycle"
     SUBSCRIPTION_LIFECYCLE = "subscription_lifecycle"
+
+
+class SubjectResolutionFailureReason(StrEnum):
+    UNKNOWN_PROVIDER_KEY = "unknown_provider_key"
+    STALE_PROVIDER_MAPPING = "stale_provider_mapping"
+    AMBIGUOUS_PROVIDER_MAPPING = "ambiguous_provider_mapping"
+    AMBIGUOUS_CONTRACT_VERSION = "ambiguous_contract_version"

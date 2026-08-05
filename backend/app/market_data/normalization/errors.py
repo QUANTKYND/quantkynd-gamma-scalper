@@ -11,8 +11,9 @@ class ConflictingRawIdentityError(MarketNormalizationError):
 
 
 class FrameDecodeError(MarketNormalizationError):
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, response_type_numeric: int | None = None) -> None:
         self.code = code
+        self.response_type_numeric = response_type_numeric
         super().__init__(code)
 
 
