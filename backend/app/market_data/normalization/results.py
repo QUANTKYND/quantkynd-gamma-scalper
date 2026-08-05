@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from app.market_data.normalization.enums import (
@@ -108,7 +108,7 @@ class FrameCaptureProvenanceV1:
 class FrameNormalizationResultV1:
     raw_frame_identity: RawMarketFrameIdentityV1
     frame_content_hash: str
-    capture_provenance: FrameCaptureProvenanceV1
+    capture_provenance: FrameCaptureProvenanceV1 = field(metadata={"normalization_output": False})
     status: FrameNormalizationStatus
     response_type: FeedResponseType | None
     accepted_events: tuple[MarketObservationV1, ...]

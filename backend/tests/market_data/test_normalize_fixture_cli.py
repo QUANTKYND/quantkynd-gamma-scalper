@@ -34,6 +34,7 @@ def test_fixture_cli_success_is_canonical_json(monkeypatch) -> None:
     payload = json.loads(output)
     assert payload["response_type"] == "live_feed"
     assert payload["result"]["accepted_entry_count"] == "1"
+    assert "capture_provenance" not in payload["result"]
     assert "frame_bytes" not in output
 
 

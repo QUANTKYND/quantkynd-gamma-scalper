@@ -17,7 +17,11 @@ def full_result_hash(payload: object) -> str:
 
 def normalization_payload(value: Any) -> Any:
     if is_dataclass(value):
-        return {field.name: normalization_payload(getattr(value, field.name)) for field in fields(value)}
+        return {
+            item.name: normalization_payload(getattr(value, item.name))
+            for item in fields(value)
+            if item.metadata.get("normalization_output", True)
+        }
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, dict):
