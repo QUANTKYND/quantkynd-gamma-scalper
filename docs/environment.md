@@ -210,7 +210,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run alembic check
 UV_CACHE_DIR=/tmp/uv-cache uv run alembic downgrade base
 ```
 
-Run the destructive dump/restore acceptance check only after both dedicated databases satisfy that contract. `pg_dump` and `pg_restore` must be genuine client tools compatible with the server:
+Run the destructive dump/restore acceptance check only after both dedicated databases satisfy that contract. DATA-1.2 acceptance uses the declared `postgres:17-alpine` service and records exact server, `psql`, `pg_dump`, and `pg_restore` versions. `pg_dump` and `pg_restore` must be genuine PostgreSQL 17-compatible client tools; PostgreSQL 18 evidence is supplementary only:
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run python -m app.cli.verify_database_restore

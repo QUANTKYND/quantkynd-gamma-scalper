@@ -2,6 +2,36 @@
 
 Status: implementation complete; acceptance evidence recorded; independent review pending. DATA-1.2 is not marked accepted.
 
+## Final Point-in-Time Corrections — 2026-08-05
+
+- Branch: `feature/data-1-deterministic-provider-catalogue-ingestion`
+- Correction starting SHA: `854cdd62f1c136a32b81b32f8c832cc300d46a00`
+- Required ancestor: `4030955c9be2c370d2ef40082fbb00aea7f7061a`
+- Corrected implementation SHA: `0804218d387613381fc4efbeba3a7e3d74b5a009`
+
+Correction commits through the implementation base:
+
+```text
+cb1fad2 fix(data): assign catalogue knowledge time at acceptance
+dd6564f fix(data): resolve current temporal knowledge leaves
+8ed0afc test(data): prove historical catalogue corrections
+0804218 test(data): verify DATA-1.2 on PostgreSQL 17
+```
+
+### Timestamp Boundary
+
+The command captures `started_at` on invocation, then validates, parses, normalizes, and retains the artifact before opening the durable transition. Commit mode acquires the provider/profile advisory lock and completes the idempotency check before capturing one accepted write timestamp immediately before transition planning. A pure time-binding operation applies that timestamp to the catalogue, every instrument version, and every provider mapping without changing their semantic IDs. Their temporal record IDs are then derived from those accepted knowledge records. The accepted run uses the same `recorded_at` and enforces `started_at <= recorded_at <= completed_at`.
+
+Validate-only and dry-run capture invocation time for the ephemeral semantic plan but never request or persist a durable knowledge timestamp. A `known_as_of` cutoff between invocation and acceptance cannot see the new catalogue; a cutoff at or after acceptance can see it when its market interval is eligible.
+
+### Current Knowledge-Leaf Transitions
+
+Transition planning no longer applies the incoming `effective_from` while choosing predecessors. Persistence-independent repository operations load and validate the entire visible temporal graph and resolve the single current unsuperseded knowledge leaf for the provider/profile catalogue scope, each economic instrument-version scope, and each provider/key mapping scope. Missing targets, multiple roots or leaves, branches, cycles, cross-scope edges, and non-increasing knowledge time fail closed.
+
+The first catalogue is allowed only when its provider/profile scope has no record. Every later catalogue explicitly names the current catalogue knowledge leaf; a missing, stale, root-but-not-leaf, or unrelated predecessor is rejected. New versions and mappings for existing scopes supersede their current knowledge leaves. Stable provider-key binding to one durable economic instrument remains mandatory across all history.
+
+Market selection remains a separate read concern. After applying `known_as_of` and validating the graph, the repositories apply interval eligibility and let only an eligible successor hide its eligible predecessor. Forward and same-effective-time corrections select the later-known successor when admitted. An open historical correction also becomes the eligible successor after it is known. A bounded historical backfill is returned inside its earlier interval after it is known, while current-market queries continue to return the earlier knowledge record whose market interval remains eligible. Earlier knowledge cutoffs do not see the backfill.
+
 ## Review Correction Evidence — 2026-08-05
 
 - Correction branch: `feature/data-1-deterministic-provider-catalogue-ingestion`
