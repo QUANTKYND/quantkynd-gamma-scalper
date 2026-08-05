@@ -18,8 +18,9 @@ This evidence does not accept or merge DATA-1.3. The feature branch remains pape
 - Corrected implementation SHA: `971a9e35b40274225540605aa1ff7d3973b1fbff`
 - Corrected evidence snapshot SHA: `c0ef16eeca03faca02383a9dd32a0c0d6b603192`
 - Final lifecycle/CLI correction starting SHA: `a7c23f2d74bb15d4c6d425e96e54cb82c523d29a`
-- Final lifecycle/CLI corrected implementation SHA: `a72ffe1c70b8261beee1ccf89dd36ac63b7912ce`
-- Final lifecycle/CLI evidence snapshot SHA: `a450a54864fdbb4a063ae66faad69ece0ad8b2b8`
+- Final lifecycle/CLI core correction SHA: `a72ffe1c70b8261beee1ccf89dd36ac63b7912ce`
+- Final lifecycle/CLI corrected implementation SHA: `9e0e62dd1e220f2a92ebcaeb4d4b3dbf4efd9069`
+- Final lifecycle/CLI evidence snapshot SHA: `PENDING_FINAL_EVIDENCE_SHA`
 
 Implementation commits from the original baseline:
 
@@ -39,6 +40,7 @@ c323d49 test(data): prove corrected normalization checkpoint
 6fb7980 test(data): add deterministic normalization fixtures and CLIs
 971a9e3 fix(data): apply final normalization review corrections
 a72ffe1 fix(data): apply final lifecycle and CLI corrections
+9e0e62d fix(data): preserve canonical result output
 ```
 
 ## Implemented contracts
@@ -113,7 +115,7 @@ The corpus also contains a deterministic DATA-1 subject manifest and connection,
 
 Capture and subject manifests now validate every required object, array, string, strict integer, optional value, date, datetime, enum, and canonical finite decimal string before domain construction. Missing/malformed availability, capture basis, subjects, economic identity, expiry, strike, multiplier, tick size, and mapping timestamps return canonical exit `2`. Schema ownership and frame-content hash mismatches remain exit `3`. A structural frame failure always returns exit `1`, even if its failure hashes are copied into the expected fields.
 
-`FrameNormalizationResultV1` carries explicit immutable capture provenance and recomputes both hash projections during construction. Forged full/adopted hashes, an adopted event changed without rebuilding, and capture provenance changed without rebuilding all fail. Official fixture event IDs and expected hashes remain unchanged because the corrected self-validation uses the previously approved projections.
+`FrameNormalizationResultV1` carries explicit immutable capture provenance internally and recomputes both hash projections during construction. The provenance is excluded from canonical result serialization because the established CLI projection already exposes raw identity and frame hash; it remains included in the full-hash projection. Forged full/adopted hashes, an adopted event changed without rebuilding, and capture provenance changed without rebuilding all fail. Official CLI projections, fixture event IDs, and expected hashes remain unchanged because the corrected self-validation uses the previously approved projections.
 
 `app.cli.normalize_market_lifecycle_fixture` deterministically covers connection, subscription, reconnect/new-session, sorted key digest, redacted failure, and invalid transitions. Neither CLI requires database, restore URL, provider token, Redis, or network.
 
