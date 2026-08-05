@@ -2,9 +2,9 @@
 
 ## Status
 
-Implementation complete; acceptance evidence recorded; independent review pending.
+ACCEPTED.
 
-This evidence does not accept or merge DATA-1.3. The feature branch remains paper-only and must stop after push.
+Independent review accepted the DATA-1.3 normalization sub-gate. DATA-1 remains ACTIVE because market-event persistence and the later quality, reconstruction, and live-state slices remain incomplete.
 
 ## Provenance
 
@@ -24,6 +24,7 @@ This evidence does not accept or merge DATA-1.3. The feature branch remains pape
 - Provider-identity correction starting SHA: `73f6e113afa95c9df19364ac2220a5678fbabdd3`
 - Provider-identity corrected implementation SHA: `e088760d646c8ec569abd1de3a3c395cb5e30ec6`
 - Provider-identity evidence snapshot SHA: `78c23f1b407b474ef9fe9078cb3bbc59fe8b4a99`
+- Independently accepted reviewed SHA: `46331018b225d90200399372d3bd18e33ab8ca7b`
 
 Implementation commits from the original baseline:
 
@@ -156,4 +157,4 @@ Tracked source and fixtures contain no provider token, authorized WebSocket URL,
 
 ## Explicit limitations
 
-DATA-1.3 does not persist raw frames or normalized/lifecycle events; create migration `20260804_04`; wire lifecycle events into LIVE-RV; add live provider subscription behavior; infer or enforce provider sequence; implement quality/freshness policy, latest-state or chain reconstruction, analytics, Redis, retention, replay storage, trades, options surfaces, strategy decisions, paper orders, or live-capital execution. Independent review is still required before acceptance.
+DATA-1.3 does not persist raw frames or normalized/lifecycle events; create migration `20260804_04`; wire lifecycle events into LIVE-RV; add live provider subscription behavior; infer or enforce provider sequence; implement quality/freshness policy, latest-state or chain reconstruction, analytics, Redis, retention, replay storage, trades, options surfaces, strategy decisions, paper orders, or live-capital execution. These remaining slices keep DATA-1 ACTIVE despite DATA-1.3 acceptance.
