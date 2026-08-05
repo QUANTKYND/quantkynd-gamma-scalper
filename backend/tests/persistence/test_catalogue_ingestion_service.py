@@ -23,6 +23,11 @@ from app.instruments.provider_catalogue import (
 from app.instruments.ports import PersistenceIntegrityError, SemanticCollisionError
 from app.instruments.providers.upstox_catalogue import PROFILE_VERSION
 from app.instruments.temporal_records import TemporalSupersessionConflictError
+from app.instruments.temporal_records import (
+    catalogue_temporal_record,
+    instrument_version_temporal_record,
+    provider_mapping_temporal_record,
+)
 from app.persistence.postgres.engine import (
     create_database_engine,
     create_session_factory,
@@ -108,6 +113,100 @@ async def test_validate_only_and_dry_run_retain_no_artifacts_or_writes(
 
 
 @pytest.mark.anyio
+async def test_accepted_write_timestamp_is_the_single_durable_knowledge_boundary(
+    reset_postgres_url: str,
+    postgres_settings: DatabaseSettings,
+    tmp_path: Path,
+) -> None:
+    settings = postgres_settings.model_copy(
+        update={"catalogue_artifact_root": str(tmp_path / "artifacts")}
+    )
+    started_at = datetime(2026, 8, 5, 10, 0, tzinfo=UTC)
+    recorded_at = started_at + timedelta(minutes=5)
+    completed_at = recorded_at + timedelta(seconds=2)
+    result = await ingest_provider_catalogue(
+        _command(mode="commit", idempotency_key="DATA-1.2-knowledge-boundary"),
+        settings,
+        clock=_clock(started_at, recorded_at, completed_at),
+    )
+    engine = create_database_engine(settings)
+    try:
+        factory = create_session_factory(engine)
+        async with factory() as session:
+            run = await session.get(CatalogueIngestionRunRow, result.ingestion_run_id)
+            catalogue_records = tuple(await session.scalars(select(CatalogueVersionRecordRow)))
+            version_records = tuple(await session.scalars(select(InstrumentVersionRecordRow)))
+            mapping_records = tuple(await session.scalars(select(ProviderMappingRecordRow)))
+        assert run is not None
+        assert run.started_at == started_at
+        assert run.recorded_at == recorded_at
+        assert run.completed_at == completed_at
+        assert started_at < recorded_at <= completed_at
+        assert {row.recorded_at for row in catalogue_records} == {recorded_at}
+        assert {row.recorded_at for row in version_records} == {recorded_at}
+        assert {row.recorded_at for row in mapping_records} == {recorded_at}
+        async with PostgresUnitOfWork(factory) as unit_of_work:
+            before = await unit_of_work.catalogues.resolve(
+                "upstox:upstox-nse-nifty-index-derivatives-v1",
+                EFFECTIVE_FROM,
+                started_at + timedelta(minutes=1),
+            )
+            accepted = await unit_of_work.catalogues.resolve(
+                "upstox:upstox-nse-nifty-index-derivatives-v1",
+                EFFECTIVE_FROM,
+                recorded_at,
+            )
+            catalogue_leaf = await unit_of_work.catalogues.resolve_knowledge_leaf(
+                "upstox:upstox-nse-nifty-index-derivatives-v1"
+            )
+            membership = (
+                await unit_of_work.catalogue_ingestions.list_memberships_for_catalogue(
+                    result.catalogue_version_id
+                )
+            )[0]
+            version_leaf = await unit_of_work.instruments.resolve_version_knowledge_leaf(
+                membership.instrument_id
+            )
+            mapping_leaf = await unit_of_work.instruments.resolve_provider_key_knowledge_leaf(
+                "upstox",
+                membership.provider_contract_key,
+            )
+        assert before is None
+        assert accepted is not None and accepted.catalogue_version_id == result.catalogue_version_id
+        assert catalogue_leaf is not None
+        assert catalogue_leaf.record_id == catalogue_temporal_record(catalogue_leaf.value).record_id
+        assert version_leaf is not None
+        assert version_leaf.record_id == instrument_version_temporal_record(version_leaf.value).record_id
+        assert mapping_leaf is not None
+        assert mapping_leaf.record_id == provider_mapping_temporal_record(mapping_leaf.value).record_id
+    finally:
+        await dispose_database_engine(engine)
+
+
+@pytest.mark.anyio
+async def test_non_commit_modes_never_request_a_durable_knowledge_timestamp(
+    reset_postgres_url: str,
+    postgres_settings: DatabaseSettings,
+    tmp_path: Path,
+) -> None:
+    settings = postgres_settings.model_copy(
+        update={"catalogue_artifact_root": str(tmp_path / "artifacts")}
+    )
+    invocation = datetime(2026, 8, 5, 10, 0, tzinfo=UTC)
+
+    await ingest_provider_catalogue(
+        _command(mode="validate-only", idempotency_key=None),
+        DatabaseSettings(_env_file=None),
+        clock=_clock(invocation),
+    )
+    await ingest_provider_catalogue(
+        _command(mode="dry-run", idempotency_key=None),
+        settings,
+        clock=_clock(invocation),
+    )
+
+
+@pytest.mark.anyio
 async def test_sequential_catalogues_preserve_temporal_history_and_binding(
     reset_postgres_url: str,
     postgres_settings: DatabaseSettings,
@@ -166,6 +265,264 @@ async def test_sequential_catalogues_preserve_temporal_history_and_binding(
     assert state["mapping_root_count"] == 4
     assert state["version_successor_count"] == 4
     assert state["mapping_successor_count"] == 4
+
+
+@pytest.mark.anyio
+async def test_open_ended_historical_correction_supersedes_the_current_knowledge_leaf(
+    reset_postgres_url: str,
+    postgres_settings: DatabaseSettings,
+    tmp_path: Path,
+) -> None:
+    settings = postgres_settings.model_copy(
+        update={"catalogue_artifact_root": str(tmp_path / "artifacts")}
+    )
+    first = await ingest_provider_catalogue(
+        _command(mode="commit", idempotency_key="DATA-1.2-historical-open-a"),
+        settings,
+        clock=_clock(
+            datetime(2026, 8, 5, 10, 0, tzinfo=UTC),
+            datetime(2026, 8, 5, 10, 1, tzinfo=UTC),
+            datetime(2026, 8, 5, 10, 2, tzinfo=UTC),
+        ),
+    )
+    historical_from = EFFECTIVE_FROM - timedelta(days=2)
+    with pytest.raises(CatalogueConflictError, match="explicit catalogue predecessor"):
+        await ingest_provider_catalogue(
+            _command(
+                mode="commit",
+                idempotency_key="DATA-1.2-historical-open-missing",
+                effective_from=historical_from,
+            ),
+            settings,
+            clock=_clock(
+                datetime(2026, 8, 5, 10, 3, tzinfo=UTC),
+                datetime(2026, 8, 5, 10, 4, tzinfo=UTC),
+            ),
+        )
+    historical = await ingest_provider_catalogue(
+        _command(
+            mode="commit",
+            idempotency_key="DATA-1.2-historical-open-h",
+            effective_from=historical_from,
+            supersedes_catalogue_record_id=first.catalogue_record_id,
+        ),
+        settings,
+        clock=_clock(
+            datetime(2026, 8, 5, 10, 5, tzinfo=UTC),
+            datetime(2026, 8, 5, 10, 6, tzinfo=UTC),
+            datetime(2026, 8, 5, 10, 7, tzinfo=UTC),
+        ),
+    )
+
+    state = await _historical_state(settings, first, historical, EFFECTIVE_FROM)
+
+    assert state["selected_catalogue_id"] == historical.catalogue_version_id
+    assert state["selected_mapping_id"] == state["successor_mapping_id"]
+    assert state["catalogue_root_count"] == 1
+    assert state["catalogue_successor_count"] == 1
+    assert state["version_root_count"] == 4
+    assert state["version_successor_count"] == 4
+    assert state["mapping_root_count"] == 4
+    assert state["mapping_successor_count"] == 4
+    assert state["catalogue_edge_preserved"]
+    assert state["version_edge_preserved"]
+    assert state["mapping_edge_preserved"]
+
+
+@pytest.mark.anyio
+async def test_bounded_historical_backfill_preserves_historical_and_current_market_reads(
+    reset_postgres_url: str,
+    postgres_settings: DatabaseSettings,
+    tmp_path: Path,
+) -> None:
+    settings = postgres_settings.model_copy(
+        update={"catalogue_artifact_root": str(tmp_path / "artifacts")}
+    )
+    first = await ingest_provider_catalogue(
+        _command(mode="commit", idempotency_key="DATA-1.2-backfill-a"),
+        settings,
+        clock=_clock(
+            datetime(2026, 8, 5, 11, 0, tzinfo=UTC),
+            datetime(2026, 8, 5, 11, 1, tzinfo=UTC),
+            datetime(2026, 8, 5, 11, 2, tzinfo=UTC),
+        ),
+    )
+    historical_from = EFFECTIVE_FROM - timedelta(days=3)
+    historical_until = EFFECTIVE_FROM - timedelta(days=1)
+    backfill = await ingest_provider_catalogue(
+        _command(
+            mode="commit",
+            idempotency_key="DATA-1.2-backfill-h",
+            effective_from=historical_from,
+            effective_until=historical_until,
+            supersedes_catalogue_record_id=first.catalogue_record_id,
+        ),
+        settings,
+        clock=_clock(
+            datetime(2026, 8, 5, 11, 3, tzinfo=UTC),
+            datetime(2026, 8, 5, 11, 4, tzinfo=UTC),
+            datetime(2026, 8, 5, 11, 5, tzinfo=UTC),
+        ),
+    )
+    historical_market_time = historical_from + timedelta(hours=1)
+    engine = create_database_engine(settings)
+    try:
+        factory = create_session_factory(engine)
+        async with factory() as session:
+            first_run = await session.get(CatalogueIngestionRunRow, first.ingestion_run_id)
+            backfill_run = await session.get(CatalogueIngestionRunRow, backfill.ingestion_run_id)
+            first_membership = (
+                await session.scalars(
+                    select(CatalogueMembershipRow).where(
+                        CatalogueMembershipRow.catalogue_version_id == first.catalogue_version_id,
+                        CatalogueMembershipRow.provider_contract_key
+                        == "NSE_FO|SANITIZED_NIFTY_FUT",
+                    )
+                )
+            ).one()
+            backfill_membership = (
+                await session.scalars(
+                    select(CatalogueMembershipRow).where(
+                        CatalogueMembershipRow.catalogue_version_id
+                        == backfill.catalogue_version_id,
+                        CatalogueMembershipRow.provider_contract_key
+                        == "NSE_FO|SANITIZED_NIFTY_FUT",
+                    )
+                )
+            ).one()
+        assert first_run is not None and backfill_run is not None
+        async with PostgresUnitOfWork(factory) as unit_of_work:
+            before_known = await unit_of_work.catalogues.resolve(
+                "upstox:upstox-nse-nifty-index-derivatives-v1",
+                historical_market_time,
+                first_run.recorded_at,
+            )
+            historical = await unit_of_work.catalogues.resolve(
+                "upstox:upstox-nse-nifty-index-derivatives-v1",
+                historical_market_time,
+                backfill_run.recorded_at,
+            )
+            current = await unit_of_work.catalogues.resolve(
+                "upstox:upstox-nse-nifty-index-derivatives-v1",
+                EFFECTIVE_FROM,
+                backfill_run.recorded_at,
+            )
+            mapping_before_known = await unit_of_work.instruments.resolve_provider_key(
+                "upstox",
+                first_membership.provider_contract_key,
+                historical_market_time,
+                first_run.recorded_at,
+            )
+            historical_mapping = await unit_of_work.instruments.resolve_provider_key(
+                "upstox",
+                first_membership.provider_contract_key,
+                historical_market_time,
+                backfill_run.recorded_at,
+            )
+            current_mapping = await unit_of_work.instruments.resolve_provider_key(
+                "upstox",
+                first_membership.provider_contract_key,
+                EFFECTIVE_FROM,
+                backfill_run.recorded_at,
+            )
+        assert before_known is None
+        assert historical is not None
+        assert historical.catalogue_version_id == backfill.catalogue_version_id
+        assert current is not None
+        assert current.catalogue_version_id == first.catalogue_version_id
+        assert mapping_before_known is None
+        assert historical_mapping is not None
+        assert historical_mapping.mapping_id == backfill_membership.mapping_id
+        assert current_mapping is not None
+        assert current_mapping.mapping_id == first_membership.mapping_id
+    finally:
+        await dispose_database_engine(engine)
+    state = await _historical_state(settings, first, backfill, historical_market_time)
+    assert state["catalogue_root_count"] == 1
+    assert state["catalogue_successor_count"] == 1
+    assert state["version_root_count"] == 4
+    assert state["version_successor_count"] == 4
+    assert state["mapping_root_count"] == 4
+    assert state["mapping_successor_count"] == 4
+    assert state["catalogue_edge_preserved"]
+    assert state["version_edge_preserved"]
+    assert state["mapping_edge_preserved"]
+
+
+@pytest.mark.anyio
+async def test_stale_predecessor_rejects_and_same_effective_time_correction_succeeds(
+    reset_postgres_url: str,
+    postgres_settings: DatabaseSettings,
+    tmp_path: Path,
+) -> None:
+    settings = postgres_settings.model_copy(
+        update={"catalogue_artifact_root": str(tmp_path / "artifacts")}
+    )
+    first = await ingest_provider_catalogue(
+        _command(mode="commit", idempotency_key="DATA-1.2-stale-a"),
+        settings,
+        clock=_clock(
+            datetime(2026, 8, 5, 12, 0, tzinfo=UTC),
+            datetime(2026, 8, 5, 12, 1, tzinfo=UTC),
+            datetime(2026, 8, 5, 12, 2, tzinfo=UTC),
+        ),
+    )
+    second = await ingest_provider_catalogue(
+        _command(
+            mode="commit",
+            idempotency_key="DATA-1.2-stale-b",
+            effective_from=SECOND_EFFECTIVE_FROM,
+            supersedes_catalogue_record_id=first.catalogue_record_id,
+        ),
+        settings,
+        clock=_clock(
+            datetime(2026, 8, 5, 12, 3, tzinfo=UTC),
+            datetime(2026, 8, 5, 12, 4, tzinfo=UTC),
+            datetime(2026, 8, 5, 12, 5, tzinfo=UTC),
+        ),
+    )
+    with pytest.raises(CatalogueConflictError, match="current knowledge leaf"):
+        await ingest_provider_catalogue(
+            _command(
+                mode="commit",
+                idempotency_key="DATA-1.2-stale-rejected",
+                effective_from=EFFECTIVE_FROM - timedelta(days=1),
+                supersedes_catalogue_record_id=first.catalogue_record_id,
+            ),
+            settings,
+            clock=_clock(
+                datetime(2026, 8, 5, 12, 6, tzinfo=UTC),
+                datetime(2026, 8, 5, 12, 7, tzinfo=UTC),
+            ),
+        )
+    correction_file = _fixture_variant(
+        tmp_path,
+        CANONICAL_JSON.read_text().replace(
+            '"trading_symbol": "NIFTY26AUGFUT"',
+            '"trading_symbol": "NIFTY26AUGFUT-CORRECTED"',
+        ),
+        "same-effective-c.json.gz",
+    )
+    correction = await ingest_provider_catalogue(
+        _command(
+            mode="commit",
+            idempotency_key="DATA-1.2-same-effective-c",
+            file=correction_file,
+            effective_from=SECOND_EFFECTIVE_FROM,
+            supersedes_catalogue_record_id=second.catalogue_record_id,
+        ),
+        settings,
+        clock=_clock(
+            datetime(2026, 8, 5, 12, 8, tzinfo=UTC),
+            datetime(2026, 8, 5, 12, 9, tzinfo=UTC),
+            datetime(2026, 8, 5, 12, 10, tzinfo=UTC),
+        ),
+    )
+
+    assert correction.catalogue_record_id not in {
+        first.catalogue_record_id,
+        second.catalogue_record_id,
+    }
 
 
 @pytest.mark.anyio
@@ -556,13 +913,14 @@ def _command(
     idempotency_key: str | None,
     file: Path = NSE_JSON_GZ,
     effective_from: datetime = EFFECTIVE_FROM,
+    effective_until: datetime | None = None,
     supersedes_catalogue_record_id: str | None = None,
 ) -> CatalogueIngestionCommand:
     return CatalogueIngestionCommand(
         profile=PROFILE_VERSION,
         file=file,
         effective_from=effective_from,
-        effective_until=None,
+        effective_until=effective_until,
         idempotency_key=idempotency_key,
         expected_compressed_sha256=None,
         supersedes_catalogue_record_id=supersedes_catalogue_record_id,
@@ -748,6 +1106,150 @@ async def _sequential_state(settings: DatabaseSettings, first, second) -> dict[s
         await dispose_database_engine(engine)
 
 
+async def _historical_state(
+    settings: DatabaseSettings,
+    first,
+    successor,
+    market_as_of: datetime,
+) -> dict[str, object]:
+    engine = create_database_engine(settings)
+    try:
+        factory = create_session_factory(engine)
+        async with factory() as session:
+            successor_run = await session.get(
+                CatalogueIngestionRunRow,
+                successor.ingestion_run_id,
+            )
+            counts = {
+                "catalogue_root_count": int(
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(CatalogueVersionRecordRow)
+                        .where(CatalogueVersionRecordRow.supersedes_record_id.is_(None))
+                    )
+                ),
+                "catalogue_successor_count": int(
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(CatalogueVersionRecordRow)
+                        .where(CatalogueVersionRecordRow.supersedes_record_id.is_not(None))
+                    )
+                ),
+                "version_root_count": int(
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(InstrumentVersionRecordRow)
+                        .where(InstrumentVersionRecordRow.supersedes_record_id.is_(None))
+                    )
+                ),
+                "version_successor_count": int(
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(InstrumentVersionRecordRow)
+                        .where(InstrumentVersionRecordRow.supersedes_record_id.is_not(None))
+                    )
+                ),
+                "mapping_root_count": int(
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(ProviderMappingRecordRow)
+                        .where(ProviderMappingRecordRow.supersedes_record_id.is_(None))
+                    )
+                ),
+                "mapping_successor_count": int(
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(ProviderMappingRecordRow)
+                        .where(ProviderMappingRecordRow.supersedes_record_id.is_not(None))
+                    )
+                ),
+            }
+            successor_membership = (
+                await session.scalars(
+                    select(CatalogueMembershipRow).where(
+                        CatalogueMembershipRow.catalogue_version_id
+                        == successor.catalogue_version_id,
+                        CatalogueMembershipRow.provider_contract_key
+                        == "NSE_FO|SANITIZED_NIFTY_FUT",
+                    )
+                )
+            ).one()
+            first_membership = (
+                await session.scalars(
+                    select(CatalogueMembershipRow).where(
+                        CatalogueMembershipRow.catalogue_version_id == first.catalogue_version_id,
+                        CatalogueMembershipRow.provider_contract_key
+                        == successor_membership.provider_contract_key,
+                    )
+                )
+            ).one()
+            first_version_record = (
+                await session.scalars(
+                    select(InstrumentVersionRecordRow).where(
+                        InstrumentVersionRecordRow.version_id == first_membership.version_id
+                    )
+                )
+            ).one()
+            successor_version_record = (
+                await session.scalars(
+                    select(InstrumentVersionRecordRow).where(
+                        InstrumentVersionRecordRow.version_id == successor_membership.version_id
+                    )
+                )
+            ).one()
+            first_mapping_record = (
+                await session.scalars(
+                    select(ProviderMappingRecordRow).where(
+                        ProviderMappingRecordRow.mapping_id == first_membership.mapping_id
+                    )
+                )
+            ).one()
+            successor_mapping_record = (
+                await session.scalars(
+                    select(ProviderMappingRecordRow).where(
+                        ProviderMappingRecordRow.mapping_id == successor_membership.mapping_id
+                    )
+                )
+            ).one()
+            successor_catalogue_record = await session.get(
+                CatalogueVersionRecordRow,
+                successor.catalogue_record_id,
+            )
+        assert successor_run is not None
+        async with PostgresUnitOfWork(factory) as unit_of_work:
+            selected = await unit_of_work.catalogues.resolve(
+                "upstox:upstox-nse-nifty-index-derivatives-v1",
+                market_as_of,
+                successor_run.recorded_at,
+            )
+            selected_mapping = await unit_of_work.instruments.resolve_provider_key(
+                "upstox",
+                successor_membership.provider_contract_key,
+                market_as_of,
+                successor_run.recorded_at,
+            )
+        assert selected is not None
+        assert selected_mapping is not None
+        assert successor_catalogue_record is not None
+        return {
+            "selected_catalogue_id": selected.catalogue_version_id,
+            "selected_mapping_id": selected_mapping.mapping_id,
+            "successor_mapping_id": successor_membership.mapping_id,
+            "catalogue_edge_preserved": (
+                successor_catalogue_record.supersedes_record_id == first.catalogue_record_id
+            ),
+            "version_edge_preserved": (
+                successor_version_record.supersedes_record_id == first_version_record.record_id
+            ),
+            "mapping_edge_preserved": (
+                successor_mapping_record.supersedes_record_id == first_mapping_record.record_id
+            ),
+            **counts,
+        }
+    finally:
+        await dispose_database_engine(engine)
+
+
 def _fixture_variant(tmp_path: Path, payload: str, name: str = "variant.json.gz") -> Path:
     path = tmp_path / name
     path.write_bytes(gzip.compress(payload.encode("utf-8"), mtime=0))
@@ -757,3 +1259,8 @@ def _fixture_variant(tmp_path: Path, payload: str, name: str = "variant.json.gz"
 def _expected_object_key(retained_path: Path) -> str:
     compressed_sha256 = hashlib.sha256(retained_path.read_bytes()).hexdigest()
     return f"sha256/{compressed_sha256[:2]}/{compressed_sha256}.json.gz"
+
+
+def _clock(*values: datetime):
+    iterator = iter(values)
+    return lambda: next(iterator)

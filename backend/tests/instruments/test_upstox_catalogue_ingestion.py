@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 import asyncio
 import gzip
@@ -21,7 +21,13 @@ from app.instruments.providers.upstox_catalogue import (
     PROFILE_VERSION,
     PROVIDER,
     SOURCE_SCHEMA_VERSION,
+    bind_upstox_catalogue_plan_recorded_at,
     build_upstox_nifty_catalogue_plan,
+)
+from app.instruments.temporal_records import (
+    catalogue_temporal_record,
+    instrument_version_temporal_record,
+    provider_mapping_temporal_record,
 )
 from app.services.catalogue_ingestion_service import (
     CatalogueIngestionCommand,
@@ -55,6 +61,36 @@ def test_upstox_bod_profile_converts_expiry_and_tick_size(tmp_path: Path) -> Non
     assert plan.accepted_unique_count == 4
     assert plan.exact_duplicate_count == 0
     assert plan.excluded_count == 1
+
+
+def test_runtime_time_binding_preserves_semantic_ids_and_changes_temporal_ids() -> None:
+    with validate_gzip_json_array(NSE_JSON_GZ) as artifact:
+        plan = build_upstox_nifty_catalogue_plan(
+            artifact=artifact,
+            source_artifact_id="sha256:" + "a" * 64,
+            effective_from=EFFECTIVE_FROM,
+            effective_until=None,
+            recorded_at=EFFECTIVE_FROM,
+            ingestion_run_id="sha256:" + "b" * 64,
+        )
+    accepted_at = EFFECTIVE_FROM + timedelta(hours=1)
+    rebound = bind_upstox_catalogue_plan_recorded_at(plan, accepted_at)
+
+    assert rebound.catalogue.catalogue_version_id == plan.catalogue.catalogue_version_id
+    assert {item.version_id for item in rebound.items} == {item.version_id for item in plan.items}
+    assert {item.mapping_id for item in rebound.items} == {item.mapping_id for item in plan.items}
+    assert rebound.catalogue.recorded_at == accepted_at
+    assert {item.version.recorded_at for item in rebound.items} == {accepted_at}
+    assert {item.mapping.recorded_at for item in rebound.items} == {accepted_at}
+    assert catalogue_temporal_record(rebound.catalogue).record_id != catalogue_temporal_record(
+        plan.catalogue
+    ).record_id
+    assert {
+        instrument_version_temporal_record(item.version).record_id for item in rebound.items
+    } != {instrument_version_temporal_record(item.version).record_id for item in plan.items}
+    assert {
+        provider_mapping_temporal_record(item.mapping).record_id for item in rebound.items
+    } != {provider_mapping_temporal_record(item.mapping).record_id for item in plan.items}
 
 
 def test_row_permutation_preserves_normalized_catalogue_identity(tmp_path: Path) -> None:

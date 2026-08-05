@@ -9,6 +9,7 @@ from app.instruments.temporal_records import (
     TemporalRecord,
     TemporalRecordKind,
     TemporalState,
+    resolve_temporal_knowledge_leaf,
     resolve_temporal_state,
 )
 
@@ -84,6 +85,29 @@ def test_ineligible_successor_does_not_hide_market_eligible_predecessor() -> Non
     assert resolved is not None and resolved.value.name == "first"
 
 
+def test_knowledge_leaf_ignores_market_eligibility() -> None:
+    first = record("first", NOW)
+    second = record("second", NOW + timedelta(hours=1), first.record_id)
+    states = (
+        TemporalState(first, Value("first", True)),
+        TemporalState(second, Value("second", False)),
+    )
+
+    resolved = resolve_temporal_knowledge_leaf(states, None)
+
+    assert resolved is not None and resolved.value.name == "second"
+
+
+def test_knowledge_leaf_honors_knowledge_cutoff() -> None:
+    first = record("first", NOW)
+    second = record("second", NOW + timedelta(hours=1), first.record_id)
+    states = (TemporalState(first, Value("first")), TemporalState(second, Value("second")))
+
+    resolved = resolve_temporal_knowledge_leaf(states, NOW + timedelta(minutes=30))
+
+    assert resolved is not None and resolved.value.name == "first"
+
+
 @pytest.mark.parametrize(
     "records, message",
     [
@@ -146,3 +170,5 @@ def test_multiple_root_leaves_are_ambiguous() -> None:
     )
     with pytest.raises(AmbiguousPointInTimeResultError):
         resolve_temporal_state(states, None, lambda value: value.eligible)
+    with pytest.raises(AmbiguousPointInTimeResultError):
+        resolve_temporal_knowledge_leaf(states, None)
