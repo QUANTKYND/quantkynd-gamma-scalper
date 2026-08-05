@@ -63,8 +63,8 @@ DATA_1_2_TABLES = {
 FIXTURE_PATH = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "upstox" / "NSE.json.gz"
 FIXTURE_EFFECTIVE_FROM = datetime(2026, 8, 4, 3, 45, tzinfo=UTC)
 FIXTURE_SECOND_EFFECTIVE_FROM = datetime(2026, 8, 5, 3, 45, tzinfo=UTC)
-FIXTURE_HISTORICAL_EFFECTIVE_FROM = datetime(2026, 8, 1, 3, 45, tzinfo=UTC)
-FIXTURE_HISTORICAL_EFFECTIVE_UNTIL = datetime(2026, 8, 3, 3, 45, tzinfo=UTC)
+FIXTURE_HISTORICAL_EFFECTIVE_FROM = datetime(2026, 8, 4, 12, 0, tzinfo=UTC)
+FIXTURE_HISTORICAL_EFFECTIVE_UNTIL = datetime(2026, 8, 4, 18, 0, tzinfo=UTC)
 FIXTURE_IDEMPOTENCY_KEYS = (
     "DATA-1.2-restore-verifier-fixture-a",
     "DATA-1.2-restore-verifier-fixture-b",
@@ -324,6 +324,7 @@ async def _catalogue_representative_reads(engine) -> dict[str, object]:
     first_run, second_run, historical_run = direct["ingestion_runs"]
     first_memberships, second_memberships, historical_memberships = direct["memberships"]
     provider_key = str(first_memberships[0]["provider_contract_key"])
+    instrument_id = str(first_memberships[0]["instrument_id"])
     historical_market_time = FIXTURE_HISTORICAL_EFFECTIVE_FROM + timedelta(hours=1)
     factory = create_session_factory(engine)
     async with PostgresUnitOfWork(factory) as unit_of_work:
@@ -382,6 +383,21 @@ async def _catalogue_representative_reads(engine) -> dict[str, object]:
             historical_market_time,
             datetime.fromisoformat(str(historical_run["recorded_at"])),
         )
+        version_historical_before_known = await unit_of_work.instruments.resolve_version_state(
+            instrument_id,
+            historical_market_time,
+            datetime.fromisoformat(str(second_run["recorded_at"])),
+        )
+        version_historical_after_known = await unit_of_work.instruments.resolve_version_state(
+            instrument_id,
+            historical_market_time,
+            datetime.fromisoformat(str(historical_run["recorded_at"])),
+        )
+        version_current = await unit_of_work.instruments.resolve_version_state(
+            instrument_id,
+            FIXTURE_SECOND_EFFECTIVE_FROM,
+            datetime.fromisoformat(str(historical_run["recorded_at"])),
+        )
     if catalogue_before_second_known is None or (
         catalogue_before_second_known.catalogue_version_id
         != first_run["catalogue_version_id"]
@@ -406,9 +422,23 @@ async def _catalogue_representative_reads(engine) -> dict[str, object]:
         raise RestoreVerificationError("mapping A is not active before B is market-effective")
     if mapping_current is None or mapping_current.mapping_id != second_mapping_id:
         raise RestoreVerificationError("mapping B is not the current eligible mapping")
+    first_version_id = first_memberships[0]["version_id"]
     historical_mapping_id = historical_memberships[0]["mapping_id"]
-    if catalogue_historical_before_known is not None or mapping_historical_before_known is not None:
-        raise RestoreVerificationError("historical backfill is visible before it is known")
+    historical_version_id = historical_memberships[0]["version_id"]
+    second_version_id = second_memberships[0]["version_id"]
+    if catalogue_historical_before_known is None or (
+        catalogue_historical_before_known.catalogue_version_id
+        != first_run["catalogue_version_id"]
+    ):
+        raise RestoreVerificationError("catalogue A is not reproducible before H is known")
+    if mapping_historical_before_known is None or (
+        mapping_historical_before_known.mapping_id != first_mapping_id
+    ):
+        raise RestoreVerificationError("mapping A is not reproducible before H is known")
+    if version_historical_before_known is None or (
+        version_historical_before_known.value.version_id != first_version_id
+    ):
+        raise RestoreVerificationError("version A is not reproducible before H is known")
     if catalogue_historical_after_known is None or (
         catalogue_historical_after_known.catalogue_version_id
         != historical_run["catalogue_version_id"]
@@ -418,6 +448,12 @@ async def _catalogue_representative_reads(engine) -> dict[str, object]:
         mapping_historical_after_known.mapping_id != historical_mapping_id
     ):
         raise RestoreVerificationError("historical mapping is not reproducible after it is known")
+    if version_historical_after_known is None or (
+        version_historical_after_known.value.version_id != historical_version_id
+    ):
+        raise RestoreVerificationError("historical version is not reproducible after it is known")
+    if version_current is None or version_current.value.version_id != second_version_id:
+        raise RestoreVerificationError("version B is not the current eligible version")
     binding_continuity = all(
         first_membership["instrument_id"]
         == second_membership["instrument_id"]
@@ -466,6 +502,22 @@ async def _catalogue_representative_reads(engine) -> dict[str, object]:
         "provider_mapping_historical_after_known": _identity(
             mapping_historical_after_known,
             "mapping_id",
+        ),
+        "instrument_version_historical_before_known": _identity(
+            version_historical_before_known.value
+            if version_historical_before_known is not None
+            else None,
+            "version_id",
+        ),
+        "instrument_version_historical_after_known": _identity(
+            version_historical_after_known.value
+            if version_historical_after_known is not None
+            else None,
+            "version_id",
+        ),
+        "instrument_version_current": _identity(
+            version_current.value if version_current is not None else None,
+            "version_id",
         ),
         "provider_binding_continuity": binding_continuity,
     }
