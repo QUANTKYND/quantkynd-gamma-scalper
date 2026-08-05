@@ -17,9 +17,8 @@ class ParameterChunk:
 
 def plan_parameter_chunks(item_count: int, parameters_per_item: int, budget: int = 60000) -> tuple[ParameterChunk, ...]:
     if not isinstance(item_count,int) or item_count < 0 or not isinstance(parameters_per_item,int) or parameters_per_item <= 0 or budget <= 0: raise ValueError("invalid chunk planner arguments")
-    size = max(1, budget // parameters_per_item)
+    size = max(1, min(1000, budget // parameters_per_item))
     return tuple(ParameterChunk(offset, min(size, item_count-offset)) for offset in range(0, item_count, size))
 
 def parameter_chunks(item_count: int, parameters_per_item: int, budget: int = 60000):
     return plan_parameter_chunks(item_count, parameters_per_item, budget)
-

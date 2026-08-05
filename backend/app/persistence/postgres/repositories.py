@@ -24,6 +24,7 @@ from app.instruments.ports import (
     ProviderMappingState,
     SemanticCollisionError,
 )
+from app.market_data.persistence.planner import plan_parameter_chunks
 
 class PostgresMarketEventRepository:
     def __init__(self, session, require_active):
@@ -42,43 +43,163 @@ class PostgresMarketEventRepository:
         result = command.normalization_result
         if raw.raw_event_id != result.raw_frame_identity.raw_event_id:
             raise ValueError("raw frame and result identities differ")
-        result_id = DurableResultIdentity(raw.raw_event_id, result.accepted_events[0].normalization_schema_version if result.accepted_events else 1).result_id
+        schema_version = result.accepted_events[0].normalization_schema_version if result.accepted_events else 1
+        result_id = DurableResultIdentity(raw.raw_event_id, schema_version).result_id
+        from app.market_data.persistence.planner import derive_lock_stripes
+        roots = [("raw_frame", raw.raw_event_id), ("normalization_result", result_id)]
+        roots.extend(("market_observation", event.event_id) for event in result.accepted_events)
+        for failure in getattr(result, "entry_failures", ()):
+            failure_id = FailureIdentity(
+                result_id,
+                failure.scope.value,
+                failure.reason_code,
+                failure.provider_contract_key,
+                failure.segment,
+            ).failure_id
+            roots.append(("market_failure", failure_id))
+        if getattr(result, "frame_failure", None) is not None:
+            frame_failure = result.frame_failure
+            failure_id = FailureIdentity(
+                result_id,
+                frame_failure.scope.value,
+                frame_failure.reason_code,
+                frame_failure.provider_contract_key,
+                frame_failure.segment,
+            ).failure_id
+            roots.append(("market_failure", failure_id))
+        for stripe in derive_lock_stripes(roots):
+            await self._session.execute(text("SELECT pg_advisory_xact_lock(CAST(:data14_namespace AS integer), CAST(:stripe AS integer))"), {"data14_namespace":-1377601296,"stripe":stripe})
+
         existing_raw = (await self._session.execute(text("SELECT frame_bytes, frame_content_hash FROM raw_market_frames WHERE raw_event_id=:id"), {"id": raw.raw_event_id})).first()
         if existing_raw is None:
             await self._session.execute(text("INSERT INTO raw_market_frames (id, created_at, raw_event_id, frame_bytes, frame_content_hash, source_order) VALUES (:id, :at, :raw, :bytes, :hash, :order)"), {"id":raw.raw_event_id,"at":raw.recorded_at,"raw":raw.raw_event_id,"bytes":raw.frame_bytes,"hash":raw.frame_content_hash,"order":raw.source_order})
             inserted = True
         elif bytes(existing_raw.frame_bytes) != raw.frame_bytes or existing_raw.frame_content_hash != raw.frame_content_hash:
             raise RawFrameContentMismatchError(raw.raw_event_id)
-        else: inserted = False
+        else:
+            inserted = False
+
         existing_result = (await self._session.execute(text("SELECT full_result_hash, adopted_semantics_hash FROM market_normalization_results WHERE id=:id"), {"id":result_id})).first()
         if existing_result is None:
-            await self._session.execute(text("INSERT INTO market_normalization_results (id, created_at, raw_event_id, full_result_hash, adopted_semantics_hash, normalization_schema_version, normalizer_implementation_version) VALUES (:id,:at,:raw,:full,:adopted,:schema,:implementation)"), {"id":result_id,"at":persistence_recorded_at or raw.recorded_at,"raw":raw.raw_event_id,"full":result.full_result_hash,"adopted":result.adopted_semantics_hash,"schema":1,"implementation":"upstox-v3-normalizer-1"})
+            await self._session.execute(text("INSERT INTO market_normalization_results (id, created_at, raw_event_id, full_result_hash, adopted_semantics_hash, normalization_schema_version, normalizer_implementation_version) VALUES (:id,:at,:raw,:full,:adopted,:schema,:implementation)"), {"id":result_id,"at":persistence_recorded_at or raw.recorded_at,"raw":raw.raw_event_id,"full":result.full_result_hash,"adopted":result.adopted_semantics_hash,"schema":schema_version,"implementation":"upstox-v3-normalizer-1"})
             inserted = True
         elif existing_result.full_result_hash != result.full_result_hash or existing_result.adopted_semantics_hash != result.adopted_semantics_hash:
             raise NormalizationResultConflictError(result_id)
+
+        event_rows: list[dict[str, object]] = []
+        event_memberships: list[dict[str, object]] = []
         for ordinal, event in enumerate(result.accepted_events):
             payload = canonical_json(event)
             existing = (await self._session.execute(text("SELECT payload, raw_event_id FROM market_observations WHERE id=:id"), {"id":event.event_id})).first()
             if existing is None:
-                await self._session.execute(text("INSERT INTO market_observations (id,created_at,raw_event_id,event_type,normalization_schema_version,payload) VALUES (:id,:at,:raw,:type,:schema,CAST(:payload AS json))"), {"id":event.event_id,"at":raw.recorded_at,"raw":raw.raw_event_id,"type":type(event).__name__,"schema":event.normalization_schema_version,"payload":payload})
+                event_rows.append({
+                    "id": event.event_id,
+                    "created_at": raw.recorded_at,
+                    "raw_event_id": raw.raw_event_id,
+                    "event_type": type(event).__name__,
+                    "normalization_schema_version": event.normalization_schema_version,
+                    "payload": payload,
+                })
             elif existing.payload != __import__('json').loads(payload) or existing.raw_event_id != raw.raw_event_id:
                 raise NormalizedEventIdentityConflictError(event.event_id)
-            await self._insert_membership("market_normalization_result_events", {"id":f"{result_id}:{ordinal}","created_at":raw.recorded_at,"result_id":result_id,"raw_event_id":raw.raw_event_id,"event_id":event.event_id,"event_ordinal":ordinal}, "result_id=:result_id AND event_ordinal=:event_ordinal")
-        failures = (("frame", result.frame_failure),) if result.frame_failure else ()
-        failures += tuple(("entry", failure) for failure in result.entry_failures)
+            event_memberships.append({
+                "id": f"{result_id}:{ordinal}",
+                "created_at": raw.recorded_at,
+                "result_id": result_id,
+                "raw_event_id": raw.raw_event_id,
+                "event_id": event.event_id,
+                "event_ordinal": ordinal,
+            })
+        await self._bulk_insert_json_rows("market_observations", event_rows, payload_cast=True)
+        await self._bulk_insert_rows("market_normalization_result_events", event_memberships)
+
+        failure_rows: list[dict[str, object]] = []
+        failure_memberships: list[dict[str, object]] = []
         role_ordinals = {"frame": 0, "entry": 0}
-        for role, failure in failures:
+        for role, failure in (("frame", result.frame_failure),) if result.frame_failure else ():
             failure_id = FailureIdentity(result_id, failure.scope.value, failure.reason_code, failure.provider_contract_key, failure.segment).failure_id
             payload = canonical_json(failure)
             existing = (await self._session.execute(text("SELECT payload FROM market_normalization_failures WHERE failure_id=:id"), {"id":failure_id})).first()
             if existing is None:
-                await self._session.execute(text("INSERT INTO market_normalization_failures (id,created_at,result_id,raw_event_id,failure_id,payload) VALUES (:id,:at,:result,:raw,:failure,CAST(:payload AS json))"), {"id":failure_id,"at":raw.recorded_at,"result":result_id,"raw":raw.raw_event_id,"failure":failure_id,"payload":payload})
-            elif existing.payload != __import__('json').loads(payload): raise NormalizationFailureIdentityConflictError(failure_id)
-            ordinal = role_ordinals[role]; role_ordinals[role] += 1
-            await self._insert_membership("market_normalization_result_failures", {"id":f"{result_id}:{role}:{ordinal}","created_at":raw.recorded_at,"result_id":result_id,"raw_event_id":raw.raw_event_id,"failure_id":failure_id,"failure_role":role,"failure_ordinal":ordinal}, "result_id=:result_id AND failure_role=:failure_role AND failure_ordinal=:failure_ordinal")
+                failure_rows.append({
+                    "id": failure_id,
+                    "created_at": raw.recorded_at,
+                    "result_id": result_id,
+                    "raw_event_id": raw.raw_event_id,
+                    "failure_id": failure_id,
+                    "payload": payload,
+                })
+            elif existing.payload != __import__('json').loads(payload):
+                raise NormalizationFailureIdentityConflictError(failure_id)
+            failure_memberships.append({
+                "id": f"{result_id}:{role}:{role_ordinals[role]}",
+                "created_at": raw.recorded_at,
+                "result_id": result_id,
+                "raw_event_id": raw.raw_event_id,
+                "failure_id": failure_id,
+                "failure_role": role,
+                "failure_ordinal": role_ordinals[role],
+            })
+            role_ordinals[role] += 1
+        for role, failure in tuple(("entry", failure) for failure in result.entry_failures):
+            failure_id = FailureIdentity(result_id, failure.scope.value, failure.reason_code, failure.provider_contract_key, failure.segment).failure_id
+            payload = canonical_json(failure)
+            existing = (await self._session.execute(text("SELECT payload FROM market_normalization_failures WHERE failure_id=:id"), {"id":failure_id})).first()
+            if existing is None:
+                failure_rows.append({
+                    "id": failure_id,
+                    "created_at": raw.recorded_at,
+                    "result_id": result_id,
+                    "raw_event_id": raw.raw_event_id,
+                    "failure_id": failure_id,
+                    "payload": payload,
+                })
+            elif existing.payload != __import__('json').loads(payload):
+                raise NormalizationFailureIdentityConflictError(failure_id)
+            failure_memberships.append({
+                "id": f"{result_id}:{role}:{role_ordinals[role]}",
+                "created_at": raw.recorded_at,
+                "result_id": result_id,
+                "raw_event_id": raw.raw_event_id,
+                "failure_id": failure_id,
+                "failure_role": role,
+                "failure_ordinal": role_ordinals[role],
+            })
+            role_ordinals[role] += 1
+        await self._bulk_insert_json_rows("market_normalization_failures", failure_rows, payload_cast=True)
+        await self._bulk_insert_rows("market_normalization_result_failures", failure_memberships)
+
         accepted = len(getattr(result, "accepted_events", ()))
         failures = len(getattr(result, "entry_failures", ())) + (1 if getattr(result, "frame_failure", None) else 0)
         return PersistenceSummary(result_id=result_id, inserted=inserted, accepted_count=accepted, failure_count=failures)
+
+    async def _bulk_insert_rows(self, table, rows):
+        if not rows:
+            return
+        columns = tuple(rows[0].keys())
+        chunks = plan_parameter_chunks(len(rows), len(columns))
+        for chunk in chunks:
+            batch = rows[chunk.offset : chunk.offset + chunk.size]
+            await self._session.execute(
+                text(f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join(f':{name}' for name in columns)})"),
+                batch,
+            )
+
+    async def _bulk_insert_json_rows(self, table, rows, *, payload_cast: bool = False):
+        if not rows:
+            return
+        columns = tuple(rows[0].keys())
+        chunks = plan_parameter_chunks(len(rows), len(columns))
+        for chunk in chunks:
+            batch = rows[chunk.offset : chunk.offset + chunk.size]
+            inserts = ", ".join(
+                "CAST(:payload AS json)" if column == "payload" else f":{column}"
+                for column in columns
+            )
+            await self._session.execute(
+                text(f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({inserts})"),
+                batch,
+            )
 
     async def _insert_membership(self, table, values, predicate):
         existing = (await self._session.execute(text(f"SELECT id FROM {table} WHERE {predicate}"), values)).first()
@@ -87,10 +208,9 @@ class PostgresMarketEventRepository:
             parameters = ", ".join(f":{name}" for name in values)
             await self._session.execute(text(f"INSERT INTO {table} ({columns}) VALUES ({parameters})"), values)
 
-    async def get_result(self, result_id):
+    async def get_result(self, raw_event_id, normalization_schema_version):
         self._require_active()
-        from sqlalchemy import text
-        row = await self._session.execute(text("SELECT result_id FROM market_normalization_results WHERE result_id = :result_id"), {"result_id": result_id})
+        row = await self._session.execute(text("SELECT * FROM market_normalization_results WHERE raw_event_id=:raw AND normalization_schema_version=:schema"), {"raw":raw_event_id,"schema":normalization_schema_version})
         return row.first()
 
     async def insert_or_compare_raw_frame(self, frame): return await self.persist_frame_result(frame)
@@ -100,13 +220,30 @@ class PostgresMarketEventRepository:
     async def insert_or_compare_failures(self, failures): return tuple(failures)
     async def insert_result_event_memberships(self, memberships): return tuple(memberships)
     async def insert_result_failure_memberships(self, memberships): return tuple(memberships)
-    async def get_raw_frame_metadata(self, raw_event_id): return None
-    async def get_raw_frame(self, raw_event_id): return None
-    async def get_event(self, event_id, normalization_schema_version=1): return None
-    async def load_result_aggregate(self, result_id): return await self.get_result(result_id)
-    async def scan_normalization_results(self, cursor=None, limit=100): return ()
-    async def list_subject_observations(self, subject_id, normalization_schema_version=1): return ()
-    async def list_provider_status(self, provider, normalization_schema_version=1): return ()
+    async def get_raw_frame_metadata(self, raw_event_id):
+        row = await self._session.execute(text("SELECT raw_event_id,frame_content_hash,source_order,created_at FROM raw_market_frames WHERE raw_event_id=:id"), {"id":raw_event_id})
+        return row.first()
+    async def get_raw_frame(self, raw_event_id):
+        row = await self._session.execute(text("SELECT * FROM raw_market_frames WHERE raw_event_id=:id"), {"id":raw_event_id})
+        return row.first()
+    async def get_event(self, event_id, normalization_schema_version):
+        row = await self._session.execute(text("SELECT o.* FROM market_observations o JOIN market_normalization_result_events m ON m.event_id=o.id JOIN market_normalization_results r ON r.id=m.result_id WHERE o.id=:id AND o.normalization_schema_version=:schema AND r.normalization_schema_version=:schema"), {"id":event_id,"schema":normalization_schema_version})
+        return row.first()
+    async def load_result_aggregate(self, raw_event_id, normalization_schema_version):
+        result = await self.get_result(raw_event_id, normalization_schema_version)
+        if result is None: return None
+        events = (await self._session.execute(text("SELECT o.* FROM market_normalization_result_events m JOIN market_observations o ON o.id=m.event_id WHERE m.result_id=:id ORDER BY m.event_ordinal"), {"id":result.id})).all()
+        failures = (await self._session.execute(text("SELECT f.*,m.failure_role,m.failure_ordinal FROM market_normalization_result_failures m JOIN market_normalization_failures f ON f.failure_id=m.failure_id WHERE m.result_id=:id ORDER BY m.failure_role,m.failure_ordinal"), {"id":result.id})).all()
+        return {"result":result,"events":tuple(events),"failures":tuple(failures)}
+    async def scan_normalization_results(self, normalization_schema_version, cursor=None, limit=100):
+        rows = await self._session.execute(text("SELECT * FROM market_normalization_results WHERE normalization_schema_version=:schema AND (:cursor IS NULL OR id>:cursor) ORDER BY id LIMIT :limit"), {"schema":normalization_schema_version,"cursor":cursor,"limit":limit})
+        return tuple(rows.all())
+    async def list_subject_observations(self, normalization_schema_version, subject_id, limit=100):
+        rows = await self._session.execute(text("SELECT DISTINCT o.* FROM market_observations o JOIN market_normalization_result_events m ON m.event_id=o.id JOIN market_normalization_results r ON r.id=m.result_id WHERE o.normalization_schema_version=:schema AND CAST(o.payload AS text) LIKE :subject ORDER BY o.id LIMIT :limit"), {"schema":normalization_schema_version,"subject":f'%{subject_id}%',"limit":limit})
+        return tuple(rows.all())
+    async def list_provider_status(self, normalization_schema_version, provider, limit=100):
+        rows = await self._session.execute(text("SELECT DISTINCT o.* FROM market_observations o JOIN market_normalization_result_events m ON m.event_id=o.id JOIN market_normalization_results r ON r.id=m.result_id WHERE o.normalization_schema_version=:schema AND CAST(o.payload AS text) LIKE :provider ORDER BY o.id LIMIT :limit"), {"schema":normalization_schema_version,"provider":f'%{provider}%',"limit":limit})
+        return tuple(rows.all())
 from app.instruments.provider_catalogue import (
     CatalogueIngestionRun,
     CatalogueMembership,

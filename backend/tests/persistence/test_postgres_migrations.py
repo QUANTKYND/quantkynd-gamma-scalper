@@ -36,7 +36,7 @@ from app.persistence.postgres.migrations import alembic_config
 EXPECTED_TABLES = set(Base.metadata.tables)
 INITIAL_REVISION = "20260804_01"
 DATA_1_1_REVISION = "20260804_02"
-EXPECTED_REVISION = "20260804_03"
+EXPECTED_REVISION = "20260804_04"
 RECORDED_AT = datetime(2026, 8, 4, 3, 30, tzinfo=UTC)
 DATA_1_2_TABLES = {
     "catalogue_source_artifacts",

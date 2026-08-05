@@ -4,6 +4,8 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    BigInteger,
+    Column,
     CheckConstraint,
     Date,
     DateTime,
@@ -11,8 +13,11 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    JSON,
+    LargeBinary,
     Numeric,
     String,
+    Table,
     UniqueConstraint,
     text,
 )
@@ -26,6 +31,36 @@ NAME_LENGTH = 128
 KEY_LENGTH = 512
 HASH_LENGTH = 128
 DECIMAL_TYPE = Numeric(38, 18)
+
+DATA14_TABLE_COLUMNS = {
+    "raw_market_frames": (Column("raw_event_id", String(ID_LENGTH), nullable=False, unique=True), Column("frame_bytes", LargeBinary, nullable=False), Column("frame_content_hash", String(HASH_LENGTH), nullable=False), Column("source_order", BigInteger, nullable=False)),
+    "market_normalization_results": (Column("raw_event_id", String(ID_LENGTH), nullable=False), Column("full_result_hash", String(HASH_LENGTH), nullable=False), Column("adopted_semantics_hash", String(HASH_LENGTH), nullable=False), Column("normalization_schema_version", Integer, nullable=False), Column("normalizer_implementation_version", String(NAME_LENGTH), nullable=False)),
+    "market_observations": (Column("raw_event_id", String(ID_LENGTH), nullable=False), Column("event_type", String(32), nullable=False), Column("normalization_schema_version", Integer, nullable=False), Column("payload", JSON, nullable=False)),
+    "market_normalization_result_events": (Column("result_id", String(ID_LENGTH), nullable=False), Column("raw_event_id", String(ID_LENGTH), nullable=False), Column("event_id", String(ID_LENGTH), nullable=False), Column("event_ordinal", Integer, nullable=False)),
+    "market_normalization_failures": (Column("result_id", String(ID_LENGTH), nullable=False), Column("raw_event_id", String(ID_LENGTH), nullable=False), Column("failure_id", String(ID_LENGTH), nullable=False), Column("payload", JSON, nullable=False)),
+    "market_normalization_result_failures": (Column("result_id", String(ID_LENGTH), nullable=False), Column("raw_event_id", String(ID_LENGTH), nullable=False), Column("failure_id", String(ID_LENGTH), nullable=False), Column("failure_role", String(16), nullable=False), Column("failure_ordinal", Integer, nullable=False)),
+    "provider_lifecycle_observations": (Column("raw_event_id", String(ID_LENGTH), nullable=False), Column("lifecycle_kind", String(32), nullable=False)),
+}
+
+DATA14_TABLES = (
+    "raw_market_frames", "market_normalization_results", "market_observations",
+    "underlying_quote_observations", "futures_quote_observations", "option_quote_observations",
+    "market_segment_status_observations", "market_normalization_result_events",
+    "market_normalization_failures", "market_normalization_result_failures",
+    "provider_subscription_instrument_sets", "provider_subscription_instrument_set_keys",
+    "provider_lifecycle_batches", "raw_provider_lifecycle_events", "provider_lifecycle_batch_events",
+    "provider_lifecycle_observations", "provider_connection_lifecycle_observations",
+    "provider_subscription_lifecycle_observations", "provider_lifecycle_batch_observations",
+)
+
+for _data14_table in DATA14_TABLES:
+    Table(
+        _data14_table,
+        Base.metadata,
+        Column("id", String(ID_LENGTH), primary_key=True),
+        Column("created_at", DateTime(timezone=True), nullable=False),
+        *DATA14_TABLE_COLUMNS.get(_data14_table, ()),
+    )
 
 
 def _temporal_record_constraints(table_name: str, semantic_column: str) -> tuple:

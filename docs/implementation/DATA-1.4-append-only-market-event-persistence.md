@@ -19,8 +19,14 @@ Frozen constants:
 
 Verification run on the continuation:
 
+- PostgreSQL server: `PostgreSQL 17.10` on Alpine;
+- `max_locks_per_transaction`: `64`;
+- Alembic upgrade reached `20260804_04`; metadata check reports no new upgrade operations;
+- focused pure checkpoint suite: 5 passed, zero skipped;
 - backend pytest: existing suite passed with the repository's pre-existing PostgreSQL skips;
 - Python compilation: passed with `uv run python -m compileall`;
+- `uv lock --check`: passed;
+- frontend ESLint and production build: passed;
 - `git diff --check`: passed.
 
-This document intentionally does not claim final DATA-1.4 acceptance, PostgreSQL/concurrency evidence, dump/restore completion, or lifecycle completion.
+Known checkpoint deviations remain: temporal catalogue record provenance is not persisted; the approved PK/unique/FK matrix and hostile numeric/time constraints are incomplete; PostgreSQL concurrency and rollback suites are absent. Repository event/failure writes now use parameter-bounded batch execution with the approved chunk planner. This document intentionally does not claim checkpoint completion, final DATA-1.4 acceptance, dump/restore completion, or lifecycle completion.
