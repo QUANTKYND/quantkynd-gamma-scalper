@@ -85,6 +85,81 @@ def test_ineligible_successor_does_not_hide_market_eligible_predecessor() -> Non
     assert resolved is not None and resolved.value.name == "first"
 
 
+def test_eligible_descendant_hides_eligible_ancestor_through_ineligible_intermediate() -> None:
+    first = record("A", NOW)
+    second = record("B", NOW + timedelta(hours=1), first.record_id)
+    historical = record("H", NOW + timedelta(hours=2), second.record_id)
+
+    resolved = resolve_temporal_state(
+        (
+            TemporalState(first, Value("A", True)),
+            TemporalState(second, Value("B", False)),
+            TemporalState(historical, Value("H", True)),
+        ),
+        None,
+        lambda value: value.eligible,
+    )
+
+    assert resolved is not None and resolved.value.name == "H"
+
+
+def test_ineligible_descendant_leaves_latest_eligible_ancestor() -> None:
+    first = record("A", NOW)
+    second = record("B", NOW + timedelta(hours=1), first.record_id)
+    historical = record("H", NOW + timedelta(hours=2), second.record_id)
+
+    resolved = resolve_temporal_state(
+        (
+            TemporalState(first, Value("A", True)),
+            TemporalState(second, Value("B", True)),
+            TemporalState(historical, Value("H", False)),
+        ),
+        None,
+        lambda value: value.eligible,
+    )
+
+    assert resolved is not None and resolved.value.name == "B"
+
+
+def test_only_eligible_root_remains_selected() -> None:
+    first = record("A", NOW)
+    second = record("B", NOW + timedelta(hours=1), first.record_id)
+    historical = record("H", NOW + timedelta(hours=2), second.record_id)
+
+    resolved = resolve_temporal_state(
+        (
+            TemporalState(first, Value("A", True)),
+            TemporalState(second, Value("B", False)),
+            TemporalState(historical, Value("H", False)),
+        ),
+        None,
+        lambda value: value.eligible,
+    )
+
+    assert resolved is not None and resolved.value.name == "A"
+
+
+def test_historical_cutoff_changes_selection_from_ancestor_to_transitive_descendant() -> None:
+    first = record("A", NOW)
+    second = record("B", NOW + timedelta(hours=1), first.record_id)
+    historical = record("H", NOW + timedelta(hours=2), second.record_id)
+    states = (
+        TemporalState(first, Value("A", True)),
+        TemporalState(second, Value("B", False)),
+        TemporalState(historical, Value("H", True)),
+    )
+
+    before_h = resolve_temporal_state(
+        states,
+        NOW + timedelta(hours=1, minutes=30),
+        lambda value: value.eligible,
+    )
+    after_h = resolve_temporal_state(states, None, lambda value: value.eligible)
+
+    assert before_h is not None and before_h.value.name == "A"
+    assert after_h is not None and after_h.value.name == "H"
+
+
 def test_knowledge_leaf_ignores_market_eligibility() -> None:
     first = record("first", NOW)
     second = record("second", NOW + timedelta(hours=1), first.record_id)

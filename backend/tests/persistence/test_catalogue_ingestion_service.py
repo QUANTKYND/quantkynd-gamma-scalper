@@ -450,6 +450,143 @@ async def test_bounded_historical_backfill_preserves_historical_and_current_mark
 
 
 @pytest.mark.anyio
+async def test_overlapping_historical_correction_applies_transitive_market_supersession(
+    reset_postgres_url: str,
+    postgres_settings: DatabaseSettings,
+    tmp_path: Path,
+) -> None:
+    settings = postgres_settings.model_copy(
+        update={"catalogue_artifact_root": str(tmp_path / "artifacts")}
+    )
+    first = await ingest_provider_catalogue(
+        _command(mode="commit", idempotency_key="DATA-1.2-overlap-a"),
+        settings,
+        clock=_clock(
+            datetime(2026, 8, 6, 9, 0, tzinfo=UTC),
+            datetime(2026, 8, 6, 9, 1, tzinfo=UTC),
+            datetime(2026, 8, 6, 9, 2, tzinfo=UTC),
+        ),
+    )
+    second = await ingest_provider_catalogue(
+        _command(
+            mode="commit",
+            idempotency_key="DATA-1.2-overlap-b",
+            effective_from=SECOND_EFFECTIVE_FROM,
+            supersedes_catalogue_record_id=first.catalogue_record_id,
+        ),
+        settings,
+        clock=_clock(
+            datetime(2026, 8, 6, 9, 3, tzinfo=UTC),
+            datetime(2026, 8, 6, 9, 4, tzinfo=UTC),
+            datetime(2026, 8, 6, 9, 5, tzinfo=UTC),
+        ),
+    )
+    historical_from = EFFECTIVE_FROM + timedelta(hours=8)
+    historical_until = EFFECTIVE_FROM + timedelta(hours=14)
+    historical = await ingest_provider_catalogue(
+        _command(
+            mode="commit",
+            idempotency_key="DATA-1.2-overlap-h",
+            effective_from=historical_from,
+            effective_until=historical_until,
+            supersedes_catalogue_record_id=second.catalogue_record_id,
+        ),
+        settings,
+        clock=_clock(
+            datetime(2026, 8, 6, 9, 6, tzinfo=UTC),
+            datetime(2026, 8, 6, 9, 7, tzinfo=UTC),
+            datetime(2026, 8, 6, 9, 8, tzinfo=UTC),
+        ),
+    )
+    provider_key = "NSE_FO|SANITIZED_NIFTY_FUT"
+    inside_h = historical_from + timedelta(hours=1)
+    before_h = historical_from - timedelta(hours=1)
+    after_h = historical_until + timedelta(hours=1)
+    engine = create_database_engine(settings)
+    try:
+        factory = create_session_factory(engine)
+        async with factory() as session:
+            second_run = await session.get(CatalogueIngestionRunRow, second.ingestion_run_id)
+            historical_run = await session.get(
+                CatalogueIngestionRunRow,
+                historical.ingestion_run_id,
+            )
+            memberships = {}
+            for label, result in (("A", first), ("B", second), ("H", historical)):
+                memberships[label] = (
+                    await session.scalars(
+                        select(CatalogueMembershipRow).where(
+                            CatalogueMembershipRow.catalogue_version_id
+                            == result.catalogue_version_id,
+                            CatalogueMembershipRow.provider_contract_key == provider_key,
+                        )
+                    )
+                ).one()
+            counts = {
+                "catalogue": await _temporal_counts(session, CatalogueVersionRecordRow),
+                "version": await _temporal_counts(session, InstrumentVersionRecordRow),
+                "mapping": await _temporal_counts(session, ProviderMappingRecordRow),
+            }
+        assert second_run is not None and historical_run is not None
+        async with PostgresUnitOfWork(factory) as unit_of_work:
+            async def resolve(market_as_of: datetime, known_as_of: datetime):
+                catalogue = await unit_of_work.catalogues.resolve(
+                    "upstox:upstox-nse-nifty-index-derivatives-v1",
+                    market_as_of,
+                    known_as_of,
+                )
+                version = await unit_of_work.instruments.resolve_version_state(
+                    memberships["A"].instrument_id,
+                    market_as_of,
+                    known_as_of,
+                )
+                mapping = await unit_of_work.instruments.resolve_provider_key(
+                    "upstox",
+                    provider_key,
+                    market_as_of,
+                    known_as_of,
+                )
+                assert catalogue is not None and version is not None and mapping is not None
+                return catalogue.catalogue_version_id, version.value.version_id, mapping.mapping_id
+
+            before_h_known = await resolve(inside_h, second_run.recorded_at)
+            after_h_known = await resolve(inside_h, historical_run.recorded_at)
+            at_b = await resolve(SECOND_EFFECTIVE_FROM, historical_run.recorded_at)
+            before_h_interval = await resolve(before_h, historical_run.recorded_at)
+            after_h_interval = await resolve(after_h, historical_run.recorded_at)
+    finally:
+        await dispose_database_engine(engine)
+
+    assert before_h_known == (
+        first.catalogue_version_id,
+        memberships["A"].version_id,
+        memberships["A"].mapping_id,
+    )
+    assert after_h_known == (
+        historical.catalogue_version_id,
+        memberships["H"].version_id,
+        memberships["H"].mapping_id,
+    )
+    assert at_b == (
+        second.catalogue_version_id,
+        memberships["B"].version_id,
+        memberships["B"].mapping_id,
+    )
+    expected_a = (
+        first.catalogue_version_id,
+        memberships["A"].version_id,
+        memberships["A"].mapping_id,
+    )
+    assert before_h_interval == expected_a
+    assert after_h_interval == expected_a
+    assert counts == {
+        "catalogue": (1, 2),
+        "version": (4, 8),
+        "mapping": (4, 8),
+    }
+
+
+@pytest.mark.anyio
 async def test_stale_predecessor_rejects_and_same_effective_time_correction_succeeds(
     reset_postgres_url: str,
     postgres_settings: DatabaseSettings,
@@ -523,6 +660,19 @@ async def test_stale_predecessor_rejects_and_same_effective_time_correction_succ
         first.catalogue_record_id,
         second.catalogue_record_id,
     }
+    engine = create_database_engine(settings)
+    try:
+        factory = create_session_factory(engine)
+        async with PostgresUnitOfWork(factory) as unit_of_work:
+            selected = await unit_of_work.catalogues.resolve(
+                "upstox:upstox-nse-nifty-index-derivatives-v1",
+                SECOND_EFFECTIVE_FROM,
+                None,
+            )
+    finally:
+        await dispose_database_engine(engine)
+    assert selected is not None
+    assert selected.catalogue_version_id == correction.catalogue_version_id
 
 
 @pytest.mark.anyio
@@ -939,6 +1089,24 @@ async def _counts(settings: DatabaseSettings, models: tuple[type, ...]) -> dict[
             }
     finally:
         await dispose_database_engine(engine)
+
+
+async def _temporal_counts(session, model: type) -> tuple[int, int]:
+    roots = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(model)
+            .where(model.supersedes_record_id.is_(None))
+        )
+    )
+    successors = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(model)
+            .where(model.supersedes_record_id.is_not(None))
+        )
+    )
+    return roots, successors
 
 
 async def _dispositions(settings: DatabaseSettings) -> dict[str, int]:
