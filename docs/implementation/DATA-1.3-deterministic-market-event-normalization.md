@@ -16,7 +16,7 @@ This evidence does not accept or merge DATA-1.3. The feature branch remains pape
 - Evidence snapshot SHA: `a27c27c` (`docs(data): record DATA-1.3 review-pending evidence`)
 - Final-review correction starting SHA: `e5aec9c3d4ed68d7cffc7c201b82b0437f9766a1`
 - Corrected implementation SHA: `971a9e35b40274225540605aa1ff7d3973b1fbff`
-- Corrected evidence snapshot SHA: `TO_BE_RECORDED`
+- Corrected evidence snapshot SHA: `c0ef16eeca03faca02383a9dd32a0c0d6b603192`
 
 Implementation commits from the original baseline:
 
