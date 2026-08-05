@@ -17,6 +17,7 @@ from app.market_data.normalization.models import (
     FuturesQuoteObservationV1,
     NormalizedMarketEventTimeV1,
 )
+from app.market_data.normalization.limits import MAX_SOURCE_ORDER
 from app.market_data.upstox.proto import MarketDataFeed_pb2
 from tests.market_data.normalization.helpers import AT, subjects
 from tests.market_data.upstox.test_v3_normalizer import feed_response, ltpc, normalize
@@ -110,6 +111,16 @@ def _underlying_event(response_type=MarketDataFeed_pb2.live_feed):
 def test_quote_direct_construction_rejects_invalid_provenance(changes, pattern) -> None:
     with pytest.raises((TypeError, ValueError), match=pattern):
         replace(_underlying_event(), **changes)
+
+
+def test_quote_source_order_and_scope_use_durable_boundaries() -> None:
+    event = _underlying_event()
+    assert replace(event, source_order=MAX_SOURCE_ORDER).source_order == MAX_SOURCE_ORDER
+    with pytest.raises(ValueError, match="signed 64-bit"):
+        replace(event, source_order=MAX_SOURCE_ORDER + 1)
+    assert replace(event, source_order_scope_id="é" * 256).source_order_scope_id == "é" * 256
+    with pytest.raises(ValueError, match="UTF-8 byte limit"):
+        replace(event, source_order_scope_id="é" * 257)
 
 
 def test_quote_class_kind_and_event_type_must_match() -> None:

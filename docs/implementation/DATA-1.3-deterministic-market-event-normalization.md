@@ -25,6 +25,9 @@ Independent review accepted the DATA-1.3 normalization sub-gate. DATA-1 remains 
 - Provider-identity corrected implementation SHA: `e088760d646c8ec569abd1de3a3c395cb5e30ec6`
 - Provider-identity evidence snapshot SHA: `78c23f1b407b474ef9fe9078cb3bbc59fe8b4a99`
 - Independently accepted reviewed SHA: `46331018b225d90200399372d3bd18e33ab8ca7b`
+- Durability-boundary amendment baseline: `c1be87dd6914d946fb7086d9a7c2f67641e4f924`
+- Durability-boundary amendment branch: `fix/data-1.3-durable-boundaries`
+- Durability-boundary amendment review: pending independent acceptance and merge
 
 Implementation commits from the original baseline:
 
@@ -70,6 +73,14 @@ Deferred declarations are fixed per selected feed union. Frame declarations are 
 Provider-identity boundary correction validates only map identities in the primary payload selected by the response type. A malformed quote key or market segment produces a deterministic frame failure before subject resolution, status normalization, event construction, or secondary structural processing. Reasons are `invalid_provider_contract_key` and `invalid_market_segment`; decoded response type is retained and all reconciliation counts are zero. Provider keys accept at most 512 UTF-8 bytes and segments at most 128, with no leading/trailing whitespace or ASCII controls. Internal spaces remain valid. Coexisting secondary identities remain unadopted and are not validated or reinterpreted.
 
 Subject and segment failure identifiers use the same exact validation and bounds. `SubjectResolutionFailureV1` stores only the four declared resolver reasons: unknown key, stale mapping, ambiguous mapping, or ambiguous contract version. Both static and PostgreSQL resolvers construct this closed contract.
+
+### DATA-1.4 prerequisite durability-boundary amendment
+
+The amendment makes every raw-frame, quote/status, and lifecycle source ordinal compatible with a durable PostgreSQL `BIGINT`: strict integer, never boolean, inclusive range zero through `2**63 - 1`. Provider/schema/session/source-scope/subscription-scope/source-file/source-record identifiers are bounded to 512 UTF-8 bytes without rewriting. Controlled redacted lifecycle reasons add a 128-byte ceiling.
+
+Subscription sets now apply the accepted provider-contract-key validator to every member, allow at most 5,000 unique keys, and enforce Upstox request-mode limits of 5,000 `ltpc`, 3,000 `option_greeks`, 2,000 `full_d5`, and 50 `full_d30`. Unsubscribe events with no mode use the global 5,000-key ceiling. Lifecycle fixture files are rejected before full parsing above 16 MiB, and lifecycle identity batches are rejected above 10,000 events.
+
+This is a contract-hardening prerequisite only. It introduces no migration, persistence repository, API, live subscription behavior, or identity/hash projection change. DATA-1.4 design work remains blocked until an independent reviewer accepts and merges the amendment.
 
 ## Proto and dependency ownership
 
@@ -132,6 +143,17 @@ Provider-identity correction completes capture-provenance construction: schema d
 `app.cli.normalize_market_lifecycle_fixture` deterministically covers connection, subscription, reconnect/new-session, sorted key digest, redacted failure, and invalid transitions. Neither CLI requires database, restore URL, provider token, Redis, or network.
 
 ## Acceptance results
+
+Durability-boundary amendment candidate results:
+
+- Focused hostile boundary/model/manifest/CLI suite: `157 passed`, zero skipped.
+- Complete market-data plus existing LIVE-RV suite: `342 passed`, zero skipped.
+- Complete backend: `681 passed`, with `41` existing infrastructure-gated PostgreSQL skips.
+- Deterministic regeneration comparison: all `36` fixture artifacts byte-identical; no binary, identity, or approved-hash diff.
+- Existing LIVE-RV: `26 passed`; frontend lint/build passed with the pre-existing bundle-size warning only.
+- Python compilation, `uv lock --check`, and `git diff --check`: passed.
+- Alembic heads: exactly `20260804_03`.
+- New migration: none; expected Alembic head remains `20260804_03`.
 
 - Focused no-infrastructure normalization/fixture/LIVE-RV suite: `278 passed`, zero skipped.
 - Complete market-data test directory: `291 passed`, zero skipped.

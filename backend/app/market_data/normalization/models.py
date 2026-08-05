@@ -24,6 +24,8 @@ from app.market_data.normalization.enums import (
 )
 from app.market_data.point_in_time import NormalizedMarketEventIdentity
 from app.core.hashing import stable_hash
+from app.market_data.normalization.limits import validate_opaque_identifier, validate_source_order
+from app.market_data.normalization.provider_identifiers import validate_market_segment, validate_provider_contract_key
 
 
 NORMALIZATION_SCHEMA_VERSION = 1
@@ -68,6 +70,8 @@ class ResolvedMarketSubjectV1:
             self.contract_version_id,
             self.economic_subject_id,
         )
+        validate_opaque_identifier(self.provider, "provider")
+        validate_provider_contract_key(self.provider_contract_key)
         for name in ("resolution_market_as_of", "resolution_known_as_of"):
             object.__setattr__(self, name, _utc(getattr(self, name), name))
         expected = {
@@ -187,6 +191,7 @@ class QuoteObservationV1:
             self.economic_subject_id,
             self.source_order_scope_id,
         )
+        validate_opaque_identifier(self.provider, "provider")
         if self.provider != self.subject.provider:
             raise ValueError("quote provider provenance mismatch")
         if self.provider_contract_key != self.subject.provider_contract_key:
@@ -230,8 +235,8 @@ class QuoteObservationV1:
         expected_snapshot = self.feed_response_type is FeedResponseType.INITIAL_FEED
         if self.is_snapshot is not expected_snapshot:
             raise ValueError("quote snapshot flag does not match response type")
-        if not isinstance(self.source_order, int) or isinstance(self.source_order, bool) or self.source_order < 0:
-            raise ValueError("source_order must be a non-negative integer")
+        validate_opaque_identifier(self.source_order_scope_id, "source_order_scope_id")
+        validate_source_order(self.source_order)
         if self.provider_sequence is not None or self.supersedes_event_id is not None:
             raise ValueError("provider sequence and supersession must be absent")
         if self.normalization_schema_version != NORMALIZATION_SCHEMA_VERSION:
@@ -358,11 +363,13 @@ class ProviderMarketSegmentStatusObservationV1:
         if not self.provider or not self.segment or not self.provider_status_name:
             raise ValueError("status identity fields are required")
         _require_text(self.provider, self.segment, self.source_order_scope_id)
+        validate_opaque_identifier(self.provider, "provider")
+        validate_market_segment(self.segment)
+        validate_opaque_identifier(self.source_order_scope_id, "source_order_scope_id")
         expected_subject_id = market_segment_status_subject_id(self.provider, self.segment)
         if self.identity.subject_id != expected_subject_id:
             raise ValueError("normalized status subject identity mismatch")
-        if not isinstance(self.source_order, int) or isinstance(self.source_order, bool) or self.source_order < 0:
-            raise ValueError("source_order must be a non-negative integer")
+        validate_source_order(self.source_order)
         if not isinstance(self.provider_status_numeric, int) or isinstance(self.provider_status_numeric, bool):
             raise ValueError("provider status numeric value must be an integer")
         if not isinstance(self.status_is_known, bool):
@@ -408,7 +415,8 @@ def _utc(value: datetime, field_name: str) -> datetime:
 
 
 def market_segment_status_subject_id(provider: str, segment: str) -> str:
-    _require_text(provider, segment)
+    validate_opaque_identifier(provider, "provider")
+    validate_market_segment(segment)
     return stable_hash({"entity": "provider_market_segment", "provider": provider, "segment": segment})
 
 

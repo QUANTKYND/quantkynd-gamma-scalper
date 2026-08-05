@@ -124,6 +124,7 @@ def test_fixture_cli_structural_failures_are_canonical_without_traceback(tmp_pat
         ("provider_schema_id", "other"),
         ("provider_schema_sha256", "sha256:" + "0" * 64),
         ("source_order", True),
+        ("source_order", 2**63),
     ],
 )
 def test_fixture_cli_rejects_hostile_capture_manifest_as_schema_error(tmp_path, field, value) -> None:

@@ -5,6 +5,7 @@ import pytest
 
 from app.market_data.upstox.proto import MarketDataFeed_pb2
 from app.market_data.normalization.models import market_segment_status_subject_id
+from app.market_data.normalization.limits import MAX_SOURCE_ORDER
 from app.market_data.normalization.serialization import adopted_semantics_hash
 from tests.market_data.normalization.helpers import AT
 from tests.market_data.upstox.test_v3_normalizer import feed_response, normalize
@@ -48,6 +49,16 @@ def test_unknown_status_requires_unknown_name_and_flag() -> None:
         replace(unknown, provider_status_name="OTHER")
     with pytest.raises(ValueError, match="unknown provider status"):
         replace(unknown, status_is_known=True)
+
+
+def test_status_source_order_and_scope_use_durable_boundaries() -> None:
+    event = _status_event()
+    assert replace(event, source_order=MAX_SOURCE_ORDER).source_order == MAX_SOURCE_ORDER
+    with pytest.raises(ValueError, match="signed 64-bit"):
+        replace(event, source_order=MAX_SOURCE_ORDER + 1)
+    assert replace(event, source_order_scope_id="é" * 256).source_order_scope_id == "é" * 256
+    with pytest.raises(ValueError, match="UTF-8 byte limit"):
+        replace(event, source_order_scope_id="é" * 257)
 
 
 def test_status_adopted_hash_includes_provider_subject_identity() -> None:

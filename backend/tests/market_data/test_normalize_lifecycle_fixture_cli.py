@@ -5,6 +5,7 @@ import json
 import pytest
 
 from app.cli.normalize_market_lifecycle_fixture import run
+from app.market_data.normalization.limits import MAX_LIFECYCLE_EVENTS_PER_BATCH, MAX_LIFECYCLE_FIXTURE_BYTES
 from tools.generate_market_event_fixtures import FIXTURE_DIR
 
 
@@ -51,6 +52,57 @@ def test_lifecycle_cli_rejects_boolean_source_order(tmp_path) -> None:
     payload = json.loads((FIXTURE_DIR / "connection-lifecycle.json").read_text(encoding="utf-8"))
     payload["events"][0]["source_order"] = True
     path = tmp_path / "boolean-order.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert run(["--fixture", str(path), "--output", "json"])[0] == 2
+
+
+def test_lifecycle_cli_rejects_source_order_above_bigint(tmp_path) -> None:
+    payload = json.loads((FIXTURE_DIR / "connection-lifecycle.json").read_text(encoding="utf-8"))
+    payload["events"][0]["source_order"] = 2**63
+    path = tmp_path / "oversized-order.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert run(["--fixture", str(path), "--output", "json"])[0] == 2
+
+
+def test_lifecycle_cli_rejects_fixture_before_parsing_above_byte_limit(tmp_path) -> None:
+    path = tmp_path / "oversized.json"
+    path.write_bytes(b" " * (MAX_LIFECYCLE_FIXTURE_BYTES + 1))
+    assert run(["--fixture", str(path), "--output", "json"])[0] == 2
+
+
+def test_lifecycle_cli_accepts_valid_fixture_at_exact_byte_limit(tmp_path) -> None:
+    payload = {
+        "fixture_schema_version": "data-1.3-lifecycle-fixture-v1",
+        "lifecycle_kind": "connection",
+        "events": [],
+    }
+    encoded = json.dumps(payload).encode("utf-8")
+    path = tmp_path / "maximum-size.json"
+    path.write_bytes(encoded + b" " * (MAX_LIFECYCLE_FIXTURE_BYTES - len(encoded)))
+    assert run(["--fixture", str(path), "--output", "json"])[0] == 0
+
+
+def test_lifecycle_cli_rejects_event_count_above_batch_limit(tmp_path) -> None:
+    payload = json.loads((FIXTURE_DIR / "connection-lifecycle.json").read_text(encoding="utf-8"))
+    payload["events"] = [payload["events"][0]] * (MAX_LIFECYCLE_EVENTS_PER_BATCH + 1)
+    path = tmp_path / "oversized-batch.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert run(["--fixture", str(path), "--output", "json"])[0] == 2
+
+
+@pytest.mark.parametrize("field", ("connection_session_id", "source_order_scope_id"))
+def test_lifecycle_cli_rejects_opaque_identifier_above_utf8_limit(tmp_path, field) -> None:
+    payload = json.loads((FIXTURE_DIR / "connection-lifecycle.json").read_text(encoding="utf-8"))
+    payload["events"][0][field] = "é" * 257
+    path = tmp_path / "oversized-identifier.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert run(["--fixture", str(path), "--output", "json"])[0] == 2
+
+
+def test_lifecycle_cli_rejects_provider_key_above_utf8_limit(tmp_path) -> None:
+    payload = json.loads((FIXTURE_DIR / "subscription-lifecycle.json").read_text(encoding="utf-8"))
+    payload["events"][0]["provider_contract_keys"] = ["é" * 257]
+    path = tmp_path / "oversized-provider-key.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     assert run(["--fixture", str(path), "--output", "json"])[0] == 2
 

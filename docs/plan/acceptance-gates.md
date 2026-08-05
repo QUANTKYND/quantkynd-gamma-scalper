@@ -44,6 +44,8 @@ DATA-1.0 satisfies the semantic sub-gate when deterministic economic identity is
 
 DATA-1.3 status: ACCEPTED. The independently reviewed normalization sub-gate provides immutable raw identity and exact capture hashes; caller-owned market/knowledge cutoffs; owned and bounded Upstox V3 decoding; controlled provider-identity boundaries; actual mapping/version/economic provenance; deterministic partial results; union-scoped deferred declarations; closed offline lifecycle transitions; byte-identical fixtures and canonical replay; and a one-transaction read-only PostgreSQL resolver. No event persistence, live wiring, quality policy, or execution path is implied. DATA-1 remains ACTIVE until those remaining full-gate requirements are completed.
 
+The DATA-1.4 prerequisite amendment bounds DATA-1.3 source ordinals, indexed opaque strings, subscription sets and modes, lifecycle fixture bytes, and lifecycle batch counts at the domain and offline-input boundaries. It changes no accepted identity or hash projection, adds no migration, and requires independent acceptance before it may serve as the DATA-1.4 persistence baseline.
+
 - Economic contract identity is stable and trading metadata is validity-bounded.
 - Historical chain reconstruction is deterministic.
 - No future contract or quote leakage.

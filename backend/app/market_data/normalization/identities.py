@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from app.core.hashing import stable_hash
 from app.market_data.normalization.enums import RawCaptureBasis
 from app.market_data.normalization.errors import ConflictingRawIdentityError, RawFrameValidationError
+from app.market_data.normalization.limits import validate_opaque_identifier, validate_source_order
 
 
 MAX_FRAME_BYTES = 16 * 1024 * 1024
@@ -21,16 +22,18 @@ class RawMarketFrameIdentityV1:
     source_order: int
 
     def __post_init__(self) -> None:
-        _require_text(
-            self.provider,
-            self.provider_schema_id,
-            self.connection_session_id,
-            self.source_order_scope_id,
-        )
+        _require_text(self.provider)
+        for name in ("provider_schema_id", "connection_session_id", "source_order_scope_id"):
+            try:
+                validate_opaque_identifier(getattr(self, name), name)
+            except ValueError as error:
+                raise RawFrameValidationError(str(error)) from error
         if self.provider != "upstox":
             raise RawFrameValidationError("provider must be upstox")
-        if not isinstance(self.source_order, int) or isinstance(self.source_order, bool) or self.source_order < 0:
-            raise RawFrameValidationError("source_order must be a non-negative integer")
+        try:
+            validate_source_order(self.source_order)
+        except ValueError as error:
+            raise RawFrameValidationError(str(error)) from error
 
     @property
     def raw_event_id(self) -> str:
@@ -102,7 +105,11 @@ class RawMarketFrameV1:
         if (self.source_file_id is None) != (self.source_record_id is None):
             raise RawFrameValidationError("source file and record IDs must appear together")
         if self.source_file_id is not None:
-            _require_text(self.source_file_id, self.source_record_id or "")
+            for name in ("source_file_id", "source_record_id"):
+                try:
+                    validate_opaque_identifier(getattr(self, name), name)
+                except ValueError as error:
+                    raise RawFrameValidationError(str(error)) from error
         if identity.provider_schema_id != self.provider_schema_id:
             raise RawFrameValidationError("raw frame identity mismatch")
 
