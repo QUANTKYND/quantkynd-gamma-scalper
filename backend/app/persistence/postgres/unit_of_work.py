@@ -10,8 +10,8 @@ from app.persistence.postgres.repositories import (
     PostgresCatalogueIngestionRepository,
     PostgresCatalogueRepository,
     PostgresInstrumentRepository,
-    PostgresTradingSessionRepository,
     PostgresMarketEventRepository,
+    PostgresTradingSessionRepository,
 )
 
 
@@ -66,13 +66,28 @@ class PostgresUnitOfWork:
     async def __aenter__(self) -> PostgresUnitOfWork:
         if self._closed or self._session is not None:
             raise UnitOfWorkStateError("unit of work instances cannot be reused")
+
         self._session = self._session_factory()
-        if self._read_only_repeatable_read:
-            await self._session.execute(
-                text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+
+        transaction_mode = (
+            "SET TRANSACTION ISOLATION LEVEL "
+            "REPEATABLE READ READ ONLY"
+            if self._read_only_repeatable_read
+            else (
+                "SET TRANSACTION ISOLATION LEVEL "
+                "REPEATABLE READ"
             )
-        self._instruments = PostgresInstrumentRepository(self._session, self._require_active)
-        self._catalogues = PostgresCatalogueRepository(self._session, self._require_active)
+        )
+        await self._session.execute(text(transaction_mode))
+
+        self._instruments = PostgresInstrumentRepository(
+            self._session,
+            self._require_active,
+        )
+        self._catalogues = PostgresCatalogueRepository(
+            self._session,
+            self._require_active,
+        )
         self._catalogue_ingestions = PostgresCatalogueIngestionRepository(
             self._session,
             self._require_active,
@@ -81,7 +96,10 @@ class PostgresUnitOfWork:
             self._session,
             self._require_active,
         )
-        self._market_events = PostgresMarketEventRepository(self._session, self._require_active)
+        self._market_events = PostgresMarketEventRepository(
+            self._session,
+            self._require_active,
+        )
         return self
 
     async def __aexit__(

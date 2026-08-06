@@ -10,6 +10,10 @@ class FakeSession:
         self.commit_count = 0
         self.rollback_count = 0
         self.close_count = 0
+        self.executed_statements: list[str] = []
+
+    async def execute(self, statement):
+        self.executed_statements.append(str(statement))
 
     async def commit(self) -> None:
         self.commit_count += 1
@@ -21,6 +25,33 @@ class FakeSession:
 
     async def close(self) -> None:
         self.close_count += 1
+
+
+@pytest.mark.anyio
+async def test_default_unit_of_work_uses_repeatable_read() -> None:
+    session = FakeSession()
+    unit_of_work = PostgresUnitOfWork(lambda: session)
+
+    async with unit_of_work:
+        assert session.executed_statements == [
+            "SET TRANSACTION ISOLATION LEVEL "
+            "REPEATABLE READ"
+        ]
+
+
+@pytest.mark.anyio
+async def test_read_only_unit_of_work_uses_repeatable_read_read_only() -> None:
+    session = FakeSession()
+    unit_of_work = PostgresUnitOfWork(
+        lambda: session,
+        read_only_repeatable_read=True,
+    )
+
+    async with unit_of_work:
+        assert session.executed_statements == [
+            "SET TRANSACTION ISOLATION LEVEL "
+            "REPEATABLE READ READ ONLY"
+        ]
 
 
 @pytest.mark.anyio

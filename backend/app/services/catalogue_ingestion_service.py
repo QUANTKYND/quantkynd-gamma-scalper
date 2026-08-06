@@ -50,6 +50,8 @@ from app.instruments.ports import PersistenceIntegrityError, SemanticCollisionEr
 from app.persistence.postgres.unit_of_work import PostgresUnitOfWork
 from app.persistence.postgres.verification import database_revision
 
+REQUIRED_DATABASE_REVISION = "20260804_04"
+
 
 @dataclass(frozen=True)
 class CatalogueIngestionCommand:
@@ -197,8 +199,11 @@ async def _commit(
     engine = create_database_engine(settings)
     try:
         revision = await database_revision(engine)
-        if revision != "20260804_03":
-            raise CatalogueConflictError("database must be migrated to 20260804_03")
+        if revision != REQUIRED_DATABASE_REVISION:
+            raise CatalogueConflictError(
+                "database must be migrated to "
+                f"{REQUIRED_DATABASE_REVISION}"
+            )
         factory = create_session_factory(engine)
         try:
             async with PostgresUnitOfWork(factory) as unit_of_work:
