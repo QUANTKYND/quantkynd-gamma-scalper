@@ -182,6 +182,95 @@ PROVIDER_LIFECYCLE_BATCH_EVENT_INDEXES = {
     ),
 }
 
+
+PROVIDER_LIFECYCLE_OBSERVATION_COLUMNS = {
+    "event_id",
+    "raw_event_id",
+    "event_type",
+    "subject_id",
+    "lifecycle_kind",
+    "provider",
+    "connection_session_id",
+    "source_order_scope_id",
+    "source_order",
+    "occurred_at",
+    "available_at",
+    "recorded_at",
+    "normalization_schema_version",
+    "normalizer_implementation_version",
+    "provider_sequence",
+    "payload",
+}
+
+PROVIDER_LIFECYCLE_OBSERVATION_INDEXES = {
+    "ix_provider_lifecycle_observations_scope_order": (
+        "normalization_schema_version",
+        "provider",
+        "connection_session_id",
+        "source_order_scope_id",
+        "source_order",
+        "event_id",
+    ),
+    "ix_provider_lifecycle_observations_subject_time": (
+        "normalization_schema_version",
+        "subject_id",
+        "lifecycle_kind",
+        "available_at",
+        "event_id",
+    ),
+    "ix_provider_lifecycle_observations_raw": (
+        "raw_event_id",
+        "event_id",
+    ),
+}
+
+PROVIDER_CONNECTION_LIFECYCLE_OBSERVATION_COLUMNS = {
+    "event_id",
+    "event_type",
+    "subject_id",
+    "lifecycle_kind",
+    "connection_session_id",
+    "previous_state",
+    "state",
+    "redacted_reason_code",
+}
+
+PROVIDER_CONNECTION_LIFECYCLE_OBSERVATION_INDEXES = {
+    "ix_provider_connection_lifecycle_state": (
+        "connection_session_id",
+        "state",
+        "event_id",
+    ),
+}
+
+PROVIDER_SUBSCRIPTION_LIFECYCLE_OBSERVATION_COLUMNS = {
+    "event_id",
+    "event_type",
+    "subject_id",
+    "lifecycle_kind",
+    "connection_session_id",
+    "subscription_scope_id",
+    "previous_state",
+    "state",
+    "request_mode",
+    "instrument_keys_digest",
+    "instrument_key_count",
+    "redacted_reason_code",
+}
+
+PROVIDER_SUBSCRIPTION_LIFECYCLE_OBSERVATION_INDEXES = {
+    "ix_provider_subscription_lifecycle_scope_state": (
+        "connection_session_id",
+        "subscription_scope_id",
+        "state",
+        "event_id",
+    ),
+    "ix_provider_subscription_lifecycle_instrument_set": (
+        "instrument_keys_digest",
+        "event_id",
+    ),
+}
+
 RAW_MARKET_FRAME_COLUMNS = {
     "raw_event_id",
     "provider",
@@ -1658,6 +1747,175 @@ async def _assert_head_schema(engine) -> None:
             == expected_columns
         )
 
+    lifecycle_observations = details[
+        "provider_lifecycle_observations"
+    ]
+
+    assert (
+        set(lifecycle_observations["columns"])
+        == PROVIDER_LIFECYCLE_OBSERVATION_COLUMNS
+    )
+    assert lifecycle_observations["primary_key"] == (
+        "event_id",
+    )
+    assert isinstance(
+        lifecycle_observations["columns"][
+            "source_order"
+        ]["type"],
+        BigInteger,
+    )
+    assert isinstance(
+        lifecycle_observations["columns"][
+            "provider_sequence"
+        ]["type"],
+        BigInteger,
+    )
+    assert isinstance(
+        lifecycle_observations["columns"][
+            "normalization_schema_version"
+        ]["type"],
+        Integer,
+    )
+    assert isinstance(
+        lifecycle_observations["columns"][
+            "payload"
+        ]["type"],
+        JSONB,
+    )
+
+    assert (
+        "event_id",
+        "raw_event_id",
+    ) in lifecycle_observations["unique_constraints"]
+    assert (
+        "raw_event_id",
+        "normalization_schema_version",
+    ) in lifecycle_observations["unique_constraints"]
+    assert (
+        "event_id",
+        "event_type",
+        "subject_id",
+        "lifecycle_kind",
+        "connection_session_id",
+    ) in lifecycle_observations["unique_constraints"]
+
+    _assert_foreign_key(
+        lifecycle_observations,
+        (
+            "raw_event_id",
+            "lifecycle_kind",
+        ),
+        "raw_provider_lifecycle_events",
+        (
+            "raw_event_id",
+            "lifecycle_kind",
+        ),
+    )
+
+    for index_name, expected_columns in (
+        PROVIDER_LIFECYCLE_OBSERVATION_INDEXES.items()
+    ):
+        assert (
+            lifecycle_observations["indexes"][
+                index_name
+            ]["columns"]
+            == expected_columns
+        )
+
+    connection_observations = details[
+        "provider_connection_lifecycle_observations"
+    ]
+
+    assert (
+        set(connection_observations["columns"])
+        == PROVIDER_CONNECTION_LIFECYCLE_OBSERVATION_COLUMNS
+    )
+    assert connection_observations["primary_key"] == (
+        "event_id",
+    )
+
+    _assert_foreign_key(
+        connection_observations,
+        (
+            "event_id",
+            "event_type",
+            "subject_id",
+            "lifecycle_kind",
+            "connection_session_id",
+        ),
+        "provider_lifecycle_observations",
+        (
+            "event_id",
+            "event_type",
+            "subject_id",
+            "lifecycle_kind",
+            "connection_session_id",
+        ),
+    )
+
+    for index_name, expected_columns in (
+        PROVIDER_CONNECTION_LIFECYCLE_OBSERVATION_INDEXES.items()
+    ):
+        assert (
+            connection_observations["indexes"][
+                index_name
+            ]["columns"]
+            == expected_columns
+        )
+
+    subscription_observations = details[
+        "provider_subscription_lifecycle_observations"
+    ]
+
+    assert (
+        set(subscription_observations["columns"])
+        == PROVIDER_SUBSCRIPTION_LIFECYCLE_OBSERVATION_COLUMNS
+    )
+    assert subscription_observations["primary_key"] == (
+        "event_id",
+    )
+    assert isinstance(
+        subscription_observations["columns"][
+            "instrument_key_count"
+        ]["type"],
+        Integer,
+    )
+
+    _assert_foreign_key(
+        subscription_observations,
+        (
+            "event_id",
+            "event_type",
+            "subject_id",
+            "lifecycle_kind",
+            "connection_session_id",
+        ),
+        "provider_lifecycle_observations",
+        (
+            "event_id",
+            "event_type",
+            "subject_id",
+            "lifecycle_kind",
+            "connection_session_id",
+        ),
+    )
+    _assert_foreign_key(
+        subscription_observations,
+        ("instrument_keys_digest",),
+        "provider_subscription_instrument_sets",
+        ("instrument_keys_digest",),
+    )
+
+    for index_name, expected_columns in (
+        PROVIDER_SUBSCRIPTION_LIFECYCLE_OBSERVATION_INDEXES.items()
+    ):
+        assert (
+            subscription_observations["indexes"][
+                index_name
+            ]["columns"]
+            == expected_columns
+        )
+
     _assert_foreign_key(
         instrument_set_keys,
         ("instrument_keys_digest",),
@@ -1877,6 +2135,22 @@ def _schema_details(connection) -> dict[str, object]:
         "provider_lifecycle_batch_events": _table_details(
             schema,
             "provider_lifecycle_batch_events",
+        ),
+        "provider_lifecycle_observations": _table_details(
+            schema,
+            "provider_lifecycle_observations",
+        ),
+        "provider_connection_lifecycle_observations": (
+            _table_details(
+                schema,
+                "provider_connection_lifecycle_observations",
+            )
+        ),
+        "provider_subscription_lifecycle_observations": (
+            _table_details(
+                schema,
+                "provider_subscription_lifecycle_observations",
+            )
         ),
     }
 
@@ -3145,3 +3419,529 @@ async def test_lifecycle_batch_event_order_and_duplicate_integrity(
                     )
     finally:
         await dispose_database_engine(engine)
+
+def _provider_lifecycle_observation_values(
+    *,
+    raw_event: dict[str, object],
+    marker: str,
+    event_type: str,
+    subject_id: str,
+    **overrides,
+) -> dict[str, object]:
+    values = {
+        "event_id": "sha256:" + marker * 64,
+        "raw_event_id": raw_event["raw_event_id"],
+        "event_type": event_type,
+        "subject_id": subject_id,
+        "lifecycle_kind": raw_event["lifecycle_kind"],
+        "provider": raw_event["provider"],
+        "connection_session_id": (
+            raw_event["connection_session_id"]
+        ),
+        "source_order_scope_id": (
+            raw_event["source_order_scope_id"]
+        ),
+        "source_order": raw_event["source_order"],
+        "occurred_at": raw_event["occurred_at"],
+        "available_at": raw_event["available_at"],
+        "recorded_at": raw_event["recorded_at"],
+        "normalization_schema_version": 1,
+        "normalizer_implementation_version": (
+            "upstox-v3-normalizer-1"
+        ),
+        "provider_sequence": None,
+        "payload": {
+            "fixture": "provider_lifecycle_observation",
+        },
+    }
+    values.update(overrides)
+    return values
+
+
+def _connection_lifecycle_observation_values(
+    *,
+    observation: dict[str, object],
+    raw_event: dict[str, object],
+    **overrides,
+) -> dict[str, object]:
+    values = {
+        "event_id": observation["event_id"],
+        "event_type": observation["event_type"],
+        "subject_id": observation["subject_id"],
+        "lifecycle_kind": observation["lifecycle_kind"],
+        "connection_session_id": (
+            observation["connection_session_id"]
+        ),
+        "previous_state": raw_event["previous_state"],
+        "state": raw_event["state"],
+        "redacted_reason_code": (
+            raw_event["redacted_reason_code"]
+        ),
+    }
+    values.update(overrides)
+    return values
+
+
+def _subscription_lifecycle_observation_values(
+    *,
+    observation: dict[str, object],
+    raw_event: dict[str, object],
+    **overrides,
+) -> dict[str, object]:
+    values = {
+        "event_id": observation["event_id"],
+        "event_type": observation["event_type"],
+        "subject_id": observation["subject_id"],
+        "lifecycle_kind": observation["lifecycle_kind"],
+        "connection_session_id": (
+            observation["connection_session_id"]
+        ),
+        "subscription_scope_id": (
+            raw_event["subscription_scope_id"]
+        ),
+        "previous_state": raw_event["previous_state"],
+        "state": raw_event["state"],
+        "request_mode": raw_event["request_mode"],
+        "instrument_keys_digest": (
+            raw_event["instrument_keys_digest"]
+        ),
+        "instrument_key_count": (
+            raw_event["instrument_key_count"]
+        ),
+        "redacted_reason_code": (
+            raw_event["redacted_reason_code"]
+        ),
+    }
+    values.update(overrides)
+    return values
+
+
+@pytest.mark.anyio
+async def test_provider_lifecycle_observation_subtypes_and_set_binding(
+    postgres_url: str,
+    postgres_settings: DatabaseSettings,
+) -> None:
+    engine = create_database_engine(postgres_settings)
+    config = alembic_config(postgres_url)
+
+    raw_table = Base.metadata.tables[
+        "raw_provider_lifecycle_events"
+    ]
+    observation_table = Base.metadata.tables[
+        "provider_lifecycle_observations"
+    ]
+    connection_table = Base.metadata.tables[
+        "provider_connection_lifecycle_observations"
+    ]
+    subscription_table = Base.metadata.tables[
+        "provider_subscription_lifecycle_observations"
+    ]
+
+    try:
+        async with destructive_database_lease(
+            engine,
+            postgres_url,
+            postgres_settings,
+            DestructiveDatabasePurpose.INTEGRATION,
+        ) as lease:
+            await lease.drop_and_recreate_public()
+            await asyncio.to_thread(
+                command.upgrade,
+                config,
+                "head",
+            )
+
+            async with engine.begin() as connection:
+                instrument_keys_digest = (
+                    await _insert_subscription_instrument_set(
+                        connection,
+                        prefix="OBSERVATION_ONE",
+                        count=1,
+                    )
+                )
+
+            raw_connection = (
+                _raw_connection_lifecycle_values(
+                    marker="1",
+                    connection_session_id=(
+                        "observation-connection-session"
+                    ),
+                    source_order_scope_id=(
+                        "observation-connection-scope"
+                    ),
+                    source_order=0,
+                )
+            )
+            raw_subscription = (
+                _raw_subscription_lifecycle_values(
+                    marker="2",
+                    instrument_keys_digest=(
+                        instrument_keys_digest
+                    ),
+                    instrument_key_count=1,
+                    connection_session_id=(
+                        "observation-connection-session"
+                    ),
+                    subscription_scope_id=(
+                        "observation-subscription-scope"
+                    ),
+                    source_order_scope_id=(
+                        "observation-connection-scope"
+                    ),
+                    source_order=1,
+                )
+            )
+
+            subscription_subject_id = stable_hash(
+                {
+                    "entity": "provider_subscription",
+                    "provider": "upstox",
+                    "connection_session_id": (
+                        raw_subscription[
+                            "connection_session_id"
+                        ]
+                    ),
+                    "subscription_scope_id": (
+                        raw_subscription[
+                            "subscription_scope_id"
+                        ]
+                    ),
+                }
+            )
+
+            connection_observation = (
+                _provider_lifecycle_observation_values(
+                    raw_event=raw_connection,
+                    marker="3",
+                    event_type=(
+                        "provider_connection_"
+                        "lifecycle_observation"
+                    ),
+                    subject_id=raw_connection[
+                        "connection_session_id"
+                    ],
+                )
+            )
+            subscription_observation = (
+                _provider_lifecycle_observation_values(
+                    raw_event=raw_subscription,
+                    marker="4",
+                    event_type=(
+                        "provider_subscription_"
+                        "lifecycle_observation"
+                    ),
+                    subject_id=subscription_subject_id,
+                )
+            )
+
+            async with engine.begin() as connection:
+                await connection.execute(
+                    raw_table.insert(),
+                    [
+                        raw_connection,
+                        raw_subscription,
+                    ],
+                )
+                await connection.execute(
+                    observation_table.insert(),
+                    [
+                        connection_observation,
+                        subscription_observation,
+                    ],
+                )
+                await connection.execute(
+                    connection_table.insert().values(
+                        **_connection_lifecycle_observation_values(
+                            observation=connection_observation,
+                            raw_event=raw_connection,
+                        )
+                    )
+                )
+                await connection.execute(
+                    subscription_table.insert().values(
+                        **_subscription_lifecycle_observation_values(
+                            observation=subscription_observation,
+                            raw_event=raw_subscription,
+                        )
+                    )
+                )
+                await connection.execute(
+                    text("SET CONSTRAINTS ALL IMMEDIATE")
+                )
+
+            async with engine.connect() as connection:
+                stored_counts = {
+                    table_name: await connection.scalar(
+                        text(
+                            f"SELECT count(*) "
+                            f"FROM {table_name}"
+                        )
+                    )
+                    for table_name in (
+                        "provider_lifecycle_observations",
+                        (
+                            "provider_connection_"
+                            "lifecycle_observations"
+                        ),
+                        (
+                            "provider_subscription_"
+                            "lifecycle_observations"
+                        ),
+                    )
+                }
+
+            assert stored_counts == {
+                "provider_lifecycle_observations": 2,
+                (
+                    "provider_connection_"
+                    "lifecycle_observations"
+                ): 1,
+                (
+                    "provider_subscription_"
+                    "lifecycle_observations"
+                ): 1,
+            }
+
+            missing_subtype_raw = (
+                _raw_connection_lifecycle_values(
+                    marker="5",
+                    connection_session_id=(
+                        "missing-subtype-session"
+                    ),
+                    source_order_scope_id=(
+                        "missing-subtype-scope"
+                    ),
+                )
+            )
+            missing_subtype_observation = (
+                _provider_lifecycle_observation_values(
+                    raw_event=missing_subtype_raw,
+                    marker="6",
+                    event_type=(
+                        "provider_connection_"
+                        "lifecycle_observation"
+                    ),
+                    subject_id=missing_subtype_raw[
+                        "connection_session_id"
+                    ],
+                )
+            )
+
+            with pytest.raises(
+                DBAPIError,
+                match=(
+                    "must have exactly one "
+                    "connection subtype"
+                ),
+            ):
+                async with engine.begin() as connection:
+                    await connection.execute(
+                        raw_table.insert().values(
+                            **missing_subtype_raw
+                        )
+                    )
+                    await connection.execute(
+                        observation_table.insert().values(
+                            **missing_subtype_observation
+                        )
+                    )
+                    await connection.execute(
+                        text(
+                            "SET CONSTRAINTS ALL IMMEDIATE"
+                        )
+                    )
+
+            invalid_transition_raw = (
+                _raw_connection_lifecycle_values(
+                    marker="7",
+                    connection_session_id=(
+                        "invalid-transition-session"
+                    ),
+                    source_order_scope_id=(
+                        "invalid-transition-scope"
+                    ),
+                )
+            )
+            invalid_transition_observation = (
+                _provider_lifecycle_observation_values(
+                    raw_event=invalid_transition_raw,
+                    marker="8",
+                    event_type=(
+                        "provider_connection_"
+                        "lifecycle_observation"
+                    ),
+                    subject_id=invalid_transition_raw[
+                        "connection_session_id"
+                    ],
+                )
+            )
+
+            with pytest.raises(IntegrityError):
+                async with engine.begin() as connection:
+                    await connection.execute(
+                        raw_table.insert().values(
+                            **invalid_transition_raw
+                        )
+                    )
+                    await connection.execute(
+                        observation_table.insert().values(
+                            **invalid_transition_observation
+                        )
+                    )
+                    await connection.execute(
+                        connection_table.insert().values(
+                            **_connection_lifecycle_observation_values(
+                                observation=(
+                                    invalid_transition_observation
+                                ),
+                                raw_event=invalid_transition_raw,
+                                state="connected",
+                            )
+                        )
+                    )
+
+            cross_kind_raw = (
+                _raw_connection_lifecycle_values(
+                    marker="9",
+                    connection_session_id=(
+                        "cross-kind-session"
+                    ),
+                    source_order_scope_id=(
+                        "cross-kind-scope"
+                    ),
+                )
+            )
+            cross_kind_observation = (
+                _provider_lifecycle_observation_values(
+                    raw_event=cross_kind_raw,
+                    marker="a",
+                    event_type=(
+                        "provider_connection_"
+                        "lifecycle_observation"
+                    ),
+                    subject_id=cross_kind_raw[
+                        "connection_session_id"
+                    ],
+                )
+            )
+
+            with pytest.raises(IntegrityError):
+                async with engine.begin() as connection:
+                    await connection.execute(
+                        raw_table.insert().values(
+                            **cross_kind_raw
+                        )
+                    )
+                    await connection.execute(
+                        observation_table.insert().values(
+                            **cross_kind_observation
+                        )
+                    )
+                    await connection.execute(
+                        subscription_table.insert().values(
+                            **_subscription_lifecycle_observation_values(
+                                observation={
+                                    **cross_kind_observation,
+                                    "event_type": (
+                                        "provider_subscription_"
+                                        "lifecycle_observation"
+                                    ),
+                                    "subject_id": (
+                                        "sha256:" + "b" * 64
+                                    ),
+                                    "lifecycle_kind": (
+                                        "subscription"
+                                    ),
+                                },
+                                raw_event={
+                                    **cross_kind_raw,
+                                    "subscription_scope_id": (
+                                        "cross-kind-subscription"
+                                    ),
+                                    "request_mode": "ltpc",
+                                    "instrument_keys_digest": (
+                                        instrument_keys_digest
+                                    ),
+                                    "instrument_key_count": 1,
+                                },
+                            )
+                        )
+                    )
+
+            count_mismatch_raw = (
+                _raw_subscription_lifecycle_values(
+                    marker="c",
+                    instrument_keys_digest=(
+                        instrument_keys_digest
+                    ),
+                    instrument_key_count=1,
+                    connection_session_id=(
+                        "count-mismatch-session"
+                    ),
+                    subscription_scope_id=(
+                        "count-mismatch-subscription"
+                    ),
+                    source_order_scope_id=(
+                        "count-mismatch-scope"
+                    ),
+                )
+            )
+            count_mismatch_subject = stable_hash(
+                {
+                    "entity": "provider_subscription",
+                    "provider": "upstox",
+                    "connection_session_id": (
+                        count_mismatch_raw[
+                            "connection_session_id"
+                        ]
+                    ),
+                    "subscription_scope_id": (
+                        count_mismatch_raw[
+                            "subscription_scope_id"
+                        ]
+                    ),
+                }
+            )
+            count_mismatch_observation = (
+                _provider_lifecycle_observation_values(
+                    raw_event=count_mismatch_raw,
+                    marker="d",
+                    event_type=(
+                        "provider_subscription_"
+                        "lifecycle_observation"
+                    ),
+                    subject_id=count_mismatch_subject,
+                )
+            )
+
+            with pytest.raises(
+                DBAPIError,
+                match="instrument count mismatch",
+            ):
+                async with engine.begin() as connection:
+                    await connection.execute(
+                        raw_table.insert().values(
+                            **count_mismatch_raw
+                        )
+                    )
+                    await connection.execute(
+                        observation_table.insert().values(
+                            **count_mismatch_observation
+                        )
+                    )
+                    await connection.execute(
+                        subscription_table.insert().values(
+                            **_subscription_lifecycle_observation_values(
+                                observation=(
+                                    count_mismatch_observation
+                                ),
+                                raw_event=(
+                                    count_mismatch_raw
+                                ),
+                                instrument_key_count=2,
+                            )
+                        )
+                    )
+    finally:
+        await dispose_database_engine(engine)
+

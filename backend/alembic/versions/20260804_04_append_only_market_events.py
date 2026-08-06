@@ -2679,12 +2679,736 @@ def _create_provider_lifecycle_batch_events() -> None:
     )
 
 
+def _create_provider_lifecycle_observations() -> None:
+    op.create_table(
+        "provider_lifecycle_observations",
+        sa.Column(
+            "event_id",
+            sa.String(ID),
+            primary_key=True,
+        ),
+        sa.Column(
+            "raw_event_id",
+            sa.String(ID),
+            nullable=False,
+        ),
+        sa.Column(
+            "event_type",
+            sa.String(64),
+            nullable=False,
+        ),
+        sa.Column(
+            "subject_id",
+            sa.String(512),
+            nullable=False,
+        ),
+        sa.Column(
+            "lifecycle_kind",
+            sa.String(32),
+            nullable=False,
+        ),
+        sa.Column(
+            "provider",
+            sa.String(128),
+            nullable=False,
+        ),
+        sa.Column(
+            "connection_session_id",
+            sa.String(512),
+            nullable=False,
+        ),
+        sa.Column(
+            "source_order_scope_id",
+            sa.String(512),
+            nullable=False,
+        ),
+        sa.Column(
+            "source_order",
+            sa.BigInteger(),
+            nullable=False,
+        ),
+        sa.Column(
+            "occurred_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+        ),
+        sa.Column(
+            "available_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+        ),
+        sa.Column(
+            "recorded_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+        ),
+        sa.Column(
+            "normalization_schema_version",
+            sa.Integer(),
+            nullable=False,
+        ),
+        sa.Column(
+            "normalizer_implementation_version",
+            sa.String(128),
+            nullable=False,
+        ),
+        sa.Column(
+            "provider_sequence",
+            sa.BigInteger(),
+            nullable=True,
+        ),
+        sa.Column(
+            "payload",
+            postgresql.JSONB(astext_type=sa.Text()),
+            nullable=False,
+        ),
+        sa.UniqueConstraint(
+            "event_id",
+            "raw_event_id",
+            name="uq_provider_lifecycle_observations_event_raw",
+        ),
+        sa.UniqueConstraint(
+            "raw_event_id",
+            "normalization_schema_version",
+            name="uq_provider_lifecycle_observations_raw_schema",
+        ),
+        sa.UniqueConstraint(
+            "event_id",
+            "event_type",
+            "subject_id",
+            "lifecycle_kind",
+            "connection_session_id",
+            name="uq_provider_lifecycle_observations_typed_identity",
+        ),
+        sa.ForeignKeyConstraint(
+            [
+                "raw_event_id",
+                "lifecycle_kind",
+            ],
+            [
+                "raw_provider_lifecycle_events.raw_event_id",
+                "raw_provider_lifecycle_events.lifecycle_kind",
+            ],
+            ondelete="NO ACTION",
+            onupdate="NO ACTION",
+            name="fk_provider_lifecycle_observations_raw_event",
+        ),
+        sa.CheckConstraint(
+            "event_id ~ '^sha256:[0-9a-f]{64}$'",
+            name="provider_lifecycle_observations_event_sha256",
+        ),
+        sa.CheckConstraint(
+            "raw_event_id ~ '^sha256:[0-9a-f]{64}$'",
+            name="provider_lifecycle_observations_raw_sha256",
+        ),
+        sa.CheckConstraint(
+            "event_type IN ("
+            "'provider_connection_lifecycle_observation', "
+            "'provider_subscription_lifecycle_observation'"
+            ")",
+            name="provider_lifecycle_observations_event_type",
+        ),
+        sa.CheckConstraint(
+            "octet_length(subject_id) BETWEEN 1 AND 512 "
+            "AND subject_id ~ '[^[:space:]]'",
+            name="provider_lifecycle_observations_subject_bytes",
+        ),
+        sa.CheckConstraint(
+            "lifecycle_kind IN ('connection', 'subscription')",
+            name="provider_lifecycle_observations_kind",
+        ),
+        sa.CheckConstraint(
+            "("
+            "lifecycle_kind = 'connection' "
+            "AND event_type = "
+            "'provider_connection_lifecycle_observation' "
+            "AND subject_id = connection_session_id"
+            ") OR ("
+            "lifecycle_kind = 'subscription' "
+            "AND event_type = "
+            "'provider_subscription_lifecycle_observation' "
+            "AND subject_id ~ '^sha256:[0-9a-f]{64}$'"
+            ")",
+            name="provider_lifecycle_observations_identity_shape",
+        ),
+        sa.CheckConstraint(
+            "provider = 'upstox'",
+            name="provider_lifecycle_observations_provider",
+        ),
+        sa.CheckConstraint(
+            "octet_length(connection_session_id) BETWEEN 1 AND 512 "
+            "AND connection_session_id ~ '[^[:space:]]'",
+            name="provider_lifecycle_observations_connection_bytes",
+        ),
+        sa.CheckConstraint(
+            "octet_length(source_order_scope_id) BETWEEN 1 AND 512 "
+            "AND source_order_scope_id ~ '[^[:space:]]'",
+            name="provider_lifecycle_observations_source_scope_bytes",
+        ),
+        sa.CheckConstraint(
+            "source_order BETWEEN 0 AND 9223372036854775807",
+            name="provider_lifecycle_observations_source_order",
+        ),
+        sa.CheckConstraint(
+            "occurred_at <> 'infinity'::timestamptz "
+            "AND occurred_at <> '-infinity'::timestamptz",
+            name="provider_lifecycle_observations_occurred_finite",
+        ),
+        sa.CheckConstraint(
+            "available_at <> 'infinity'::timestamptz "
+            "AND available_at <> '-infinity'::timestamptz",
+            name="provider_lifecycle_observations_available_finite",
+        ),
+        sa.CheckConstraint(
+            "recorded_at <> 'infinity'::timestamptz "
+            "AND recorded_at <> '-infinity'::timestamptz",
+            name="provider_lifecycle_observations_recorded_finite",
+        ),
+        sa.CheckConstraint(
+            "available_at >= occurred_at "
+            "AND recorded_at >= available_at",
+            name="provider_lifecycle_observations_clock_order",
+        ),
+        sa.CheckConstraint(
+            "normalization_schema_version = 1 "
+            "AND normalizer_implementation_version = "
+            "'upstox-v3-normalizer-1'",
+            name="provider_lifecycle_observations_schema_label",
+        ),
+        sa.CheckConstraint(
+            "provider_sequence IS NULL",
+            name="provider_lifecycle_observations_provider_sequence",
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(payload) = 'object'",
+            name="provider_lifecycle_observations_payload_object",
+        ),
+    )
+
+    op.create_index(
+        "ix_provider_lifecycle_observations_scope_order",
+        "provider_lifecycle_observations",
+        (
+            "normalization_schema_version",
+            "provider",
+            "connection_session_id",
+            "source_order_scope_id",
+            "source_order",
+            "event_id",
+        ),
+    )
+    op.create_index(
+        "ix_provider_lifecycle_observations_subject_time",
+        "provider_lifecycle_observations",
+        (
+            "normalization_schema_version",
+            "subject_id",
+            "lifecycle_kind",
+            "available_at",
+            "event_id",
+        ),
+    )
+    op.create_index(
+        "ix_provider_lifecycle_observations_raw",
+        "provider_lifecycle_observations",
+        (
+            "raw_event_id",
+            "event_id",
+        ),
+    )
+
+
+def _create_provider_connection_lifecycle_observations() -> None:
+    op.create_table(
+        "provider_connection_lifecycle_observations",
+        sa.Column(
+            "event_id",
+            sa.String(ID),
+            primary_key=True,
+        ),
+        sa.Column(
+            "event_type",
+            sa.String(64),
+            nullable=False,
+        ),
+        sa.Column(
+            "subject_id",
+            sa.String(512),
+            nullable=False,
+        ),
+        sa.Column(
+            "lifecycle_kind",
+            sa.String(32),
+            nullable=False,
+        ),
+        sa.Column(
+            "connection_session_id",
+            sa.String(512),
+            nullable=False,
+        ),
+        sa.Column(
+            "previous_state",
+            sa.String(32),
+            nullable=True,
+        ),
+        sa.Column(
+            "state",
+            sa.String(32),
+            nullable=False,
+        ),
+        sa.Column(
+            "redacted_reason_code",
+            sa.String(128),
+            nullable=True,
+        ),
+        sa.ForeignKeyConstraint(
+            [
+                "event_id",
+                "event_type",
+                "subject_id",
+                "lifecycle_kind",
+                "connection_session_id",
+            ],
+            [
+                "provider_lifecycle_observations.event_id",
+                "provider_lifecycle_observations.event_type",
+                "provider_lifecycle_observations.subject_id",
+                "provider_lifecycle_observations.lifecycle_kind",
+                "provider_lifecycle_observations.connection_session_id",
+            ],
+            ondelete="NO ACTION",
+            onupdate="NO ACTION",
+            name="fk_connection_lifecycle_observations_typed_identity",
+        ),
+        sa.CheckConstraint(
+            "event_id ~ '^sha256:[0-9a-f]{64}$'",
+            name="connection_lifecycle_observations_event_sha256",
+        ),
+        sa.CheckConstraint(
+            "event_type = "
+            "'provider_connection_lifecycle_observation'",
+            name="connection_lifecycle_observations_event_type",
+        ),
+        sa.CheckConstraint(
+            "lifecycle_kind = 'connection'",
+            name="connection_lifecycle_observations_kind",
+        ),
+        sa.CheckConstraint(
+            "octet_length(connection_session_id) BETWEEN 1 AND 512 "
+            "AND connection_session_id ~ '[^[:space:]]' "
+            "AND subject_id = connection_session_id",
+            name="connection_lifecycle_observations_identity_shape",
+        ),
+        sa.CheckConstraint(
+            "COALESCE(("
+            "(previous_state IS NULL AND state = 'connecting') "
+            "OR (previous_state = 'connecting' "
+            "AND state IN ('connected', 'failed', 'closing')) "
+            "OR (previous_state = 'connected' "
+            "AND state IN ('authorized', 'closing', 'failed')) "
+            "OR (previous_state = 'authorized' "
+            "AND state IN ('closing', 'reconnecting', 'failed')) "
+            "OR (previous_state = 'reconnecting' "
+            "AND state IN ('closing', 'failed')) "
+            "OR (previous_state = 'closing' "
+            "AND state IN ('closed', 'failed')) "
+            "OR (previous_state = 'failed' "
+            "AND state IN ('reconnecting', 'closing', 'closed'))"
+            "), FALSE)",
+            name="connection_lifecycle_observations_transition",
+        ),
+        sa.CheckConstraint(
+            "redacted_reason_code IS NULL OR ("
+            "octet_length(redacted_reason_code) BETWEEN 1 AND 128 "
+            "AND redacted_reason_code "
+            "~ '^[a-z0-9]+(_[a-z0-9]+)*$' "
+            "AND redacted_reason_code "
+            "!~ '(token|url|traceback|socket|account|user_id|exception)'"
+            ")",
+            name="connection_lifecycle_observations_reason_format",
+        ),
+        sa.CheckConstraint(
+            "(state = 'failed' "
+            "AND redacted_reason_code IS NOT NULL) "
+            "OR (state <> 'failed' "
+            "AND redacted_reason_code IS NULL)",
+            name="connection_lifecycle_observations_reason_shape",
+        ),
+    )
+
+    op.create_index(
+        "ix_provider_connection_lifecycle_state",
+        "provider_connection_lifecycle_observations",
+        (
+            "connection_session_id",
+            "state",
+            "event_id",
+        ),
+    )
+
+
+def _create_provider_subscription_lifecycle_observations() -> None:
+    op.create_table(
+        "provider_subscription_lifecycle_observations",
+        sa.Column(
+            "event_id",
+            sa.String(ID),
+            primary_key=True,
+        ),
+        sa.Column(
+            "event_type",
+            sa.String(64),
+            nullable=False,
+        ),
+        sa.Column(
+            "subject_id",
+            sa.String(512),
+            nullable=False,
+        ),
+        sa.Column(
+            "lifecycle_kind",
+            sa.String(32),
+            nullable=False,
+        ),
+        sa.Column(
+            "connection_session_id",
+            sa.String(512),
+            nullable=False,
+        ),
+        sa.Column(
+            "subscription_scope_id",
+            sa.String(512),
+            nullable=False,
+        ),
+        sa.Column(
+            "previous_state",
+            sa.String(32),
+            nullable=True,
+        ),
+        sa.Column(
+            "state",
+            sa.String(32),
+            nullable=False,
+        ),
+        sa.Column(
+            "request_mode",
+            sa.String(32),
+            nullable=True,
+        ),
+        sa.Column(
+            "instrument_keys_digest",
+            sa.String(ID),
+            nullable=False,
+        ),
+        sa.Column(
+            "instrument_key_count",
+            sa.Integer(),
+            nullable=False,
+        ),
+        sa.Column(
+            "redacted_reason_code",
+            sa.String(128),
+            nullable=True,
+        ),
+        sa.ForeignKeyConstraint(
+            [
+                "event_id",
+                "event_type",
+                "subject_id",
+                "lifecycle_kind",
+                "connection_session_id",
+            ],
+            [
+                "provider_lifecycle_observations.event_id",
+                "provider_lifecycle_observations.event_type",
+                "provider_lifecycle_observations.subject_id",
+                "provider_lifecycle_observations.lifecycle_kind",
+                "provider_lifecycle_observations.connection_session_id",
+            ],
+            ondelete="NO ACTION",
+            onupdate="NO ACTION",
+            name="fk_subscription_lifecycle_observations_typed_identity",
+        ),
+        sa.ForeignKeyConstraint(
+            ["instrument_keys_digest"],
+            [
+                "provider_subscription_instrument_sets."
+                "instrument_keys_digest"
+            ],
+            ondelete="NO ACTION",
+            onupdate="NO ACTION",
+            name="fk_subscription_lifecycle_observations_instrument_set",
+        ),
+        sa.CheckConstraint(
+            "event_id ~ '^sha256:[0-9a-f]{64}$'",
+            name="subscription_lifecycle_observations_event_sha256",
+        ),
+        sa.CheckConstraint(
+            "event_type = "
+            "'provider_subscription_lifecycle_observation'",
+            name="subscription_lifecycle_observations_event_type",
+        ),
+        sa.CheckConstraint(
+            "subject_id ~ '^sha256:[0-9a-f]{64}$'",
+            name="subscription_lifecycle_observations_subject_sha256",
+        ),
+        sa.CheckConstraint(
+            "lifecycle_kind = 'subscription'",
+            name="subscription_lifecycle_observations_kind",
+        ),
+        sa.CheckConstraint(
+            "octet_length(connection_session_id) BETWEEN 1 AND 512 "
+            "AND connection_session_id ~ '[^[:space:]]'",
+            name="subscription_lifecycle_observations_connection_bytes",
+        ),
+        sa.CheckConstraint(
+            "octet_length(subscription_scope_id) BETWEEN 1 AND 512 "
+            "AND subscription_scope_id ~ '[^[:space:]]'",
+            name="subscription_lifecycle_observations_scope_bytes",
+        ),
+        sa.CheckConstraint(
+            "COALESCE(("
+            "(previous_state IS NULL "
+            "AND state = 'subscribe_requested') "
+            "OR (previous_state = 'subscribe_requested' "
+            "AND state IN ('subscribed', 'subscription_failed')) "
+            "OR (previous_state = 'subscribed' "
+            "AND state IN ("
+            "'mode_change_requested', "
+            "'unsubscribe_requested', "
+            "'subscription_failed'"
+            ")) "
+            "OR (previous_state = 'mode_change_requested' "
+            "AND state IN ('mode_changed', 'subscription_failed')) "
+            "OR (previous_state = 'mode_changed' "
+            "AND state IN ("
+            "'mode_change_requested', "
+            "'unsubscribe_requested', "
+            "'subscription_failed'"
+            ")) "
+            "OR (previous_state = 'unsubscribe_requested' "
+            "AND state IN ('unsubscribed', 'subscription_failed'))"
+            "), FALSE)",
+            name="subscription_lifecycle_observations_transition",
+        ),
+        sa.CheckConstraint(
+            "request_mode IS NULL OR "
+            "request_mode IN ("
+            "'ltpc', "
+            "'option_greeks', "
+            "'full_d5', "
+            "'full_d30'"
+            ")",
+            name="subscription_lifecycle_observations_request_mode",
+        ),
+        sa.CheckConstraint(
+            "("
+            "state IN ("
+            "'subscribe_requested', "
+            "'subscribed', "
+            "'mode_change_requested', "
+            "'mode_changed'"
+            ") "
+            "AND request_mode IS NOT NULL"
+            ") OR ("
+            "state IN ("
+            "'unsubscribe_requested', "
+            "'unsubscribed', "
+            "'subscription_failed'"
+            ")"
+            ")",
+            name="subscription_lifecycle_observations_mode_shape",
+        ),
+        sa.CheckConstraint(
+            "instrument_keys_digest ~ '^sha256:[0-9a-f]{64}$'",
+            name="subscription_lifecycle_observations_instrument_digest",
+        ),
+        sa.CheckConstraint(
+            "instrument_key_count BETWEEN 1 AND 5000",
+            name="subscription_lifecycle_observations_instrument_count",
+        ),
+        sa.CheckConstraint(
+            "request_mode IS NULL "
+            "OR (request_mode = 'ltpc' "
+            "AND instrument_key_count BETWEEN 1 AND 5000) "
+            "OR (request_mode = 'option_greeks' "
+            "AND instrument_key_count BETWEEN 1 AND 3000) "
+            "OR (request_mode = 'full_d5' "
+            "AND instrument_key_count BETWEEN 1 AND 2000) "
+            "OR (request_mode = 'full_d30' "
+            "AND instrument_key_count BETWEEN 1 AND 50)",
+            name="subscription_lifecycle_observations_mode_limit",
+        ),
+        sa.CheckConstraint(
+            "redacted_reason_code IS NULL OR ("
+            "octet_length(redacted_reason_code) BETWEEN 1 AND 128 "
+            "AND redacted_reason_code "
+            "~ '^[a-z0-9]+(_[a-z0-9]+)*$' "
+            "AND redacted_reason_code "
+            "!~ '(token|url|traceback|socket|account|user_id|exception)'"
+            ")",
+            name="subscription_lifecycle_observations_reason_format",
+        ),
+        sa.CheckConstraint(
+            "(state = 'subscription_failed' "
+            "AND redacted_reason_code IS NOT NULL) "
+            "OR (state <> 'subscription_failed' "
+            "AND redacted_reason_code IS NULL)",
+            name="subscription_lifecycle_observations_reason_shape",
+        ),
+    )
+
+    op.create_index(
+        "ix_provider_subscription_lifecycle_scope_state",
+        "provider_subscription_lifecycle_observations",
+        (
+            "connection_session_id",
+            "subscription_scope_id",
+            "state",
+            "event_id",
+        ),
+    )
+    op.create_index(
+        "ix_provider_subscription_lifecycle_instrument_set",
+        "provider_subscription_lifecycle_observations",
+        (
+            "instrument_keys_digest",
+            "event_id",
+        ),
+    )
+
+    # The immutable set FK owns parent existence. This trigger
+    # verifies the redundant typed count without masking an
+    # orphan-digest foreign-key violation.
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION
+        data14_validate_subscription_lifecycle_observation_count()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        DECLARE
+            declared_count integer;
+        BEGIN
+            SELECT instrument_key_count
+            INTO declared_count
+            FROM provider_subscription_instrument_sets
+            WHERE instrument_keys_digest =
+                NEW.instrument_keys_digest;
+
+            IF declared_count IS NULL THEN
+                RETURN NEW;
+            END IF;
+
+            IF NEW.instrument_key_count
+               IS DISTINCT FROM declared_count THEN
+                RAISE EXCEPTION
+                    'subscription lifecycle observation '
+                    'instrument count mismatch for %: '
+                    'declared %, observation %',
+                    NEW.instrument_keys_digest,
+                    declared_count,
+                    NEW.instrument_key_count;
+            END IF;
+
+            RETURN NEW;
+        END;
+        $$
+        """
+    )
+
+    op.execute(
+        """
+        CREATE TRIGGER
+        data14_subscription_lifecycle_observation_count
+        BEFORE INSERT
+        ON provider_subscription_lifecycle_observations
+        FOR EACH ROW
+        EXECUTE FUNCTION
+        data14_validate_subscription_lifecycle_observation_count()
+        """
+    )
+
+
+def _create_provider_lifecycle_observation_integrity() -> None:
+    # A normalized lifecycle observation root must have exactly one
+    # typed subtype by commit. The root is inserted first, so this
+    # deferred trigger sees the subtype inserted later in the same
+    # transaction.
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION
+        data14_validate_provider_lifecycle_observation_subtype()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        DECLARE
+            connection_count bigint;
+            subscription_count bigint;
+        BEGIN
+            SELECT count(*)
+            INTO connection_count
+            FROM provider_connection_lifecycle_observations
+            WHERE event_id = NEW.event_id;
+
+            SELECT count(*)
+            INTO subscription_count
+            FROM provider_subscription_lifecycle_observations
+            WHERE event_id = NEW.event_id;
+
+            IF NEW.lifecycle_kind = 'connection' THEN
+                IF connection_count <> 1
+                   OR subscription_count <> 0 THEN
+                    RAISE EXCEPTION
+                        'provider lifecycle observation % '
+                        'must have exactly one connection subtype',
+                        NEW.event_id;
+                END IF;
+            ELSIF NEW.lifecycle_kind = 'subscription' THEN
+                IF connection_count <> 0
+                   OR subscription_count <> 1 THEN
+                    RAISE EXCEPTION
+                        'provider lifecycle observation % '
+                        'must have exactly one subscription subtype',
+                        NEW.event_id;
+                END IF;
+            ELSE
+                RAISE EXCEPTION
+                    'provider lifecycle observation % '
+                    'has unsupported lifecycle kind %',
+                    NEW.event_id,
+                    NEW.lifecycle_kind;
+            END IF;
+
+            RETURN NULL;
+        END;
+        $$
+        """
+    )
+
+    op.execute(
+        """
+        CREATE CONSTRAINT TRIGGER
+        data14_provider_lifecycle_observation_subtype_integrity
+        AFTER INSERT
+        ON provider_lifecycle_observations
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW
+        EXECUTE FUNCTION
+        data14_validate_provider_lifecycle_observation_subtype()
+        """
+    )
+
 def upgrade() -> None:
     _create_temporal_provenance_targets()
     _create_provider_subscription_instrument_sets()
     _create_provider_lifecycle_batches()
     _create_raw_provider_lifecycle_events()
     _create_provider_lifecycle_batch_events()
+    _create_provider_lifecycle_observations()
+    _create_provider_connection_lifecycle_observations()
+    _create_provider_subscription_lifecycle_observations()
+    _create_provider_lifecycle_observation_integrity()
 
     for name in TABLES:
         if name in {
@@ -2693,6 +3417,9 @@ def upgrade() -> None:
             "provider_lifecycle_batches",
             "raw_provider_lifecycle_events",
             "provider_lifecycle_batch_events",
+            "provider_lifecycle_observations",
+            "provider_connection_lifecycle_observations",
+            "provider_subscription_lifecycle_observations",
         }:
             continue
 
@@ -2795,20 +3522,6 @@ def upgrade() -> None:
             ),
         ]
 
-        if name == "provider_lifecycle_observations":
-            columns += [
-                sa.Column(
-                    "raw_event_id",
-                    sa.String(ID),
-                    nullable=False,
-                ),
-                sa.Column(
-                    "lifecycle_kind",
-                    sa.String(32),
-                    nullable=False,
-                ),
-            ]
-
         op.create_table(name, *columns)
 
         op.create_check_constraint(
@@ -2859,7 +3572,7 @@ def downgrade() -> None:
             "history exists in: "
             + ", ".join(non_empty_tables)
         )
-    
+
     for name in TABLES:
         op.execute(
             f"DROP TRIGGER IF EXISTS "

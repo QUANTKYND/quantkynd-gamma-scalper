@@ -2415,3 +2415,310 @@ def test_lifecycle_batch_event_metadata_preserves_input_order() -> None:
             "first_occurrence_ordinal",
         ),
     }
+
+def test_provider_lifecycle_observation_metadata_is_explicit_registry() -> None:
+    table = Base.metadata.tables[
+        "provider_lifecycle_observations"
+    ]
+
+    assert set(table.c.keys()) == {
+        "event_id",
+        "raw_event_id",
+        "event_type",
+        "subject_id",
+        "lifecycle_kind",
+        "provider",
+        "connection_session_id",
+        "source_order_scope_id",
+        "source_order",
+        "occurred_at",
+        "available_at",
+        "recorded_at",
+        "normalization_schema_version",
+        "normalizer_implementation_version",
+        "provider_sequence",
+        "payload",
+    }
+    assert tuple(table.primary_key.columns.keys()) == (
+        "event_id",
+    )
+    assert "id" not in table.c
+    assert "created_at" not in table.c
+
+    assert isinstance(
+        table.c.source_order.type,
+        BigInteger,
+    )
+    assert isinstance(
+        table.c.provider_sequence.type,
+        BigInteger,
+    )
+    assert isinstance(
+        table.c.normalization_schema_version.type,
+        Integer,
+    )
+    assert isinstance(
+        table.c.payload.type,
+        JSONB,
+    )
+
+    for column_name in (
+        "occurred_at",
+        "available_at",
+        "recorded_at",
+    ):
+        assert table.c[column_name].type.timezone is True
+
+    unique_columns = _unique_column_shapes(table)
+    assert (
+        "event_id",
+        "raw_event_id",
+    ) in unique_columns
+    assert (
+        "raw_event_id",
+        "normalization_schema_version",
+    ) in unique_columns
+    assert (
+        "event_id",
+        "event_type",
+        "subject_id",
+        "lifecycle_kind",
+        "connection_session_id",
+    ) in unique_columns
+
+    assert (
+        (
+            "raw_event_id",
+            "lifecycle_kind",
+        ),
+        (
+            "raw_provider_lifecycle_events.raw_event_id",
+            "raw_provider_lifecycle_events.lifecycle_kind",
+        ),
+        (
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ) in _foreign_key_shapes(table)
+
+    check_names = {
+        constraint.name
+        for constraint in table.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert check_names == {
+        "ck_provider_lifecycle_observations_event_sha256",
+        "ck_provider_lifecycle_observations_raw_sha256",
+        "ck_provider_lifecycle_observations_event_type",
+        "ck_provider_lifecycle_observations_subject_bytes",
+        "ck_provider_lifecycle_observations_kind",
+        "ck_provider_lifecycle_observations_identity_shape",
+        "ck_provider_lifecycle_observations_provider",
+        "ck_provider_lifecycle_observations_connection_bytes",
+        "ck_provider_lifecycle_observations_source_scope_bytes",
+        "ck_provider_lifecycle_observations_source_order",
+        "ck_provider_lifecycle_observations_occurred_finite",
+        "ck_provider_lifecycle_observations_available_finite",
+        "ck_provider_lifecycle_observations_recorded_finite",
+        "ck_provider_lifecycle_observations_clock_order",
+        "ck_provider_lifecycle_observations_schema_label",
+        "ck_provider_lifecycle_observations_provider_sequence",
+        "ck_provider_lifecycle_observations_payload_object",
+    }
+
+    assert _index_shapes(table) == {
+        "ix_provider_lifecycle_observations_scope_order": (
+            "normalization_schema_version",
+            "provider",
+            "connection_session_id",
+            "source_order_scope_id",
+            "source_order",
+            "event_id",
+        ),
+        "ix_provider_lifecycle_observations_subject_time": (
+            "normalization_schema_version",
+            "subject_id",
+            "lifecycle_kind",
+            "available_at",
+            "event_id",
+        ),
+        "ix_provider_lifecycle_observations_raw": (
+            "raw_event_id",
+            "event_id",
+        ),
+    }
+
+
+def test_connection_lifecycle_observation_metadata_is_typed_and_bound() -> None:
+    table = Base.metadata.tables[
+        "provider_connection_lifecycle_observations"
+    ]
+
+    assert set(table.c.keys()) == {
+        "event_id",
+        "event_type",
+        "subject_id",
+        "lifecycle_kind",
+        "connection_session_id",
+        "previous_state",
+        "state",
+        "redacted_reason_code",
+    }
+    assert tuple(table.primary_key.columns.keys()) == (
+        "event_id",
+    )
+    assert "id" not in table.c
+    assert "created_at" not in table.c
+
+    assert (
+        (
+            "event_id",
+            "event_type",
+            "subject_id",
+            "lifecycle_kind",
+            "connection_session_id",
+        ),
+        (
+            "provider_lifecycle_observations.event_id",
+            "provider_lifecycle_observations.event_type",
+            "provider_lifecycle_observations.subject_id",
+            "provider_lifecycle_observations.lifecycle_kind",
+            "provider_lifecycle_observations.connection_session_id",
+        ),
+        (
+            "NO ACTION",
+            "NO ACTION",
+            "NO ACTION",
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ) in _foreign_key_shapes(table)
+
+    check_names = {
+        constraint.name
+        for constraint in table.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert check_names == {
+        "ck_connection_lifecycle_observations_event_sha256",
+        "ck_connection_lifecycle_observations_event_type",
+        "ck_connection_lifecycle_observations_kind",
+        "ck_connection_lifecycle_observations_identity_shape",
+        "ck_connection_lifecycle_observations_transition",
+        "ck_connection_lifecycle_observations_reason_format",
+        "ck_connection_lifecycle_observations_reason_shape",
+    }
+
+    assert _index_shapes(table) == {
+        "ix_provider_connection_lifecycle_state": (
+            "connection_session_id",
+            "state",
+            "event_id",
+        ),
+    }
+
+
+def test_subscription_lifecycle_observation_metadata_is_typed_and_bound() -> None:
+    table = Base.metadata.tables[
+        "provider_subscription_lifecycle_observations"
+    ]
+
+    assert set(table.c.keys()) == {
+        "event_id",
+        "event_type",
+        "subject_id",
+        "lifecycle_kind",
+        "connection_session_id",
+        "subscription_scope_id",
+        "previous_state",
+        "state",
+        "request_mode",
+        "instrument_keys_digest",
+        "instrument_key_count",
+        "redacted_reason_code",
+    }
+    assert tuple(table.primary_key.columns.keys()) == (
+        "event_id",
+    )
+    assert "id" not in table.c
+    assert "created_at" not in table.c
+    assert isinstance(
+        table.c.instrument_key_count.type,
+        Integer,
+    )
+
+    foreign_keys = _foreign_key_shapes(table)
+    assert (
+        (
+            "event_id",
+            "event_type",
+            "subject_id",
+            "lifecycle_kind",
+            "connection_session_id",
+        ),
+        (
+            "provider_lifecycle_observations.event_id",
+            "provider_lifecycle_observations.event_type",
+            "provider_lifecycle_observations.subject_id",
+            "provider_lifecycle_observations.lifecycle_kind",
+            "provider_lifecycle_observations.connection_session_id",
+        ),
+        (
+            "NO ACTION",
+            "NO ACTION",
+            "NO ACTION",
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ) in foreign_keys
+    assert (
+        (
+            "instrument_keys_digest",
+        ),
+        (
+            "provider_subscription_instrument_sets."
+            "instrument_keys_digest",
+        ),
+        (
+            "NO ACTION",
+        ),
+    ) in foreign_keys
+
+    check_names = {
+        constraint.name
+        for constraint in table.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert check_names == {
+        "ck_subscription_lifecycle_observations_event_sha256",
+        "ck_subscription_lifecycle_observations_event_type",
+        "ck_subscription_lifecycle_observations_subject_sha256",
+        "ck_subscription_lifecycle_observations_kind",
+        "ck_subscription_lifecycle_observations_connection_bytes",
+        "ck_subscription_lifecycle_observations_scope_bytes",
+        "ck_subscription_lifecycle_observations_transition",
+        "ck_subscription_lifecycle_observations_request_mode",
+        "ck_subscription_lifecycle_observations_mode_shape",
+        "ck_subscription_lifecycle_observations_instrument_digest",
+        "ck_subscription_lifecycle_observations_instrument_count",
+        "ck_subscription_lifecycle_observations_mode_limit",
+        "ck_subscription_lifecycle_observations_reason_format",
+        "ck_subscription_lifecycle_observations_reason_shape",
+    }
+
+    assert _index_shapes(table) == {
+        "ix_provider_subscription_lifecycle_scope_state": (
+            "connection_session_id",
+            "subscription_scope_id",
+            "state",
+            "event_id",
+        ),
+        "ix_provider_subscription_lifecycle_instrument_set": (
+            "instrument_keys_digest",
+            "event_id",
+        ),
+    }
+
