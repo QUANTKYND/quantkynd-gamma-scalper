@@ -621,3 +621,368 @@ def test_market_normalization_results_metadata_is_durable_root() -> None:
             "result_id",
         ),
     }
+
+
+def _unique_column_shapes(table) -> set[tuple[str, ...]]:
+    return {
+        tuple(constraint.columns.keys())
+        for constraint in table.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+
+
+def _foreign_key_shapes(
+    table,
+) -> set[
+    tuple[
+        tuple[str, ...],
+        tuple[str, ...],
+        tuple[str | None, ...],
+    ]
+]:
+    return {
+        (
+            tuple(constraint.column_keys),
+            tuple(
+                element.target_fullname
+                for element in constraint.elements
+            ),
+            tuple(
+                element.ondelete
+                for element in constraint.elements
+            ),
+        )
+        for constraint in table.constraints
+        if isinstance(constraint, ForeignKeyConstraint)
+    }
+
+
+def _index_shapes(table) -> dict[str, tuple[str, ...]]:
+    return {
+        index.name: tuple(
+            column.name
+            for column in index.columns
+        )
+        for index in table.indexes
+    }
+
+
+def test_market_observations_metadata_is_explicit_registry() -> None:
+    table = Base.metadata.tables[
+        "market_observations"
+    ]
+
+    assert tuple(
+        table.primary_key.columns.keys()
+    ) == ("event_id",)
+    assert "id" not in table.c
+    assert "created_at" not in table.c
+
+    assert set(table.c.keys()) == {
+        "event_id",
+        "raw_event_id",
+        "event_type",
+        "subject_id",
+        "provider",
+        "provider_contract_key",
+        "economic_subject_id",
+        "provider_mapping_id",
+        "contract_version_id",
+        "catalogue_version_id",
+        "provider_mapping_record_id",
+        "contract_version_record_id",
+        "catalogue_version_record_id",
+        "resolution_market_as_of",
+        "resolution_known_as_of",
+        "provider_timestamp",
+        "exchange_timestamp",
+        "received_at",
+        "available_at",
+        "recorded_at",
+        "availability_basis",
+        "source_order_scope_id",
+        "source_order",
+        "normalization_schema_version",
+        "normalizer_implementation_version",
+        "provider_sequence",
+        "supersedes_event_id",
+        "payload",
+    }
+
+    assert isinstance(
+        table.c.source_order.type,
+        BigInteger,
+    )
+    assert isinstance(
+        table.c.payload.type,
+        JSONB,
+    )
+
+    unique_columns = _unique_column_shapes(table)
+    assert (
+        "event_id",
+        "raw_event_id",
+    ) in unique_columns
+    assert (
+        "event_id",
+        "event_type",
+        "subject_id",
+    ) in unique_columns
+
+    foreign_keys = _foreign_key_shapes(table)
+    assert (
+        ("raw_event_id",),
+        ("raw_market_frames.raw_event_id",),
+        ("NO ACTION",),
+    ) in foreign_keys
+
+    assert _index_shapes(table) == {
+        "ix_market_observations_subject_provider_time": (
+            "normalization_schema_version",
+            "economic_subject_id",
+            "event_type",
+            "provider_timestamp",
+            "available_at",
+            "event_id",
+        ),
+        "ix_market_observations_subject_availability": (
+            "normalization_schema_version",
+            "economic_subject_id",
+            "availability_basis",
+            "available_at",
+            "event_id",
+        ),
+        "ix_market_observations_raw": (
+            "raw_event_id",
+            "event_id",
+        ),
+        "ix_market_observations_mapping_provenance": (
+            "provider_mapping_id",
+            "contract_version_id",
+            "catalogue_version_id",
+            "event_id",
+        ),
+    }
+
+
+def test_result_event_membership_metadata_preserves_order() -> None:
+    table = Base.metadata.tables[
+        "market_normalization_result_events"
+    ]
+
+    assert set(table.c.keys()) == {
+        "result_id",
+        "raw_event_id",
+        "event_ordinal",
+        "event_id",
+    }
+    assert tuple(
+        table.primary_key.columns.keys()
+    ) == (
+        "result_id",
+        "event_ordinal",
+    )
+    assert (
+        "result_id",
+        "event_id",
+    ) in _unique_column_shapes(table)
+
+    foreign_keys = _foreign_key_shapes(table)
+    assert (
+        (
+            "result_id",
+            "raw_event_id",
+        ),
+        (
+            "market_normalization_results.result_id",
+            "market_normalization_results.raw_event_id",
+        ),
+        (
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ) in foreign_keys
+    assert (
+        (
+            "event_id",
+            "raw_event_id",
+        ),
+        (
+            "market_observations.event_id",
+            "market_observations.raw_event_id",
+        ),
+        (
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ) in foreign_keys
+
+    assert _index_shapes(table) == {
+        "ix_market_normalization_result_events_event": (
+            "event_id",
+            "result_id",
+        ),
+    }
+
+
+def test_market_normalization_failures_metadata_is_explicit_registry() -> None:
+    table = Base.metadata.tables[
+        "market_normalization_failures"
+    ]
+
+    assert tuple(
+        table.primary_key.columns.keys()
+    ) == ("failure_id",)
+    assert "id" not in table.c
+    assert "created_at" not in table.c
+
+    assert set(table.c.keys()) == {
+        "failure_id",
+        "result_id",
+        "raw_event_id",
+        "scope",
+        "reason_code",
+        "provider_contract_key",
+        "segment",
+        "safe_detail_code",
+        "selected_feed_union",
+        "provider_depth_levels_present",
+        "field_paths",
+        "unadopted_schema_paths",
+        "present_unadopted_message_paths",
+        "payload",
+    }
+
+    assert isinstance(
+        table.c.field_paths.type,
+        ARRAY,
+    )
+    assert isinstance(
+        table.c.unadopted_schema_paths.type,
+        ARRAY,
+    )
+    assert isinstance(
+        table.c.present_unadopted_message_paths.type,
+        ARRAY,
+    )
+    assert isinstance(
+        table.c.payload.type,
+        JSONB,
+    )
+
+    assert (
+        "failure_id",
+        "result_id",
+        "raw_event_id",
+    ) in _unique_column_shapes(table)
+
+    assert (
+        (
+            "result_id",
+            "raw_event_id",
+        ),
+        (
+            "market_normalization_results.result_id",
+            "market_normalization_results.raw_event_id",
+        ),
+        (
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ) in _foreign_key_shapes(table)
+
+    assert _index_shapes(table) == {
+        "ix_market_normalization_failures_result_scope": (
+            "result_id",
+            "scope",
+            "failure_id",
+        ),
+        "ix_market_normalization_failures_reason": (
+            "reason_code",
+            "failure_id",
+        ),
+    }
+
+
+def test_result_failure_membership_metadata_preserves_role_order() -> None:
+    table = Base.metadata.tables[
+        "market_normalization_result_failures"
+    ]
+
+    assert set(table.c.keys()) == {
+        "result_id",
+        "raw_event_id",
+        "failure_role",
+        "failure_ordinal",
+        "failure_id",
+    }
+    assert tuple(
+        table.primary_key.columns.keys()
+    ) == (
+        "result_id",
+        "failure_role",
+        "failure_ordinal",
+    )
+    assert (
+        "result_id",
+        "raw_event_id",
+        "failure_role",
+        "failure_ordinal",
+    ) in _unique_column_shapes(table)
+
+    foreign_keys = _foreign_key_shapes(table)
+    assert (
+        (
+            "result_id",
+            "raw_event_id",
+        ),
+        (
+            "market_normalization_results.result_id",
+            "market_normalization_results.raw_event_id",
+        ),
+        (
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ) in foreign_keys
+    assert (
+        (
+            "failure_id",
+            "result_id",
+            "raw_event_id",
+        ),
+        (
+            "market_normalization_failures.failure_id",
+            "market_normalization_failures.result_id",
+            "market_normalization_failures.raw_event_id",
+        ),
+        (
+            "NO ACTION",
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ) in foreign_keys
+
+    indexes = {
+        index.name: (
+            tuple(
+                column.name
+                for column in index.columns
+            ),
+            index.unique,
+        )
+        for index in table.indexes
+    }
+    assert indexes == {
+        "uq_market_normalization_result_failures_one_frame": (
+            ("result_id",),
+            True,
+        ),
+        "ix_market_normalization_result_failures_failure": (
+            (
+                "failure_id",
+                "result_id",
+            ),
+            False,
+        ),
+    }

@@ -159,6 +159,110 @@ MARKET_NORMALIZATION_RESULT_INDEXES = {
 }
 
 
+MARKET_OBSERVATION_COLUMNS = {
+    "event_id",
+    "raw_event_id",
+    "event_type",
+    "subject_id",
+    "provider",
+    "provider_contract_key",
+    "economic_subject_id",
+    "provider_mapping_id",
+    "contract_version_id",
+    "catalogue_version_id",
+    "provider_mapping_record_id",
+    "contract_version_record_id",
+    "catalogue_version_record_id",
+    "resolution_market_as_of",
+    "resolution_known_as_of",
+    "provider_timestamp",
+    "exchange_timestamp",
+    "received_at",
+    "available_at",
+    "recorded_at",
+    "availability_basis",
+    "source_order_scope_id",
+    "source_order",
+    "normalization_schema_version",
+    "normalizer_implementation_version",
+    "provider_sequence",
+    "supersedes_event_id",
+    "payload",
+}
+
+MARKET_OBSERVATION_INDEXES = {
+    "ix_market_observations_subject_provider_time": (
+        "normalization_schema_version",
+        "economic_subject_id",
+        "event_type",
+        "provider_timestamp",
+        "available_at",
+        "event_id",
+    ),
+    "ix_market_observations_subject_availability": (
+        "normalization_schema_version",
+        "economic_subject_id",
+        "availability_basis",
+        "available_at",
+        "event_id",
+    ),
+    "ix_market_observations_raw": (
+        "raw_event_id",
+        "event_id",
+    ),
+    "ix_market_observations_mapping_provenance": (
+        "provider_mapping_id",
+        "contract_version_id",
+        "catalogue_version_id",
+        "event_id",
+    ),
+}
+
+MARKET_RESULT_EVENT_COLUMNS = {
+    "result_id",
+    "raw_event_id",
+    "event_ordinal",
+    "event_id",
+}
+
+MARKET_FAILURE_COLUMNS = {
+    "failure_id",
+    "result_id",
+    "raw_event_id",
+    "scope",
+    "reason_code",
+    "provider_contract_key",
+    "segment",
+    "safe_detail_code",
+    "selected_feed_union",
+    "provider_depth_levels_present",
+    "field_paths",
+    "unadopted_schema_paths",
+    "present_unadopted_message_paths",
+    "payload",
+}
+
+MARKET_FAILURE_INDEXES = {
+    "ix_market_normalization_failures_result_scope": (
+        "result_id",
+        "scope",
+        "failure_id",
+    ),
+    "ix_market_normalization_failures_reason": (
+        "reason_code",
+        "failure_id",
+    ),
+}
+
+MARKET_RESULT_FAILURE_COLUMNS = {
+    "result_id",
+    "raw_event_id",
+    "failure_role",
+    "failure_ordinal",
+    "failure_id",
+}
+
+
 @pytest.mark.anyio
 async def test_upgrade_downgrade_reupgrade_and_metadata_drift(
     postgres_url: str,
@@ -564,7 +668,9 @@ async def _insert_legacy_superseded_session(engine) -> None:
 
 async def _assert_head_schema(engine) -> None:
     async with engine.connect() as connection:
-        details = await connection.run_sync(_schema_details)
+        details = await connection.run_sync(
+            _schema_details
+        )
 
     assert EXPECTED_TABLES <= details["tables"]
     assert details["columns"]
@@ -574,13 +680,8 @@ async def _assert_head_schema(engine) -> None:
     assert details["record_indexes"]
 
     raw = details["raw_market_frames"]
-
     assert set(raw["columns"]) == RAW_MARKET_FRAME_COLUMNS
-
-    assert raw["primary_key"] == (
-        "raw_event_id",
-    )
-
+    assert raw["primary_key"] == ("raw_event_id",)
     assert isinstance(
         raw["columns"]["source_order"]["type"],
         BigInteger,
@@ -589,30 +690,26 @@ async def _assert_head_schema(engine) -> None:
         raw["columns"]["frame_bytes"]["type"],
         LargeBinary,
     )
-
     assert (
         RAW_MARKET_FRAME_CAPTURE_IDENTITY
         in raw["unique_constraints"]
     )
-
     for index_name, expected_columns in (
         RAW_MARKET_FRAME_INDEXES.items()
     ):
-        assert raw["indexes"].get(index_name) == expected_columns
-
+        assert (
+            raw["indexes"][index_name]["columns"]
+            == expected_columns
+        )
 
     result = details[
         "market_normalization_results"
     ]
-
     assert (
         set(result["columns"])
         == MARKET_NORMALIZATION_RESULT_COLUMNS
     )
-    assert result["primary_key"] == (
-        "result_id",
-    )
-
+    assert result["primary_key"] == ("result_id",)
     assert isinstance(
         result["columns"][
             "frame_failure_present"
@@ -643,7 +740,6 @@ async def _assert_head_schema(engine) -> None:
         ]["type"],
         JSONB,
     )
-
     assert (
         (
             "raw_event_id",
@@ -658,109 +754,249 @@ async def _assert_head_schema(engine) -> None:
         )
         in result["unique_constraints"]
     )
-
-    assert any(
-        constrained_columns
-        == ("raw_event_id",)
-        and referred_table
-        == "raw_market_frames"
-        and referred_columns
-        == ("raw_event_id",)
-        and ondelete
-        in (
-            None,
-            "NO ACTION",
-        )
-        for (
-            constrained_columns,
-            referred_table,
-            referred_columns,
-            ondelete,
-        )
-        in result["foreign_keys"]
+    _assert_foreign_key(
+        result,
+        ("raw_event_id",),
+        "raw_market_frames",
+        ("raw_event_id",),
     )
-
     for index_name, expected_columns in (
         MARKET_NORMALIZATION_RESULT_INDEXES.items()
     ):
         assert (
-            result["indexes"].get(index_name)
+            result["indexes"][index_name]["columns"]
             == expected_columns
         )
+
+    observations = details["market_observations"]
+    assert (
+        set(observations["columns"])
+        == MARKET_OBSERVATION_COLUMNS
+    )
+    assert observations["primary_key"] == ("event_id",)
+    assert isinstance(
+        observations["columns"]["source_order"]["type"],
+        BigInteger,
+    )
+    assert isinstance(
+        observations["columns"]["payload"]["type"],
+        JSONB,
+    )
+    assert (
+        ("event_id", "raw_event_id")
+        in observations["unique_constraints"]
+    )
+    assert (
+        ("event_id", "event_type", "subject_id")
+        in observations["unique_constraints"]
+    )
+    _assert_foreign_key(
+        observations,
+        ("raw_event_id",),
+        "raw_market_frames",
+        ("raw_event_id",),
+    )
+    for index_name, expected_columns in (
+        MARKET_OBSERVATION_INDEXES.items()
+    ):
+        assert (
+            observations["indexes"][index_name]["columns"]
+            == expected_columns
+        )
+
+    result_events = details[
+        "market_normalization_result_events"
+    ]
+    assert (
+        set(result_events["columns"])
+        == MARKET_RESULT_EVENT_COLUMNS
+    )
+    assert result_events["primary_key"] == (
+        "result_id",
+        "event_ordinal",
+    )
+    assert (
+        ("result_id", "event_id")
+        in result_events["unique_constraints"]
+    )
+    _assert_foreign_key(
+        result_events,
+        ("result_id", "raw_event_id"),
+        "market_normalization_results",
+        ("result_id", "raw_event_id"),
+    )
+    _assert_foreign_key(
+        result_events,
+        ("event_id", "raw_event_id"),
+        "market_observations",
+        ("event_id", "raw_event_id"),
+    )
+    assert (
+        result_events["indexes"][
+            "ix_market_normalization_result_events_event"
+        ]["columns"]
+        == ("event_id", "result_id")
+    )
+
+    failures = details[
+        "market_normalization_failures"
+    ]
+    assert (
+        set(failures["columns"])
+        == MARKET_FAILURE_COLUMNS
+    )
+    assert failures["primary_key"] == ("failure_id",)
+    assert isinstance(
+        failures["columns"]["field_paths"]["type"],
+        ARRAY,
+    )
+    assert isinstance(
+        failures["columns"]["payload"]["type"],
+        JSONB,
+    )
+    assert (
+        (
+            "failure_id",
+            "result_id",
+            "raw_event_id",
+        )
+        in failures["unique_constraints"]
+    )
+    _assert_foreign_key(
+        failures,
+        ("result_id", "raw_event_id"),
+        "market_normalization_results",
+        ("result_id", "raw_event_id"),
+    )
+    for index_name, expected_columns in (
+        MARKET_FAILURE_INDEXES.items()
+    ):
+        assert (
+            failures["indexes"][index_name]["columns"]
+            == expected_columns
+        )
+
+    result_failures = details[
+        "market_normalization_result_failures"
+    ]
+    assert (
+        set(result_failures["columns"])
+        == MARKET_RESULT_FAILURE_COLUMNS
+    )
+    assert result_failures["primary_key"] == (
+        "result_id",
+        "failure_role",
+        "failure_ordinal",
+    )
+    assert (
+        (
+            "result_id",
+            "raw_event_id",
+            "failure_role",
+            "failure_ordinal",
+        )
+        in result_failures["unique_constraints"]
+    )
+    _assert_foreign_key(
+        result_failures,
+        ("result_id", "raw_event_id"),
+        "market_normalization_results",
+        ("result_id", "raw_event_id"),
+    )
+    _assert_foreign_key(
+        result_failures,
+        (
+            "failure_id",
+            "result_id",
+            "raw_event_id",
+        ),
+        "market_normalization_failures",
+        (
+            "failure_id",
+            "result_id",
+            "raw_event_id",
+        ),
+    )
+    frame_index = result_failures["indexes"][
+        "uq_market_normalization_result_failures_one_frame"
+    ]
+    assert frame_index["columns"] == ("result_id",)
+    assert frame_index["unique"] is True
+    assert (
+        result_failures["indexes"][
+            "ix_market_normalization_result_failures_failure"
+        ]["columns"]
+        == ("failure_id", "result_id")
+    )
+
+
+def _assert_foreign_key(
+    details: dict[str, object],
+    constrained_columns: tuple[str, ...],
+    referred_table: str,
+    referred_columns: tuple[str, ...],
+) -> None:
+    assert any(
+        actual_constrained == constrained_columns
+        and actual_table == referred_table
+        and actual_referred == referred_columns
+        and ondelete in (None, "NO ACTION")
+        for (
+            actual_constrained,
+            actual_table,
+            actual_referred,
+            ondelete,
+        ) in details["foreign_keys"]
+    )
+
+
+def _table_details(schema, table_name: str) -> dict[str, object]:
+    return {
+        "columns": {
+            column["name"]: column
+            for column in schema.get_columns(table_name)
+        },
+        "primary_key": tuple(
+            schema.get_pk_constraint(table_name)[
+                "constrained_columns"
+            ]
+        ),
+        "unique_constraints": {
+            tuple(constraint["column_names"])
+            for constraint in schema.get_unique_constraints(
+                table_name
+            )
+        },
+        "indexes": {
+            index["name"]: {
+                "columns": tuple(index["column_names"]),
+                "unique": bool(index["unique"]),
+            }
+            for index in schema.get_indexes(table_name)
+        },
+        "foreign_keys": {
+            (
+                tuple(
+                    foreign_key["constrained_columns"]
+                ),
+                foreign_key["referred_table"],
+                tuple(
+                    foreign_key["referred_columns"]
+                ),
+                foreign_key.get(
+                    "options",
+                    {},
+                ).get("ondelete"),
+            )
+            for foreign_key in schema.get_foreign_keys(
+                table_name
+            )
+        },
+    }
 
 
 def _schema_details(connection) -> dict[str, object]:
     schema = inspect(connection)
-
-    raw_columns = {
-        column["name"]: column
-        for column in schema.get_columns(
-            "raw_market_frames"
-        )
-    }
-
-    raw_unique_constraints = {
-        tuple(constraint["column_names"])
-        for constraint in schema.get_unique_constraints(
-            "raw_market_frames"
-        )
-    }
-
-    raw_indexes = {
-        index["name"]: tuple(index["column_names"])
-        for index in schema.get_indexes(
-            "raw_market_frames"
-        )
-    }
-
-
-    result_columns = {
-        column["name"]: column
-        for column in schema.get_columns(
-            "market_normalization_results"
-        )
-    }
-
-    result_unique_constraints = {
-        tuple(constraint["column_names"])
-        for constraint
-        in schema.get_unique_constraints(
-            "market_normalization_results"
-        )
-    }
-
-    result_indexes = {
-        index["name"]: tuple(
-            index["column_names"]
-        )
-        for index in schema.get_indexes(
-            "market_normalization_results"
-        )
-    }
-
-    result_foreign_keys = {
-        (
-            tuple(
-                foreign_key[
-                    "constrained_columns"
-                ]
-            ),
-            foreign_key["referred_table"],
-            tuple(
-                foreign_key[
-                    "referred_columns"
-                ]
-            ),
-            foreign_key.get(
-                "options",
-                {},
-            ).get("ondelete"),
-        )
-        for foreign_key
-        in schema.get_foreign_keys(
-            "market_normalization_results"
-        )
-    }
 
     return {
         "tables": set(schema.get_table_names()),
@@ -799,33 +1035,34 @@ def _schema_details(connection) -> dict[str, object]:
                 "trading_session_version_records",
             )
         ),
-        "raw_market_frames": {
-            "columns": raw_columns,
-            "primary_key": tuple(
-                schema.get_pk_constraint(
-                    "raw_market_frames"
-                )["constrained_columns"]
-            ),
-            "unique_constraints": (
-                raw_unique_constraints
-            ),
-            "indexes": raw_indexes,
-        },
-        "market_normalization_results": {
-            "columns": result_columns,
-            "primary_key": tuple(
-                schema.get_pk_constraint(
-                    "market_normalization_results"
-                )["constrained_columns"]
-            ),
-            "unique_constraints": (
-                result_unique_constraints
-            ),
-            "indexes": result_indexes,
-            "foreign_keys": (
-                result_foreign_keys
-            ),
-        },
+        "raw_market_frames": _table_details(
+            schema,
+            "raw_market_frames",
+        ),
+        "market_normalization_results": _table_details(
+            schema,
+            "market_normalization_results",
+        ),
+        "market_observations": _table_details(
+            schema,
+            "market_observations",
+        ),
+        "market_normalization_result_events": (
+            _table_details(
+                schema,
+                "market_normalization_result_events",
+            )
+        ),
+        "market_normalization_failures": _table_details(
+            schema,
+            "market_normalization_failures",
+        ),
+        "market_normalization_result_failures": (
+            _table_details(
+                schema,
+                "market_normalization_result_failures",
+            )
+        ),
     }
 
 

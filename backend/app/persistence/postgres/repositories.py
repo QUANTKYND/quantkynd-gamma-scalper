@@ -25,12 +25,15 @@ from app.instruments.ports import (
     ProviderMappingState,
     SemanticCollisionError,
 )
-from app.market_data.persistence.planner import plan_parameter_chunks
-from app.market_data.persistence.errors import MarketEventDurableCorruptionError
+from app.market_data.persistence.errors import (
+    MarketEventDurableCorruptionError,
+)
+from app.market_data.persistence.planner import (
+    plan_parameter_chunks,
+)
 
 
 EVENT_MEMBERSHIP_IMMUTABLE_FIELDS = (
-    "id",
     "result_id",
     "raw_event_id",
     "event_id",
@@ -38,7 +41,6 @@ EVENT_MEMBERSHIP_IMMUTABLE_FIELDS = (
 )
 
 FAILURE_MEMBERSHIP_IMMUTABLE_FIELDS = (
-    "id",
     "result_id",
     "raw_event_id",
     "failure_id",
@@ -46,16 +48,78 @@ FAILURE_MEMBERSHIP_IMMUTABLE_FIELDS = (
     "failure_ordinal",
 )
 
+OBSERVATION_IMMUTABLE_FIELDS = (
+    "event_id",
+    "raw_event_id",
+    "event_type",
+    "subject_id",
+    "provider",
+    "provider_contract_key",
+    "economic_subject_id",
+    "provider_mapping_id",
+    "contract_version_id",
+    "catalogue_version_id",
+    "provider_mapping_record_id",
+    "contract_version_record_id",
+    "catalogue_version_record_id",
+    "resolution_market_as_of",
+    "resolution_known_as_of",
+    "provider_timestamp",
+    "exchange_timestamp",
+    "received_at",
+    "available_at",
+    "recorded_at",
+    "availability_basis",
+    "source_order_scope_id",
+    "source_order",
+    "normalization_schema_version",
+    "normalizer_implementation_version",
+    "provider_sequence",
+    "supersedes_event_id",
+    "payload",
+)
+
+FAILURE_IMMUTABLE_FIELDS = (
+    "failure_id",
+    "result_id",
+    "raw_event_id",
+    "scope",
+    "reason_code",
+    "provider_contract_key",
+    "segment",
+    "safe_detail_code",
+    "selected_feed_union",
+    "provider_depth_levels_present",
+    "field_paths",
+    "unadopted_schema_paths",
+    "present_unadopted_message_paths",
+    "payload",
+)
+
+
 def _rows_match_on_fields(
     existing: dict[str, object],
     proposed: dict[str, object],
     fields: tuple[str, ...],
 ) -> bool:
-    return all(existing[field] == proposed[field] for field in fields)
+    return all(
+        existing[field] == proposed[field]
+        for field in fields
+    )
+
+
+def _enum_value(value: object | None) -> object | None:
+    if value is None:
+        return None
+    return getattr(value, "value", value)
 
 
 class PostgresMarketEventRepository:
-    def __init__(self, session, require_active):
+    def __init__(
+        self,
+        session,
+        require_active,
+    ) -> None:
         self._session = session
         self._require_active = require_active
 
@@ -82,31 +146,66 @@ class PostgresMarketEventRepository:
             RawCaptureIdentityConflictError,
             RawFrameContentMismatchError,
         )
-        from app.market_data.persistence.planner import derive_lock_stripes
+        from app.market_data.persistence.planner import (
+            derive_lock_stripes,
+        )
 
         raw = command.raw_frame
         result = command.normalization_result
 
-        if raw.raw_event_id != result.raw_frame_identity.raw_event_id:
-            raise ValueError("raw frame and result identities differ")
+        if (
+            raw.raw_event_id
+            != result.raw_frame_identity.raw_event_id
+        ):
+            raise ValueError(
+                "raw frame and result identities differ"
+            )
 
         schema_version = CANONICAL_SCHEMA_VERSION
         implementation_version = CANONICAL_IMPLEMENTATION
 
         for event in result.accepted_events:
             if (
-                event.normalization_schema_version != schema_version
+                event.normalization_schema_version
+                != schema_version
                 or event.normalizer_implementation_version
                 != implementation_version
             ):
                 raise ValueError(
-                    "normalization result contains mixed schema identity"
+                    "normalization result contains mixed "
+                    "schema identity"
                 )
 
         result_id = DurableResultIdentity(
             raw.raw_event_id,
             schema_version,
         ).result_id
+
+        failure_items: list[tuple[str, object]] = []
+        if result.frame_failure is not None:
+            failure_items.append(
+                ("frame", result.frame_failure)
+            )
+        failure_items.extend(
+            ("entry", failure)
+            for failure in result.entry_failures
+        )
+
+        failure_id_items: list[
+            tuple[str, object, str]
+        ] = []
+        for role, failure in failure_items:
+            failure_id = FailureIdentity(
+                result_id,
+                failure.scope.value,
+                failure.reason_code,
+                failure.provider_contract_key,
+                failure.segment,
+                payload=failure,
+            ).failure_id
+            failure_id_items.append(
+                (role, failure, failure_id)
+            )
 
         roots = [
             ("raw_frame", raw.raw_event_id),
@@ -116,29 +215,10 @@ class PostgresMarketEventRepository:
             ("market_observation", event.event_id)
             for event in result.accepted_events
         )
-
-        for failure in result.entry_failures:
-            failure_id = FailureIdentity(
-                result_id,
-                failure.scope.value,
-                failure.reason_code,
-                failure.provider_contract_key,
-                failure.segment,
-                payload=failure,
-            ).failure_id
-            roots.append(("market_failure", failure_id))
-
-        if result.frame_failure is not None:
-            frame_failure = result.frame_failure
-            failure_id = FailureIdentity(
-                result_id,
-                frame_failure.scope.value,
-                frame_failure.reason_code,
-                frame_failure.provider_contract_key,
-                frame_failure.segment,
-                payload=frame_failure,
-            ).failure_id
-            roots.append(("market_failure", failure_id))
+        roots.extend(
+            ("market_failure", failure_id)
+            for _, _, failure_id in failure_id_items
+        )
 
         for stripe in derive_lock_stripes(roots):
             await self._session.execute(
@@ -158,9 +238,15 @@ class PostgresMarketEventRepository:
             "raw_event_id": raw.raw_event_id,
             "provider": raw.provider,
             "provider_schema_id": raw.provider_schema_id,
-            "provider_schema_sha256": raw.provider_schema_sha256,
-            "connection_session_id": raw.connection_session_id,
-            "source_order_scope_id": raw.source_order_scope_id,
+            "provider_schema_sha256": (
+                raw.provider_schema_sha256
+            ),
+            "connection_session_id": (
+                raw.connection_session_id
+            ),
+            "source_order_scope_id": (
+                raw.source_order_scope_id
+            ),
             "source_order": raw.source_order,
             "frame_bytes": raw.frame_bytes,
             "frame_content_hash": raw.frame_content_hash,
@@ -202,14 +288,6 @@ class PostgresMarketEventRepository:
         ).first()
 
         if existing_raw is None:
-            raw_insert_values = {
-                **raw_values,
-                "persistence_recorded_at": (
-                    persistence_recorded_at
-                    or raw.recorded_at
-                ),
-            }
-
             await self._session.execute(
                 text(
                     """
@@ -251,10 +329,18 @@ class PostgresMarketEventRepository:
                     )
                     """
                 ),
-                raw_insert_values,
+                {
+                    **raw_values,
+                    "persistence_recorded_at": (
+                        persistence_recorded_at
+                        or raw.recorded_at
+                    ),
+                },
             )
         else:
-            existing_values = dict(existing_raw._mapping)
+            existing_values = dict(
+                existing_raw._mapping
+            )
             existing_frame_bytes = bytes(
                 existing_values["frame_bytes"]
             )
@@ -284,31 +370,21 @@ class PostgresMarketEventRepository:
                 "source_record_id",
             )
 
-            if any(
-                existing_values[field_name]
-                != raw_values[field_name]
-                for field_name in immutable_metadata_fields
+            if not _rows_match_on_fields(
+                existing_values,
+                raw_values,
+                immutable_metadata_fields,
             ):
                 raise RawCaptureIdentityConflictError(
                     raw.raw_event_id
                 )
 
-        response_type = (
-            result.response_type.value
-            if result.response_type is not None
-            else None
+        response_type = _enum_value(
+            result.response_type
         )
-        status = result.status.value
-        frame_failure_present = result.frame_failure is not None
-
-        unadopted_schema_paths = list(
-            result.unadopted_schema_paths
-        )
-        present_unadopted_message_paths = list(
-            result.present_unadopted_message_paths
-        )
-        secondary_payload_paths_present = list(
-            result.secondary_payload_paths_present
+        status = _enum_value(result.status)
+        frame_failure_present = (
+            result.frame_failure is not None
         )
 
         result_metadata_projection = {
@@ -333,14 +409,14 @@ class PostgresMarketEventRepository:
                 result.failed_entry_count
             ),
             "frame_failure_present": frame_failure_present,
-            "unadopted_schema_paths": (
-                unadopted_schema_paths
+            "unadopted_schema_paths": list(
+                result.unadopted_schema_paths
             ),
-            "present_unadopted_message_paths": (
-                present_unadopted_message_paths
+            "present_unadopted_message_paths": list(
+                result.present_unadopted_message_paths
             ),
-            "secondary_payload_paths_present": (
-                secondary_payload_paths_present
+            "secondary_payload_paths_present": list(
+                result.secondary_payload_paths_present
             ),
             "full_result_hash": result.full_result_hash,
             "adopted_semantics_hash": (
@@ -349,43 +425,14 @@ class PostgresMarketEventRepository:
         }
 
         result_values: dict[str, object] = {
-            "result_id": result_id,
-            "raw_event_id": raw.raw_event_id,
-            "normalization_schema_version": schema_version,
-            "normalizer_implementation_version": (
-                implementation_version
-            ),
-            "response_type": response_type,
-            "status": status,
-            "decoded_entry_count": (
-                result.decoded_entry_count
-            ),
-            "accepted_entry_count": (
-                result.accepted_entry_count
-            ),
-            "failed_entry_count": (
-                result.failed_entry_count
-            ),
-            "frame_failure_present": frame_failure_present,
-            "unadopted_schema_paths": (
-                unadopted_schema_paths
-            ),
-            "present_unadopted_message_paths": (
-                present_unadopted_message_paths
-            ),
-            "secondary_payload_paths_present": (
-                secondary_payload_paths_present
-            ),
-            "full_result_hash": result.full_result_hash,
-            "adopted_semantics_hash": (
-                result.adopted_semantics_hash
-            ),
-            "metadata_payload": json.loads(
-                canonical_json(
-                    result_metadata_projection
-                )
-            ),
+            key: value
+            for key, value
+            in result_metadata_projection.items()
+            if key != "schema"
         }
+        result_values["metadata_payload"] = json.loads(
+            canonical_json(result_metadata_projection)
+        )
 
         existing_result = (
             await self._session.execute(
@@ -412,21 +459,11 @@ class PostgresMarketEventRepository:
                     WHERE result_id = :result_id
                     """
                 ),
-                {
-                    "result_id": result_id,
-                },
+                {"result_id": result_id},
             )
         ).first()
 
         if existing_result is None:
-            result_insert_values = {
-                **result_values,
-                "persistence_recorded_at": (
-                    persistence_recorded_at
-                    or raw.recorded_at
-                ),
-            }
-
             await self._session.execute(
                 text(
                     """
@@ -471,175 +508,144 @@ class PostgresMarketEventRepository:
                     """
                 ),
                 {
-                    **result_insert_values,
+                    **result_values,
                     "metadata_payload": canonical_json(
-                        result_insert_values[
-                            "metadata_payload"
-                        ]
+                        result_values["metadata_payload"]
+                    ),
+                    "persistence_recorded_at": (
+                        persistence_recorded_at
+                        or raw.recorded_at
                     ),
                 },
             )
             result_inserted = True
         else:
-            existing_result_values = dict(
-                existing_result._mapping
-            )
-
-            if existing_result_values != result_values:
+            if dict(existing_result._mapping) != result_values:
                 raise NormalizationResultConflictError(
                     result_id
                 )
-
             result_inserted = False
 
-        event_rows: list[dict[str, object]] = []
-        event_memberships: list[dict[str, object]] = []
-        event_payloads = {
-            event.event_id: canonical_json(event)
+        event_values = [
+            self._observation_values(
+                event,
+                raw,
+                canonical_json,
+            )
             for event in result.accepted_events
+        ]
+        event_values_by_id = {
+            values["event_id"]: values
+            for values in event_values
         }
-        existing_observations = await self._fetch_existing_rows(
-            "market_observations",
-            "id",
-            tuple(event_payloads),
-            ("id", "raw_event_id", "payload"),
+
+        existing_observations = (
+            await self._fetch_existing_rows(
+                "market_observations",
+                "event_id",
+                tuple(event_values_by_id),
+                OBSERVATION_IMMUTABLE_FIELDS,
+            )
         )
 
-        for ordinal, event in enumerate(
-            result.accepted_events
-        ):
-            payload = event_payloads[event.event_id]
-            existing = existing_observations.get(
-                event.event_id
-            )
-
+        missing_event_rows: list[
+            dict[str, object]
+        ] = []
+        for event_id, values in event_values_by_id.items():
+            existing = existing_observations.get(event_id)
             if existing is None:
-                event_rows.append(
-                    {
-                        "id": event.event_id,
-                        "created_at": raw.recorded_at,
-                        "raw_event_id": raw.raw_event_id,
-                        "event_type": type(event).__name__,
-                        "normalization_schema_version": (
-                            event.normalization_schema_version
-                        ),
-                        "payload": payload,
-                    }
-                )
-            elif (
-                existing["raw_event_id"]
-                != raw.raw_event_id
-                or existing["payload"]
-                != json.loads(payload)
+                missing_event_rows.append(values)
+                continue
+            if not _rows_match_on_fields(
+                existing,
+                values,
+                OBSERVATION_IMMUTABLE_FIELDS,
             ):
                 raise NormalizedEventIdentityConflictError(
-                    event.event_id
+                    event_id
                 )
 
-            event_memberships.append(
-                {
-                    "id": f"{result_id}:{ordinal}",
-                    "created_at": raw.recorded_at,
-                    "result_id": result_id,
-                    "raw_event_id": raw.raw_event_id,
-                    "event_id": event.event_id,
-                    "event_ordinal": ordinal,
-                }
+        if result_inserted and existing_observations:
+            raise MarketEventDurableCorruptionError(
+                "new result encountered pre-existing "
+                "market observation rows"
             )
 
         await self._bulk_insert_json_rows(
             "market_observations",
-            event_rows,
+            missing_event_rows,
             payload_cast=True,
         )
 
-        existing_memberships = (
-            await self._fetch_existing_rows(
+        event_memberships = [
+            {
+                "result_id": result_id,
+                "raw_event_id": raw.raw_event_id,
+                "event_id": event.event_id,
+                "event_ordinal": ordinal,
+            }
+            for ordinal, event in enumerate(
+                result.accepted_events
+            )
+        ]
+
+        if result_inserted:
+            await self._bulk_insert_rows(
                 "market_normalization_result_events",
-                "id",
-                tuple(
-                    membership["id"]
-                    for membership in event_memberships
-                ),
-                (
-                    "id",
-                    "result_id",
-                    "raw_event_id",
-                    "event_id",
-                    "event_ordinal",
-                ),
+                event_memberships,
             )
-        )
-
-        missing_event_memberships = []
-
-        for membership in event_memberships:
-            existing = existing_memberships.get(
-                membership["id"]
+        else:
+            await self._require_exact_event_memberships(
+                result_id,
+                event_memberships,
+                NormalizedEventIdentityConflictError,
+                NormalizationResultConflictError,
             )
 
-            if existing is None:
-                missing_event_memberships.append(
-                    membership
-                )
-            elif not _rows_match_on_fields(
-                existing,
-                membership,
-                EVENT_MEMBERSHIP_IMMUTABLE_FIELDS,
-            ):
-                raise NormalizedEventIdentityConflictError(
-                    membership["event_id"]
-                )
-
-        await self._bulk_insert_rows(
-            "market_normalization_result_events",
-            missing_event_memberships,
-        )
-
-        failure_rows: list[dict[str, object]] = []
-        failure_memberships: list[dict[str, object]] = []
+        failure_values: list[dict[str, object]] = []
+        failure_memberships: list[
+            dict[str, object]
+        ] = []
         role_ordinals = {
             "frame": 0,
             "entry": 0,
         }
-        failure_payloads = []
-        failure_items: list[tuple[str, object]] = []
 
-        if result.frame_failure is not None:
-            failure_items.append(
-                ("frame", result.frame_failure)
+        for role, failure, failure_id in failure_id_items:
+            payload = json.loads(
+                canonical_json(failure)
             )
-
-        failure_items.extend(
-            ("entry", failure)
-            for failure in result.entry_failures
-        )
-
-        for role, failure in failure_items:
-            failure_id = FailureIdentity(
-                result_id,
-                failure.scope.value,
-                failure.reason_code,
-                failure.provider_contract_key,
-                failure.segment,
-                payload=failure,
-            ).failure_id
-            payload = canonical_json(failure)
-
-            failure_payloads.append(
-                (
-                    failure_id,
-                    payload,
-                    failure,
-                )
-            )
+            values = {
+                "failure_id": failure_id,
+                "result_id": result_id,
+                "raw_event_id": raw.raw_event_id,
+                "scope": failure.scope.value,
+                "reason_code": failure.reason_code,
+                "provider_contract_key": (
+                    failure.provider_contract_key
+                ),
+                "segment": failure.segment,
+                "safe_detail_code": (
+                    failure.safe_detail_code
+                ),
+                "selected_feed_union": _enum_value(
+                    failure.selected_feed_union
+                ),
+                "provider_depth_levels_present": (
+                    failure.provider_depth_levels_present
+                ),
+                "field_paths": list(failure.field_paths),
+                "unadopted_schema_paths": list(
+                    failure.unadopted_schema_paths
+                ),
+                "present_unadopted_message_paths": list(
+                    failure.present_unadopted_message_paths
+                ),
+                "payload": payload,
+            }
+            failure_values.append(values)
             failure_memberships.append(
                 {
-                    "id": (
-                        f"{result_id}:{role}:"
-                        f"{role_ordinals[role]}"
-                    ),
-                    "created_at": raw.recorded_at,
                     "result_id": result_id,
                     "raw_event_id": raw.raw_event_id,
                     "failure_id": failure_id,
@@ -651,136 +657,353 @@ class PostgresMarketEventRepository:
             )
             role_ordinals[role] += 1
 
+        failure_values_by_id = {
+            values["failure_id"]: values
+            for values in failure_values
+        }
         existing_failures = await self._fetch_existing_rows(
             "market_normalization_failures",
             "failure_id",
-            tuple(
-                failure_id
-                for failure_id, _, _ in failure_payloads
-            ),
-            (
-                "failure_id",
-                "payload",
-            ),
+            tuple(failure_values_by_id),
+            FAILURE_IMMUTABLE_FIELDS,
         )
 
-        for (
-            failure_id,
-            payload,
-            _failure,
-        ) in failure_payloads:
+        missing_failure_rows: list[
+            dict[str, object]
+        ] = []
+        for failure_id, values in failure_values_by_id.items():
             existing = existing_failures.get(failure_id)
-
             if existing is None:
-                failure_rows.append(
-                    {
-                        "id": failure_id,
-                        "created_at": raw.recorded_at,
-                        "result_id": result_id,
-                        "raw_event_id": (
-                            raw.raw_event_id
-                        ),
-                        "failure_id": failure_id,
-                        "payload": payload,
-                    }
-                )
-            elif existing["payload"] != json.loads(payload):
+                missing_failure_rows.append(values)
+                continue
+            if not _rows_match_on_fields(
+                existing,
+                values,
+                FAILURE_IMMUTABLE_FIELDS,
+            ):
                 raise (
                     NormalizationFailureIdentityConflictError(
                         failure_id
                     )
                 )
 
-        existing_failure_memberships = (
-            await self._fetch_existing_rows(
-                "market_normalization_result_failures",
-                "id",
-                tuple(
-                    membership["id"]
-                    for membership in failure_memberships
-                ),
-                (
-                    "id",
-                    "result_id",
-                    "raw_event_id",
-                    "failure_id",
-                    "failure_role",
-                    "failure_ordinal",
-                ),
+        if result_inserted and existing_failures:
+            raise MarketEventDurableCorruptionError(
+                "new result encountered pre-existing "
+                "normalization failure rows"
             )
-        )
-
-        missing_failure_memberships = []
-
-        for membership in failure_memberships:
-            existing = existing_failure_memberships.get(
-                membership["id"]
-            )
-
-            if existing is None:
-                missing_failure_memberships.append(
-                    membership
-                )
-            elif not _rows_match_on_fields(
-                existing,
-                membership,
-                FAILURE_MEMBERSHIP_IMMUTABLE_FIELDS,
-            ):
-                raise (
-                    NormalizationFailureIdentityConflictError(
-                        membership["failure_id"]
-                    )
-                )
 
         await self._bulk_insert_json_rows(
             "market_normalization_failures",
-            failure_rows,
+            missing_failure_rows,
             payload_cast=True,
         )
-        await self._bulk_insert_rows(
-            "market_normalization_result_failures",
-            missing_failure_memberships,
-        )
 
-        accepted_count = len(result.accepted_events)
-        failure_count = (
-            len(result.entry_failures)
-            + int(result.frame_failure is not None)
-        )
+        if result_inserted:
+            await self._bulk_insert_rows(
+                "market_normalization_result_failures",
+                failure_memberships,
+            )
+        else:
+            await self._require_exact_failure_memberships(
+                result_id,
+                failure_memberships,
+                NormalizationFailureIdentityConflictError,
+                NormalizationResultConflictError,
+            )
 
         return PersistenceSummary(
             result_id=result_id,
             inserted=result_inserted,
-            accepted_count=accepted_count,
-            failure_count=failure_count,
+            accepted_count=len(result.accepted_events),
+            failure_count=(
+                len(result.entry_failures)
+                + int(result.frame_failure is not None)
+            ),
         )
 
-    async def _bulk_insert_rows(self, table, rows):
+    @staticmethod
+    def _observation_values(
+        event,
+        raw,
+        canonical_json,
+    ) -> dict[str, object]:
+        event_type = event.identity.event_type
+        is_quote = hasattr(event, "event_time")
+
+        if is_quote:
+            subject = event.subject
+            event_time = event.event_time
+            catalogue_version_id = (
+                subject.contract_version.catalogue_version_id
+            )
+            provider_contract_key = (
+                event.provider_contract_key
+            )
+            economic_subject_id = (
+                event.economic_subject_id
+            )
+            provider_mapping_id = (
+                event.provider_mapping_id
+            )
+            contract_version_id = (
+                event.contract_version_id
+            )
+            resolution_market_as_of = (
+                subject.resolution_market_as_of
+            )
+            resolution_known_as_of = (
+                subject.resolution_known_as_of
+            )
+            provider_timestamp = (
+                event_time.provider_timestamp
+            )
+            exchange_timestamp = (
+                event_time.exchange_timestamp
+            )
+            received_at = event_time.received_at
+            available_at = event_time.available_at
+            recorded_at = event_time.recorded_at
+            availability_basis = (
+                event_time.availability_basis.value
+            )
+            supersedes_event_id = (
+                event.supersedes_event_id
+            )
+        else:
+            catalogue_version_id = None
+            provider_contract_key = None
+            economic_subject_id = None
+            provider_mapping_id = None
+            contract_version_id = None
+            resolution_market_as_of = None
+            resolution_known_as_of = None
+            provider_timestamp = event.provider_timestamp
+            exchange_timestamp = None
+            received_at = event.received_at
+            available_at = event.available_at
+            recorded_at = event.recorded_at
+            availability_basis = (
+                "historical_import"
+                if raw.capture_basis.value
+                == "historical_import"
+                else "received"
+            )
+            supersedes_event_id = None
+
+        return {
+            "event_id": event.event_id,
+            "raw_event_id": event.raw_event_id,
+            "event_type": event_type,
+            "subject_id": event.identity.subject_id,
+            "provider": event.provider,
+            "provider_contract_key": (
+                provider_contract_key
+            ),
+            "economic_subject_id": economic_subject_id,
+            "provider_mapping_id": provider_mapping_id,
+            "contract_version_id": contract_version_id,
+            "catalogue_version_id": catalogue_version_id,
+            # Step 5 resolves and binds these exact record IDs.
+            "provider_mapping_record_id": None,
+            "contract_version_record_id": None,
+            "catalogue_version_record_id": None,
+            "resolution_market_as_of": (
+                resolution_market_as_of
+            ),
+            "resolution_known_as_of": (
+                resolution_known_as_of
+            ),
+            "provider_timestamp": provider_timestamp,
+            "exchange_timestamp": exchange_timestamp,
+            "received_at": received_at,
+            "available_at": available_at,
+            "recorded_at": recorded_at,
+            "availability_basis": availability_basis,
+            "source_order_scope_id": (
+                event.source_order_scope_id
+            ),
+            "source_order": event.source_order,
+            "normalization_schema_version": (
+                event.normalization_schema_version
+            ),
+            "normalizer_implementation_version": (
+                event.normalizer_implementation_version
+            ),
+            "provider_sequence": None,
+            "supersedes_event_id": supersedes_event_id,
+            "payload": json.loads(canonical_json(event)),
+        }
+
+    async def _require_exact_event_memberships(
+        self,
+        result_id: str,
+        proposed: list[dict[str, object]],
+        event_conflict,
+        result_conflict,
+    ) -> None:
+        rows = (
+            await self._session.execute(
+                text(
+                    """
+                    SELECT
+                        result_id,
+                        raw_event_id,
+                        event_id,
+                        event_ordinal
+                    FROM market_normalization_result_events
+                    WHERE result_id = :result_id
+                    ORDER BY event_ordinal
+                    """
+                ),
+                {"result_id": result_id},
+            )
+        ).all()
+
+        existing = [
+            dict(row._mapping)
+            for row in rows
+        ]
+        if len(existing) != len(proposed):
+            raise result_conflict(result_id)
+
+        for actual, expected in zip(
+            existing,
+            proposed,
+            strict=True,
+        ):
+            if not _rows_match_on_fields(
+                actual,
+                expected,
+                EVENT_MEMBERSHIP_IMMUTABLE_FIELDS,
+            ):
+                raise event_conflict(
+                    expected["event_id"]
+                )
+
+    async def _require_exact_failure_memberships(
+        self,
+        result_id: str,
+        proposed: list[dict[str, object]],
+        failure_conflict,
+        result_conflict,
+    ) -> None:
+        rows = (
+            await self._session.execute(
+                text(
+                    """
+                    SELECT
+                        result_id,
+                        raw_event_id,
+                        failure_id,
+                        failure_role,
+                        failure_ordinal
+                    FROM market_normalization_result_failures
+                    WHERE result_id = :result_id
+                    ORDER BY
+                        CASE failure_role
+                            WHEN 'frame' THEN 0
+                            ELSE 1
+                        END,
+                        failure_ordinal
+                    """
+                ),
+                {"result_id": result_id},
+            )
+        ).all()
+
+        existing = [
+            dict(row._mapping)
+            for row in rows
+        ]
+        if len(existing) != len(proposed):
+            raise result_conflict(result_id)
+
+        for actual, expected in zip(
+            existing,
+            proposed,
+            strict=True,
+        ):
+            if not _rows_match_on_fields(
+                actual,
+                expected,
+                FAILURE_MEMBERSHIP_IMMUTABLE_FIELDS,
+            ):
+                raise failure_conflict(
+                    expected["failure_id"]
+                )
+
+    async def _bulk_insert_rows(
+        self,
+        table,
+        rows,
+    ) -> None:
         if not rows:
             return
+
         columns = tuple(rows[0].keys())
-        chunks = plan_parameter_chunks(len(rows), len(columns))
+        chunks = plan_parameter_chunks(
+            len(rows),
+            len(columns),
+        )
         for chunk in chunks:
-            batch = rows[chunk.offset : chunk.offset + chunk.size]
+            batch = rows[
+                chunk.offset:
+                chunk.offset + chunk.size
+            ]
             await self._session.execute(
-                text(f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join(f':{name}' for name in columns)})"),
+                text(
+                    f"INSERT INTO {table} "
+                    f"({', '.join(columns)}) VALUES "
+                    f"({', '.join(f':{name}' for name in columns)})"
+                ),
                 batch,
             )
 
-    async def _bulk_insert_json_rows(self, table, rows, *, payload_cast: bool = False):
+    async def _bulk_insert_json_rows(
+        self,
+        table,
+        rows,
+        *,
+        payload_cast: bool = False,
+    ) -> None:
         if not rows:
             return
+
         columns = tuple(rows[0].keys())
-        chunks = plan_parameter_chunks(len(rows), len(columns))
+        chunks = plan_parameter_chunks(
+            len(rows),
+            len(columns),
+        )
         for chunk in chunks:
-            batch = rows[chunk.offset : chunk.offset + chunk.size]
+            batch = rows[
+                chunk.offset:
+                chunk.offset + chunk.size
+            ]
+            parameters: list[dict[str, object]] = []
+            for row in batch:
+                values = dict(row)
+                if payload_cast:
+                    values["payload"] = json.dumps(
+                        values["payload"],
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                parameters.append(values)
+
             inserts = ", ".join(
-                "CAST(:payload AS json)" if column == "payload" else f":{column}"
+                "CAST(:payload AS jsonb)"
+                if column == "payload"
+                else f":{column}"
                 for column in columns
             )
             await self._session.execute(
-                text(f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({inserts})"),
-                batch,
+                text(
+                    f"INSERT INTO {table} "
+                    f"({', '.join(columns)}) VALUES "
+                    f"({inserts})"
+                ),
+                parameters,
             )
 
     async def _fetch_existing_rows(
@@ -790,18 +1013,24 @@ class PostgresMarketEventRepository:
         identifiers: tuple[object, ...],
         selected_columns: tuple[str, ...],
     ) -> dict[object, dict[str, object]]:
-        unique_identifiers = tuple(dict.fromkeys(identifiers))
+        unique_identifiers = tuple(
+            dict.fromkeys(identifiers)
+        )
         if not unique_identifiers:
             return {}
 
-        results: dict[object, dict[str, object]] = {}
+        results: dict[
+            object,
+            dict[str, object],
+        ] = {}
 
         for chunk in plan_parameter_chunks(
             len(unique_identifiers),
             parameters_per_item=1,
         ):
             batch = unique_identifiers[
-                chunk.offset : chunk.offset + chunk.size
+                chunk.offset:
+                chunk.offset + chunk.size
             ]
             parameters = {
                 f"id_{index}": value
@@ -827,7 +1056,7 @@ class PostgresMarketEventRepository:
 
                 if durable_key in results:
                     raise MarketEventDurableCorruptionError(
-                        f"duplicate durable key returned for "
+                        "duplicate durable key returned for "
                         f"{table}.{key_name}: {durable_key}"
                     )
 
@@ -835,16 +1064,26 @@ class PostgresMarketEventRepository:
 
         return results
 
-    async def _insert_membership(self, table, values, predicate):
-        existing = (await self._session.execute(text(f"SELECT id FROM {table} WHERE {predicate}"), values)).first()
-        if existing is None:
-            columns = ", ".join(values)
-            parameters = ", ".join(f":{name}" for name in values)
-            await self._session.execute(text(f"INSERT INTO {table} ({columns}) VALUES ({parameters})"), values)
-
-    async def get_result(self, raw_event_id, normalization_schema_version):
+    async def get_result(
+        self,
+        raw_event_id,
+        normalization_schema_version,
+    ):
         self._require_active()
-        row = await self._session.execute(text("SELECT * FROM market_normalization_results WHERE raw_event_id=:raw AND normalization_schema_version=:schema"), {"raw":raw_event_id,"schema":normalization_schema_version})
+        row = await self._session.execute(
+            text(
+                """
+                SELECT *
+                FROM market_normalization_results
+                WHERE raw_event_id = :raw_event_id
+                  AND normalization_schema_version = :schema
+                """
+            ),
+            {
+                "raw_event_id": raw_event_id,
+                "schema": normalization_schema_version,
+            },
+        )
         return row.first()
 
     async def get_raw_frame_metadata(
@@ -852,7 +1091,6 @@ class PostgresMarketEventRepository:
         raw_event_id: str,
     ):
         self._require_active()
-
         row = await self._session.execute(
             text(
                 """
@@ -865,33 +1103,208 @@ class PostgresMarketEventRepository:
                 WHERE raw_event_id = :raw_event_id
                 """
             ),
+            {"raw_event_id": raw_event_id},
+        )
+        return row.first()
+
+    async def get_raw_frame(
+        self,
+        raw_event_id,
+    ):
+        self._require_active()
+        row = await self._session.execute(
+            text(
+                """
+                SELECT *
+                FROM raw_market_frames
+                WHERE raw_event_id = :raw_event_id
+                """
+            ),
+            {"raw_event_id": raw_event_id},
+        )
+        return row.first()
+
+    async def get_event(
+        self,
+        event_id,
+        normalization_schema_version,
+    ):
+        self._require_active()
+        row = await self._session.execute(
+            text(
+                """
+                SELECT o.*
+                FROM market_observations AS o
+                JOIN market_normalization_result_events AS m
+                  ON m.event_id = o.event_id
+                JOIN market_normalization_results AS r
+                  ON r.result_id = m.result_id
+                WHERE o.event_id = :event_id
+                  AND o.normalization_schema_version = :schema
+                  AND r.normalization_schema_version = :schema
+                """
+            ),
             {
-                "raw_event_id": raw_event_id,
+                "event_id": event_id,
+                "schema": normalization_schema_version,
             },
         )
+        return row.first()
 
-        return row.first()
-    async def get_raw_frame(self, raw_event_id):
-        row = await self._session.execute(text("SELECT * FROM raw_market_frames WHERE raw_event_id=:id"), {"id":raw_event_id})
-        return row.first()
-    async def get_event(self, event_id, normalization_schema_version):
-        row = await self._session.execute(text("SELECT o.* FROM market_observations o JOIN market_normalization_result_events m ON m.event_id=o.id JOIN market_normalization_results r ON r.result_id=m.result_id WHERE o.id=:id AND o.normalization_schema_version=:schema AND r.normalization_schema_version=:schema"), {"id":event_id,"schema":normalization_schema_version})
-        return row.first()
-    async def load_result_aggregate(self, raw_event_id, normalization_schema_version):
-        result = await self.get_result(raw_event_id, normalization_schema_version)
-        if result is None: return None
-        events = (await self._session.execute(text("SELECT o.* FROM market_normalization_result_events m JOIN market_observations o ON o.id=m.event_id WHERE m.result_id=:id ORDER BY m.event_ordinal"), {"id":result.result_id})).all()
-        failures = (await self._session.execute(text("SELECT f.*,m.failure_role,m.failure_ordinal FROM market_normalization_result_failures m JOIN market_normalization_failures f ON f.failure_id=m.failure_id WHERE m.result_id=:id ORDER BY m.failure_role,m.failure_ordinal"), {"id":result.result_id})).all()
-        return {"result":result,"events":tuple(events),"failures":tuple(failures)}
-    async def scan_normalization_results(self, normalization_schema_version, cursor=None, limit=100):
-        rows = await self._session.execute(text("SELECT * FROM market_normalization_results WHERE normalization_schema_version=:schema AND (:cursor IS NULL OR result_id>:cursor) ORDER BY result_id LIMIT :limit"), {"schema":normalization_schema_version,"cursor":cursor,"limit":limit})
+    async def load_result_aggregate(
+        self,
+        raw_event_id,
+        normalization_schema_version,
+    ):
+        self._require_active()
+        result = await self.get_result(
+            raw_event_id,
+            normalization_schema_version,
+        )
+        if result is None:
+            return None
+
+        events = (
+            await self._session.execute(
+                text(
+                    """
+                    SELECT o.*
+                    FROM market_normalization_result_events AS m
+                    JOIN market_observations AS o
+                      ON o.event_id = m.event_id
+                    WHERE m.result_id = :result_id
+                    ORDER BY m.event_ordinal
+                    """
+                ),
+                {"result_id": result.result_id},
+            )
+        ).all()
+
+        failures = (
+            await self._session.execute(
+                text(
+                    """
+                    SELECT
+                        f.*,
+                        m.failure_role,
+                        m.failure_ordinal
+                    FROM market_normalization_result_failures AS m
+                    JOIN market_normalization_failures AS f
+                      ON f.failure_id = m.failure_id
+                    WHERE m.result_id = :result_id
+                    ORDER BY
+                        CASE m.failure_role
+                            WHEN 'frame' THEN 0
+                            ELSE 1
+                        END,
+                        m.failure_ordinal
+                    """
+                ),
+                {"result_id": result.result_id},
+            )
+        ).all()
+
+        return {
+            "result": result,
+            "events": tuple(events),
+            "failures": tuple(failures),
+        }
+
+    async def scan_normalization_results(
+        self,
+        normalization_schema_version,
+        cursor=None,
+        limit=100,
+    ):
+        self._require_active()
+        rows = await self._session.execute(
+            text(
+                """
+                SELECT *
+                FROM market_normalization_results
+                WHERE normalization_schema_version = :schema
+                  AND (
+                    :cursor IS NULL
+                    OR result_id > :cursor
+                  )
+                ORDER BY result_id
+                LIMIT :limit
+                """
+            ),
+            {
+                "schema": normalization_schema_version,
+                "cursor": cursor,
+                "limit": limit,
+            },
+        )
         return tuple(rows.all())
-    async def list_subject_observations(self, normalization_schema_version, subject_id, limit=100):
-        rows = await self._session.execute(text("SELECT DISTINCT o.* FROM market_observations o JOIN market_normalization_result_events m ON m.event_id=o.id JOIN market_normalization_results r ON r.result_id=m.result_id WHERE o.normalization_schema_version=:schema AND CAST(o.payload AS text) LIKE :subject ORDER BY o.id LIMIT :limit"), {"schema":normalization_schema_version,"subject":f'%{subject_id}%',"limit":limit})
+
+    async def list_subject_observations(
+        self,
+        normalization_schema_version,
+        subject_id,
+        limit=100,
+    ):
+        self._require_active()
+        rows = await self._session.execute(
+            text(
+                """
+                SELECT DISTINCT o.*
+                FROM market_observations AS o
+                JOIN market_normalization_result_events AS m
+                  ON m.event_id = o.event_id
+                JOIN market_normalization_results AS r
+                  ON r.result_id = m.result_id
+                WHERE o.normalization_schema_version = :schema
+                  AND r.normalization_schema_version = :schema
+                  AND o.subject_id = :subject_id
+                ORDER BY o.event_id
+                LIMIT :limit
+                """
+            ),
+            {
+                "schema": normalization_schema_version,
+                "subject_id": subject_id,
+                "limit": limit,
+            },
+        )
         return tuple(rows.all())
-    async def list_provider_status(self, normalization_schema_version, provider, limit=100):
-        rows = await self._session.execute(text("SELECT DISTINCT o.* FROM market_observations o JOIN market_normalization_result_events m ON m.event_id=o.id JOIN market_normalization_results r ON r.result_id=m.result_id WHERE o.normalization_schema_version=:schema AND CAST(o.payload AS text) LIKE :provider ORDER BY o.id LIMIT :limit"), {"schema":normalization_schema_version,"provider":f'%{provider}%',"limit":limit})
+
+    async def list_provider_status(
+        self,
+        normalization_schema_version,
+        provider,
+        limit=100,
+    ):
+        self._require_active()
+        rows = await self._session.execute(
+            text(
+                """
+                SELECT DISTINCT o.*
+                FROM market_observations AS o
+                JOIN market_normalization_result_events AS m
+                  ON m.event_id = o.event_id
+                JOIN market_normalization_results AS r
+                  ON r.result_id = m.result_id
+                WHERE o.normalization_schema_version = :schema
+                  AND r.normalization_schema_version = :schema
+                  AND o.provider = :provider
+                  AND o.event_type =
+                    'market_segment_status_observation'
+                ORDER BY
+                    o.provider_timestamp,
+                    o.event_id
+                LIMIT :limit
+                """
+            ),
+            {
+                "schema": normalization_schema_version,
+                "provider": provider,
+                "limit": limit,
+            },
+        )
         return tuple(rows.all())
+
 from app.instruments.provider_catalogue import (
     CatalogueIngestionRun,
     CatalogueMembership,
