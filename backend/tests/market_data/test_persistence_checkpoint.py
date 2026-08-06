@@ -2167,3 +2167,121 @@ def test_provider_lifecycle_batch_metadata_is_explicit_root() -> None:
             "lifecycle_batch_id",
         ),
     }
+
+
+def test_raw_provider_lifecycle_event_metadata_is_explicit_registry() -> None:
+    table = Base.metadata.tables[
+        "raw_provider_lifecycle_events"
+    ]
+
+    assert set(table.c.keys()) == {
+        "raw_event_id",
+        "lifecycle_kind",
+        "provider",
+        "connection_session_id",
+        "subscription_scope_id",
+        "previous_state",
+        "state",
+        "source_order_scope_id",
+        "source_order",
+        "occurred_at",
+        "available_at",
+        "recorded_at",
+        "request_mode",
+        "instrument_keys_digest",
+        "instrument_key_count",
+        "redacted_reason_code",
+        "provider_sequence",
+        "payload",
+    }
+    assert tuple(table.primary_key.columns.keys()) == (
+        "raw_event_id",
+    )
+    assert "id" not in table.c
+    assert "created_at" not in table.c
+
+    assert isinstance(
+        table.c.source_order.type,
+        BigInteger,
+    )
+    assert isinstance(
+        table.c.provider_sequence.type,
+        BigInteger,
+    )
+    assert isinstance(
+        table.c.instrument_key_count.type,
+        Integer,
+    )
+    assert isinstance(
+        table.c.payload.type,
+        JSONB,
+    )
+
+    for column_name in (
+        "occurred_at",
+        "available_at",
+        "recorded_at",
+    ):
+        assert table.c[column_name].type.timezone is True
+
+    assert (
+        "raw_event_id",
+        "lifecycle_kind",
+    ) in _unique_column_shapes(table)
+
+    assert (
+        ("instrument_keys_digest",),
+        (
+            "provider_subscription_instrument_sets."
+            "instrument_keys_digest",
+        ),
+        ("NO ACTION",),
+    ) in _foreign_key_shapes(table)
+
+    check_names = {
+        constraint.name
+        for constraint in table.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert check_names == {
+        "ck_raw_provider_lifecycle_events_id_sha256",
+        "ck_raw_provider_lifecycle_events_kind",
+        "ck_raw_provider_lifecycle_events_provider",
+        "ck_raw_provider_lifecycle_events_connection_bytes",
+        "ck_raw_provider_lifecycle_events_source_scope_bytes",
+        "ck_raw_provider_lifecycle_events_subscription_scope_bytes",
+        "ck_raw_provider_lifecycle_events_source_order",
+        "ck_raw_provider_lifecycle_events_occurred_finite",
+        "ck_raw_provider_lifecycle_events_available_finite",
+        "ck_raw_provider_lifecycle_events_recorded_finite",
+        "ck_raw_provider_lifecycle_events_clock_order",
+        "ck_raw_provider_lifecycle_events_request_mode",
+        "ck_raw_provider_lifecycle_events_instrument_digest",
+        "ck_raw_provider_lifecycle_events_instrument_count",
+        "ck_raw_provider_lifecycle_events_kind_columns",
+        "ck_raw_provider_lifecycle_events_transition",
+        "ck_raw_provider_lifecycle_events_mode_shape",
+        "ck_raw_provider_lifecycle_events_mode_limit",
+        "ck_raw_provider_lifecycle_events_reason_format",
+        "ck_raw_provider_lifecycle_events_reason_shape",
+        "ck_raw_provider_lifecycle_events_provider_sequence",
+        "ck_raw_provider_lifecycle_events_payload_object",
+    }
+
+    assert _index_shapes(table) == {
+        "ix_raw_provider_lifecycle_events_scope_order": (
+            "provider",
+            "connection_session_id",
+            "source_order_scope_id",
+            "source_order",
+            "raw_event_id",
+        ),
+        "ix_raw_provider_lifecycle_events_subscription_scope": (
+            "provider",
+            "connection_session_id",
+            "subscription_scope_id",
+            "source_order",
+            "raw_event_id",
+        ),
+    }

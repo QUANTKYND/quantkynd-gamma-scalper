@@ -410,7 +410,6 @@ def _create_market_normalization_results() -> None:
     )
 
 
-
 def _create_temporal_provenance_targets() -> None:
     op.create_unique_constraint(
         "uq_provider_mapping_records_record_semantic",
@@ -1193,7 +1192,6 @@ def _create_market_normalization_result_failures() -> None:
     )
 
 
-
 QUOTE_PRICE_COLUMNS = (
     "bid_price",
     "ask_price",
@@ -1942,16 +1940,411 @@ def _create_provider_lifecycle_batches() -> None:
     )
 
 
+def _create_raw_provider_lifecycle_events() -> None:
+    op.create_table(
+        "raw_provider_lifecycle_events",
+        sa.Column(
+            "raw_event_id",
+            sa.String(ID),
+            primary_key=True,
+        ),
+        sa.Column(
+            "lifecycle_kind",
+            sa.String(32),
+            nullable=False,
+        ),
+        sa.Column(
+            "provider",
+            sa.String(128),
+            nullable=False,
+        ),
+        sa.Column(
+            "connection_session_id",
+            sa.String(512),
+            nullable=False,
+        ),
+        sa.Column(
+            "subscription_scope_id",
+            sa.String(512),
+            nullable=True,
+        ),
+        sa.Column(
+            "previous_state",
+            sa.String(32),
+            nullable=True,
+        ),
+        sa.Column(
+            "state",
+            sa.String(32),
+            nullable=False,
+        ),
+        sa.Column(
+            "source_order_scope_id",
+            sa.String(512),
+            nullable=False,
+        ),
+        sa.Column(
+            "source_order",
+            sa.BigInteger(),
+            nullable=False,
+        ),
+        sa.Column(
+            "occurred_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+        ),
+        sa.Column(
+            "available_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+        ),
+        sa.Column(
+            "recorded_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+        ),
+        sa.Column(
+            "request_mode",
+            sa.String(32),
+            nullable=True,
+        ),
+        sa.Column(
+            "instrument_keys_digest",
+            sa.String(ID),
+            sa.ForeignKey(
+                "provider_subscription_instrument_sets."
+                "instrument_keys_digest",
+                ondelete="NO ACTION",
+                onupdate="NO ACTION",
+            ),
+            nullable=True,
+        ),
+        sa.Column(
+            "instrument_key_count",
+            sa.Integer(),
+            nullable=True,
+        ),
+        sa.Column(
+            "redacted_reason_code",
+            sa.String(128),
+            nullable=True,
+        ),
+        sa.Column(
+            "provider_sequence",
+            sa.BigInteger(),
+            nullable=True,
+        ),
+        sa.Column(
+            "payload",
+            postgresql.JSONB(astext_type=sa.Text()),
+            nullable=False,
+        ),
+        sa.UniqueConstraint(
+            "raw_event_id",
+            "lifecycle_kind",
+            name="uq_raw_provider_lifecycle_events_id_kind",
+        ),
+        sa.CheckConstraint(
+            "raw_event_id ~ '^sha256:[0-9a-f]{64}$'",
+            name="raw_provider_lifecycle_events_id_sha256",
+        ),
+        sa.CheckConstraint(
+            "lifecycle_kind IN ('connection', 'subscription')",
+            name="raw_provider_lifecycle_events_kind",
+        ),
+        sa.CheckConstraint(
+            "provider = 'upstox'",
+            name="raw_provider_lifecycle_events_provider",
+        ),
+        sa.CheckConstraint(
+            "octet_length(connection_session_id) BETWEEN 1 AND 512 "
+            "AND connection_session_id ~ '[^[:space:]]'",
+            name="raw_provider_lifecycle_events_connection_bytes",
+        ),
+        sa.CheckConstraint(
+            "octet_length(source_order_scope_id) BETWEEN 1 AND 512 "
+            "AND source_order_scope_id ~ '[^[:space:]]'",
+            name="raw_provider_lifecycle_events_source_scope_bytes",
+        ),
+        sa.CheckConstraint(
+            "subscription_scope_id IS NULL OR ("
+            "octet_length(subscription_scope_id) BETWEEN 1 AND 512 "
+            "AND subscription_scope_id ~ '[^[:space:]]'"
+            ")",
+            name="raw_provider_lifecycle_events_subscription_scope_bytes",
+        ),
+        sa.CheckConstraint(
+            "source_order BETWEEN 0 AND 9223372036854775807",
+            name="raw_provider_lifecycle_events_source_order",
+        ),
+        sa.CheckConstraint(
+            "occurred_at <> 'infinity'::timestamptz "
+            "AND occurred_at <> '-infinity'::timestamptz",
+            name="raw_provider_lifecycle_events_occurred_finite",
+        ),
+        sa.CheckConstraint(
+            "available_at <> 'infinity'::timestamptz "
+            "AND available_at <> '-infinity'::timestamptz",
+            name="raw_provider_lifecycle_events_available_finite",
+        ),
+        sa.CheckConstraint(
+            "recorded_at <> 'infinity'::timestamptz "
+            "AND recorded_at <> '-infinity'::timestamptz",
+            name="raw_provider_lifecycle_events_recorded_finite",
+        ),
+        sa.CheckConstraint(
+            "available_at >= occurred_at "
+            "AND recorded_at >= available_at",
+            name="raw_provider_lifecycle_events_clock_order",
+        ),
+        sa.CheckConstraint(
+            "request_mode IS NULL OR "
+            "request_mode IN ("
+            "'ltpc', "
+            "'option_greeks', "
+            "'full_d5', "
+            "'full_d30'"
+            ")",
+            name="raw_provider_lifecycle_events_request_mode",
+        ),
+        sa.CheckConstraint(
+            "instrument_keys_digest IS NULL OR "
+            "instrument_keys_digest ~ '^sha256:[0-9a-f]{64}$'",
+            name="raw_provider_lifecycle_events_instrument_digest",
+        ),
+        sa.CheckConstraint(
+            "instrument_key_count IS NULL OR "
+            "instrument_key_count BETWEEN 1 AND 5000",
+            name="raw_provider_lifecycle_events_instrument_count",
+        ),
+        sa.CheckConstraint(
+            "("
+            "lifecycle_kind = 'connection' "
+            "AND subscription_scope_id IS NULL "
+            "AND request_mode IS NULL "
+            "AND instrument_keys_digest IS NULL "
+            "AND instrument_key_count IS NULL"
+            ") OR ("
+            "lifecycle_kind = 'subscription' "
+            "AND subscription_scope_id IS NOT NULL "
+            "AND instrument_keys_digest IS NOT NULL "
+            "AND instrument_key_count IS NOT NULL"
+            ")",
+            name="raw_provider_lifecycle_events_kind_columns",
+        ),
+        sa.CheckConstraint(
+            "COALESCE(("
+            "("
+            "lifecycle_kind = 'connection' AND ("
+            "(previous_state IS NULL AND state = 'connecting') "
+            "OR (previous_state = 'connecting' "
+            "AND state IN ('connected', 'failed', 'closing')) "
+            "OR (previous_state = 'connected' "
+            "AND state IN ('authorized', 'closing', 'failed')) "
+            "OR (previous_state = 'authorized' "
+            "AND state IN ('closing', 'reconnecting', 'failed')) "
+            "OR (previous_state = 'reconnecting' "
+            "AND state IN ('closing', 'failed')) "
+            "OR (previous_state = 'closing' "
+            "AND state IN ('closed', 'failed')) "
+            "OR (previous_state = 'failed' "
+            "AND state IN ('reconnecting', 'closing', 'closed'))"
+            ")"
+            ") OR ("
+            "lifecycle_kind = 'subscription' AND ("
+            "(previous_state IS NULL "
+            "AND state = 'subscribe_requested') "
+            "OR (previous_state = 'subscribe_requested' "
+            "AND state IN ('subscribed', 'subscription_failed')) "
+            "OR (previous_state = 'subscribed' "
+            "AND state IN ("
+            "'mode_change_requested', "
+            "'unsubscribe_requested', "
+            "'subscription_failed'"
+            ")) "
+            "OR (previous_state = 'mode_change_requested' "
+            "AND state IN ('mode_changed', 'subscription_failed')) "
+            "OR (previous_state = 'mode_changed' "
+            "AND state IN ("
+            "'mode_change_requested', "
+            "'unsubscribe_requested', "
+            "'subscription_failed'"
+            ")) "
+            "OR (previous_state = 'unsubscribe_requested' "
+            "AND state IN ('unsubscribed', 'subscription_failed'))"
+            ")"
+            ")"
+            "), FALSE)",
+            name="raw_provider_lifecycle_events_transition",
+        ),
+        sa.CheckConstraint(
+            "("
+            "lifecycle_kind = 'connection' "
+            "AND request_mode IS NULL"
+            ") OR ("
+            "lifecycle_kind = 'subscription' AND ("
+            "("
+            "state IN ("
+            "'subscribe_requested', "
+            "'subscribed', "
+            "'mode_change_requested', "
+            "'mode_changed'"
+            ") "
+            "AND request_mode IS NOT NULL"
+            ") OR ("
+            "state IN ("
+            "'unsubscribe_requested', "
+            "'unsubscribed', "
+            "'subscription_failed'"
+            ")"
+            ")"
+            ")"
+            ")",
+            name="raw_provider_lifecycle_events_mode_shape",
+        ),
+        sa.CheckConstraint(
+            "request_mode IS NULL "
+            "OR (request_mode = 'ltpc' "
+            "AND instrument_key_count BETWEEN 1 AND 5000) "
+            "OR (request_mode = 'option_greeks' "
+            "AND instrument_key_count BETWEEN 1 AND 3000) "
+            "OR (request_mode = 'full_d5' "
+            "AND instrument_key_count BETWEEN 1 AND 2000) "
+            "OR (request_mode = 'full_d30' "
+            "AND instrument_key_count BETWEEN 1 AND 50)",
+            name="raw_provider_lifecycle_events_mode_limit",
+        ),
+        sa.CheckConstraint(
+            "redacted_reason_code IS NULL OR ("
+            "octet_length(redacted_reason_code) BETWEEN 1 AND 128 "
+            "AND redacted_reason_code "
+            "~ '^[a-z0-9]+(_[a-z0-9]+)*$' "
+            "AND redacted_reason_code "
+            "!~ '(token|url|traceback|socket|account|user_id|exception)'"
+            ")",
+            name="raw_provider_lifecycle_events_reason_format",
+        ),
+        sa.CheckConstraint(
+            "("
+            "lifecycle_kind = 'connection' AND ("
+            "(state = 'failed' AND redacted_reason_code IS NOT NULL) "
+            "OR (state <> 'failed' AND redacted_reason_code IS NULL)"
+            ")"
+            ") OR ("
+            "lifecycle_kind = 'subscription' AND ("
+            "(state = 'subscription_failed' "
+            "AND redacted_reason_code IS NOT NULL) "
+            "OR (state <> 'subscription_failed' "
+            "AND redacted_reason_code IS NULL)"
+            ")"
+            ")",
+            name="raw_provider_lifecycle_events_reason_shape",
+        ),
+        sa.CheckConstraint(
+            "provider_sequence IS NULL",
+            name="raw_provider_lifecycle_events_provider_sequence",
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(payload) = 'object'",
+            name="raw_provider_lifecycle_events_payload_object",
+        ),
+    )
+
+    op.create_index(
+        "ix_raw_provider_lifecycle_events_scope_order",
+        "raw_provider_lifecycle_events",
+        (
+            "provider",
+            "connection_session_id",
+            "source_order_scope_id",
+            "source_order",
+            "raw_event_id",
+        ),
+    )
+
+    op.create_index(
+        "ix_raw_provider_lifecycle_events_subscription_scope",
+        "raw_provider_lifecycle_events",
+        (
+            "provider",
+            "connection_session_id",
+            "subscription_scope_id",
+            "source_order",
+            "raw_event_id",
+        ),
+        postgresql_where=sa.text(
+            "lifecycle_kind = 'subscription'"
+        ),
+    )
+
+    # The immutable set FK owns parent existence. This trigger
+    # verifies the redundant typed count without masking an
+    # orphan-digest foreign-key violation.
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION
+        data14_validate_raw_lifecycle_instrument_count()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        DECLARE
+            declared_count integer;
+        BEGIN
+            IF NEW.lifecycle_kind <> 'subscription' THEN
+                RETURN NEW;
+            END IF;
+
+            SELECT instrument_key_count
+            INTO declared_count
+            FROM provider_subscription_instrument_sets
+            WHERE instrument_keys_digest =
+                NEW.instrument_keys_digest;
+
+            IF declared_count IS NULL THEN
+                RETURN NEW;
+            END IF;
+
+            IF NEW.instrument_key_count
+               IS DISTINCT FROM declared_count THEN
+                RAISE EXCEPTION
+                    'raw lifecycle instrument count mismatch '
+                    'for %: declared %, event %',
+                    NEW.instrument_keys_digest,
+                    declared_count,
+                    NEW.instrument_key_count;
+            END IF;
+
+            RETURN NEW;
+        END;
+        $$
+        """
+    )
+
+    op.execute(
+        """
+        CREATE TRIGGER
+        data14_raw_lifecycle_instrument_count
+        BEFORE INSERT
+        ON raw_provider_lifecycle_events
+        FOR EACH ROW
+        EXECUTE FUNCTION
+        data14_validate_raw_lifecycle_instrument_count()
+        """
+    )
+
+
 def upgrade() -> None:
     _create_temporal_provenance_targets()
     _create_provider_subscription_instrument_sets()
     _create_provider_lifecycle_batches()
+    _create_raw_provider_lifecycle_events()
 
     for name in TABLES:
         if name in {
             "provider_subscription_instrument_sets",
             "provider_subscription_instrument_set_keys",
-            "provider_lifecycle_batches"
+            "provider_lifecycle_batches",
+            "raw_provider_lifecycle_events"
         }:
             continue
 

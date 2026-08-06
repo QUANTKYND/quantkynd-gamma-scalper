@@ -26,6 +26,7 @@ from app.instruments.temporal_records import (
     trading_session_version_temporal_record,
 )
 from app.persistence.postgres.base import Base
+from app.persistence.postgres import models as _postgres_models
 from app.persistence.postgres.database_safety import (
     DestructiveDatabasePurpose,
     destructive_database_lease,
@@ -118,6 +119,44 @@ PROVIDER_LIFECYCLE_BATCH_INDEXES = {
         "lifecycle_kind",
         "persistence_recorded_at",
         "lifecycle_batch_id",
+    ),
+}
+
+RAW_PROVIDER_LIFECYCLE_EVENT_COLUMNS = {
+    "raw_event_id",
+    "lifecycle_kind",
+    "provider",
+    "connection_session_id",
+    "subscription_scope_id",
+    "previous_state",
+    "state",
+    "source_order_scope_id",
+    "source_order",
+    "occurred_at",
+    "available_at",
+    "recorded_at",
+    "request_mode",
+    "instrument_keys_digest",
+    "instrument_key_count",
+    "redacted_reason_code",
+    "provider_sequence",
+    "payload",
+}
+
+RAW_PROVIDER_LIFECYCLE_EVENT_INDEXES = {
+    "ix_raw_provider_lifecycle_events_scope_order": (
+        "provider",
+        "connection_session_id",
+        "source_order_scope_id",
+        "source_order",
+        "raw_event_id",
+    ),
+    "ix_raw_provider_lifecycle_events_subscription_scope": (
+        "provider",
+        "connection_session_id",
+        "subscription_scope_id",
+        "source_order",
+        "raw_event_id",
     ),
 }
 
@@ -1455,6 +1494,58 @@ async def _assert_head_schema(engine) -> None:
             ]["columns"]
             == expected_columns
         )
+
+    raw_lifecycle = details[
+        "raw_provider_lifecycle_events"
+    ]
+
+    assert (
+        set(raw_lifecycle["columns"])
+        == RAW_PROVIDER_LIFECYCLE_EVENT_COLUMNS
+    )
+    assert raw_lifecycle["primary_key"] == (
+        "raw_event_id",
+    )
+    assert isinstance(
+        raw_lifecycle["columns"]["source_order"]["type"],
+        BigInteger,
+    )
+    assert isinstance(
+        raw_lifecycle["columns"][
+            "provider_sequence"
+        ]["type"],
+        BigInteger,
+    )
+    assert isinstance(
+        raw_lifecycle["columns"][
+            "instrument_key_count"
+        ]["type"],
+        Integer,
+    )
+    assert isinstance(
+        raw_lifecycle["columns"]["payload"]["type"],
+        JSONB,
+    )
+
+    assert (
+        "raw_event_id",
+        "lifecycle_kind",
+    ) in raw_lifecycle["unique_constraints"]
+
+    _assert_foreign_key(
+        raw_lifecycle,
+        ("instrument_keys_digest",),
+        "provider_subscription_instrument_sets",
+        ("instrument_keys_digest",),
+    )
+
+    for index_name, expected_columns in (
+        RAW_PROVIDER_LIFECYCLE_EVENT_INDEXES.items()
+    ):
+        assert (
+            raw_lifecycle["indexes"][index_name]["columns"]
+            == expected_columns
+        )
     _assert_foreign_key(
         instrument_set_keys,
         ("instrument_keys_digest",),
@@ -1666,6 +1757,10 @@ def _schema_details(connection) -> dict[str, object]:
         "provider_lifecycle_batches": _table_details(
             schema,
             "provider_lifecycle_batches",
+        ),
+        "raw_provider_lifecycle_events": _table_details(
+            schema,
+            "raw_provider_lifecycle_events",
         ),
     }
 
@@ -2340,6 +2435,280 @@ async def test_subscription_instrument_set_integrity_is_deferred_and_exact(
                             provider_contract_key=(
                                 "NSE_FO|ORPHAN"
                             ),
+                        )
+                    )
+    finally:
+        await dispose_database_engine(engine)
+
+
+def _raw_connection_lifecycle_values(
+    *,
+    marker: str,
+    **overrides,
+) -> dict[str, object]:
+    occurred_at = RECORDED_AT + timedelta(hours=1)
+
+    values = {
+        "raw_event_id": "sha256:" + marker * 64,
+        "lifecycle_kind": "connection",
+        "provider": "upstox",
+        "connection_session_id": "connection-session-1",
+        "subscription_scope_id": None,
+        "previous_state": None,
+        "state": "connecting",
+        "source_order_scope_id": "connection-source-scope-1",
+        "source_order": 0,
+        "occurred_at": occurred_at,
+        "available_at": occurred_at,
+        "recorded_at": occurred_at,
+        "request_mode": None,
+        "instrument_keys_digest": None,
+        "instrument_key_count": None,
+        "redacted_reason_code": None,
+        "provider_sequence": None,
+        "payload": {
+            "fixture": "raw_connection_lifecycle",
+        },
+    }
+    values.update(overrides)
+    return values
+
+
+def _raw_subscription_lifecycle_values(
+    *,
+    marker: str,
+    instrument_keys_digest: str,
+    instrument_key_count: int,
+    **overrides,
+) -> dict[str, object]:
+    occurred_at = RECORDED_AT + timedelta(hours=1)
+
+    values = {
+        "raw_event_id": "sha256:" + marker * 64,
+        "lifecycle_kind": "subscription",
+        "provider": "upstox",
+        "connection_session_id": "connection-session-1",
+        "subscription_scope_id": "subscription-scope-1",
+        "previous_state": None,
+        "state": "subscribe_requested",
+        "source_order_scope_id": "connection-source-scope-1",
+        "source_order": 1,
+        "occurred_at": occurred_at,
+        "available_at": occurred_at,
+        "recorded_at": occurred_at,
+        "request_mode": "ltpc",
+        "instrument_keys_digest": instrument_keys_digest,
+        "instrument_key_count": instrument_key_count,
+        "redacted_reason_code": None,
+        "provider_sequence": None,
+        "payload": {
+            "fixture": "raw_subscription_lifecycle",
+        },
+    }
+    values.update(overrides)
+    return values
+
+
+async def _insert_subscription_instrument_set(
+    connection,
+    *,
+    prefix: str,
+    count: int,
+) -> str:
+    keys = tuple(
+        f"NSE_FO|{prefix}_{index:04d}"
+        for index in range(count)
+    )
+    digest = stable_hash(
+        {
+            "entity": (
+                "provider_subscription_instrument_keys_v1"
+            ),
+            "provider_contract_keys": keys,
+        }
+    )
+
+    await connection.execute(
+        Base.metadata.tables[
+            "provider_subscription_instrument_sets"
+        ].insert().values(
+            instrument_keys_digest=digest,
+            instrument_key_count=count,
+            provider_contract_keys=list(keys),
+            canonical_payload_hash=digest,
+        )
+    )
+
+    await connection.execute(
+        Base.metadata.tables[
+            "provider_subscription_instrument_set_keys"
+        ].insert(),
+        [
+            {
+                "instrument_keys_digest": digest,
+                "key_ordinal": ordinal,
+                "provider_contract_key": key,
+            }
+            for ordinal, key in enumerate(keys)
+        ],
+    )
+
+    return digest
+
+
+@pytest.mark.anyio
+async def test_raw_provider_lifecycle_event_checks_and_set_binding(
+    postgres_url: str,
+    postgres_settings: DatabaseSettings,
+) -> None:
+    engine = create_database_engine(postgres_settings)
+    config = alembic_config(postgres_url)
+    table = Base.metadata.tables[
+        "raw_provider_lifecycle_events"
+    ]
+
+    try:
+        async with destructive_database_lease(
+            engine,
+            postgres_url,
+            postgres_settings,
+            DestructiveDatabasePurpose.INTEGRATION,
+        ) as lease:
+            await lease.drop_and_recreate_public()
+            await asyncio.to_thread(
+                command.upgrade,
+                config,
+                "head",
+            )
+
+            async with engine.begin() as connection:
+                one_key_digest = (
+                    await _insert_subscription_instrument_set(
+                        connection,
+                        prefix="RAW_ONE",
+                        count=1,
+                    )
+                )
+                fifty_one_key_digest = (
+                    await _insert_subscription_instrument_set(
+                        connection,
+                        prefix="RAW_FIFTY_ONE",
+                        count=51,
+                    )
+                )
+
+            # Valid typed rows are accepted. Roll them back because
+            # ordered batch membership is implemented in the next slice.
+            async with engine.connect() as connection:
+                transaction = await connection.begin()
+                try:
+                    await connection.execute(
+                        table.insert(),
+                        [
+                            _raw_connection_lifecycle_values(
+                                marker="1",
+                            ),
+                            _raw_subscription_lifecycle_values(
+                                marker="2",
+                                instrument_keys_digest=(
+                                    one_key_digest
+                                ),
+                                instrument_key_count=1,
+                            ),
+                        ],
+                    )
+
+                    stored_count = await connection.scalar(
+                        text(
+                            "SELECT count(*) "
+                            "FROM raw_provider_lifecycle_events"
+                        )
+                    )
+                    assert stored_count == 2
+                finally:
+                    await transaction.rollback()
+
+            invalid_rows = (
+                _raw_connection_lifecycle_values(
+                    marker="3",
+                    state="connected",
+                ),
+                _raw_connection_lifecycle_values(
+                    marker="4",
+                    previous_state="connecting",
+                    state="failed",
+                    redacted_reason_code=None,
+                ),
+                _raw_connection_lifecycle_values(
+                    marker="5",
+                    request_mode="ltpc",
+                ),
+                _raw_connection_lifecycle_values(
+                    marker="6",
+                    available_at=RECORDED_AT,
+                ),
+                _raw_connection_lifecycle_values(
+                    marker="7",
+                    provider_sequence=1,
+                ),
+                _raw_connection_lifecycle_values(
+                    marker="8",
+                    payload=[],
+                ),
+                _raw_subscription_lifecycle_values(
+                    marker="9",
+                    instrument_keys_digest=one_key_digest,
+                    instrument_key_count=1,
+                    request_mode=None,
+                ),
+                _raw_subscription_lifecycle_values(
+                    marker="a",
+                    instrument_keys_digest=(
+                        fifty_one_key_digest
+                    ),
+                    instrument_key_count=51,
+                    request_mode="full_d30",
+                ),
+            )
+
+            for invalid in invalid_rows:
+                with pytest.raises(
+                    IntegrityError,
+                    match="check constraint",
+                ):
+                    async with engine.begin() as connection:
+                        await connection.execute(
+                            table.insert().values(**invalid)
+                        )
+
+            with pytest.raises(
+                DBAPIError,
+                match="instrument count mismatch",
+            ):
+                async with engine.begin() as connection:
+                    await connection.execute(
+                        table.insert().values(
+                            **_raw_subscription_lifecycle_values(
+                                marker="b",
+                                instrument_keys_digest=(
+                                    one_key_digest
+                                ),
+                                instrument_key_count=2,
+                            )
+                        )
+                    )
+
+            with pytest.raises(IntegrityError):
+                async with engine.begin() as connection:
+                    await connection.execute(
+                        table.insert().values(
+                            **_raw_subscription_lifecycle_values(
+                                marker="c",
+                                instrument_keys_digest=(
+                                    "sha256:" + "f" * 64
+                                ),
+                                instrument_key_count=1,
+                            )
                         )
                     )
     finally:

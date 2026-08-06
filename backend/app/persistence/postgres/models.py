@@ -1490,6 +1490,333 @@ PROVIDER_SUBSCRIPTION_INSTRUMENT_SET_KEYS_TABLE = Table(
 )
 
 
+RAW_PROVIDER_LIFECYCLE_EVENTS_TABLE = Table(
+    "raw_provider_lifecycle_events",
+    Base.metadata,
+    Column(
+        "raw_event_id",
+        String(ID_LENGTH),
+        primary_key=True,
+    ),
+    Column(
+        "lifecycle_kind",
+        String(32),
+        nullable=False,
+    ),
+    Column(
+        "provider",
+        String(NAME_LENGTH),
+        nullable=False,
+    ),
+    Column(
+        "connection_session_id",
+        String(KEY_LENGTH),
+        nullable=False,
+    ),
+    Column(
+        "subscription_scope_id",
+        String(KEY_LENGTH),
+        nullable=True,
+    ),
+    Column(
+        "previous_state",
+        String(32),
+        nullable=True,
+    ),
+    Column(
+        "state",
+        String(32),
+        nullable=False,
+    ),
+    Column(
+        "source_order_scope_id",
+        String(KEY_LENGTH),
+        nullable=False,
+    ),
+    Column(
+        "source_order",
+        BigInteger,
+        nullable=False,
+    ),
+    Column(
+        "occurred_at",
+        DateTime(timezone=True),
+        nullable=False,
+    ),
+    Column(
+        "available_at",
+        DateTime(timezone=True),
+        nullable=False,
+    ),
+    Column(
+        "recorded_at",
+        DateTime(timezone=True),
+        nullable=False,
+    ),
+    Column(
+        "request_mode",
+        String(32),
+        nullable=True,
+    ),
+    Column(
+        "instrument_keys_digest",
+        String(ID_LENGTH),
+        ForeignKey(
+            "provider_subscription_instrument_sets."
+            "instrument_keys_digest",
+            ondelete="NO ACTION",
+            onupdate="NO ACTION",
+        ),
+        nullable=True,
+    ),
+    Column(
+        "instrument_key_count",
+        Integer,
+        nullable=True,
+    ),
+    Column(
+        "redacted_reason_code",
+        String(NAME_LENGTH),
+        nullable=True,
+    ),
+    Column(
+        "provider_sequence",
+        BigInteger,
+        nullable=True,
+    ),
+    Column(
+        "payload",
+        JSONB,
+        nullable=False,
+    ),
+    UniqueConstraint(
+        "raw_event_id",
+        "lifecycle_kind",
+        name="uq_raw_provider_lifecycle_events_id_kind",
+    ),
+    CheckConstraint(
+        "raw_event_id ~ '^sha256:[0-9a-f]{64}$'",
+        name="raw_provider_lifecycle_events_id_sha256",
+    ),
+    CheckConstraint(
+        "lifecycle_kind IN ('connection', 'subscription')",
+        name="raw_provider_lifecycle_events_kind",
+    ),
+    CheckConstraint(
+        "provider = 'upstox'",
+        name="raw_provider_lifecycle_events_provider",
+    ),
+    CheckConstraint(
+        "octet_length(connection_session_id) BETWEEN 1 AND 512 "
+        "AND connection_session_id ~ '[^[:space:]]'",
+        name="raw_provider_lifecycle_events_connection_bytes",
+    ),
+    CheckConstraint(
+        "octet_length(source_order_scope_id) BETWEEN 1 AND 512 "
+        "AND source_order_scope_id ~ '[^[:space:]]'",
+        name="raw_provider_lifecycle_events_source_scope_bytes",
+    ),
+    CheckConstraint(
+        "subscription_scope_id IS NULL OR ("
+        "octet_length(subscription_scope_id) BETWEEN 1 AND 512 "
+        "AND subscription_scope_id ~ '[^[:space:]]'"
+        ")",
+        name="raw_provider_lifecycle_events_subscription_scope_bytes",
+    ),
+    CheckConstraint(
+        "source_order BETWEEN 0 AND 9223372036854775807",
+        name="raw_provider_lifecycle_events_source_order",
+    ),
+    CheckConstraint(
+        "occurred_at <> 'infinity'::timestamptz "
+        "AND occurred_at <> '-infinity'::timestamptz",
+        name="raw_provider_lifecycle_events_occurred_finite",
+    ),
+    CheckConstraint(
+        "available_at <> 'infinity'::timestamptz "
+        "AND available_at <> '-infinity'::timestamptz",
+        name="raw_provider_lifecycle_events_available_finite",
+    ),
+    CheckConstraint(
+        "recorded_at <> 'infinity'::timestamptz "
+        "AND recorded_at <> '-infinity'::timestamptz",
+        name="raw_provider_lifecycle_events_recorded_finite",
+    ),
+    CheckConstraint(
+        "available_at >= occurred_at "
+        "AND recorded_at >= available_at",
+        name="raw_provider_lifecycle_events_clock_order",
+    ),
+    CheckConstraint(
+        "request_mode IS NULL OR "
+        "request_mode IN ("
+        "'ltpc', 'option_greeks', 'full_d5', 'full_d30'"
+        ")",
+        name="raw_provider_lifecycle_events_request_mode",
+    ),
+    CheckConstraint(
+        "instrument_keys_digest IS NULL OR "
+        "instrument_keys_digest ~ '^sha256:[0-9a-f]{64}$'",
+        name="raw_provider_lifecycle_events_instrument_digest",
+    ),
+    CheckConstraint(
+        "instrument_key_count IS NULL OR "
+        "instrument_key_count BETWEEN 1 AND 5000",
+        name="raw_provider_lifecycle_events_instrument_count",
+    ),
+    CheckConstraint(
+        "("
+        "lifecycle_kind = 'connection' "
+        "AND subscription_scope_id IS NULL "
+        "AND request_mode IS NULL "
+        "AND instrument_keys_digest IS NULL "
+        "AND instrument_key_count IS NULL"
+        ") OR ("
+        "lifecycle_kind = 'subscription' "
+        "AND subscription_scope_id IS NOT NULL "
+        "AND instrument_keys_digest IS NOT NULL "
+        "AND instrument_key_count IS NOT NULL"
+        ")",
+        name="raw_provider_lifecycle_events_kind_columns",
+    ),
+    CheckConstraint(
+        "COALESCE(("
+        "("
+        "lifecycle_kind = 'connection' AND ("
+        "(previous_state IS NULL AND state = 'connecting') "
+        "OR (previous_state = 'connecting' "
+        "AND state IN ('connected', 'failed', 'closing')) "
+        "OR (previous_state = 'connected' "
+        "AND state IN ('authorized', 'closing', 'failed')) "
+        "OR (previous_state = 'authorized' "
+        "AND state IN ('closing', 'reconnecting', 'failed')) "
+        "OR (previous_state = 'reconnecting' "
+        "AND state IN ('closing', 'failed')) "
+        "OR (previous_state = 'closing' "
+        "AND state IN ('closed', 'failed')) "
+        "OR (previous_state = 'failed' "
+        "AND state IN ('reconnecting', 'closing', 'closed'))"
+        ")"
+        ") OR ("
+        "lifecycle_kind = 'subscription' AND ("
+        "(previous_state IS NULL "
+        "AND state = 'subscribe_requested') "
+        "OR (previous_state = 'subscribe_requested' "
+        "AND state IN ('subscribed', 'subscription_failed')) "
+        "OR (previous_state = 'subscribed' "
+        "AND state IN ("
+        "'mode_change_requested', "
+        "'unsubscribe_requested', "
+        "'subscription_failed'"
+        ")) "
+        "OR (previous_state = 'mode_change_requested' "
+        "AND state IN ('mode_changed', 'subscription_failed')) "
+        "OR (previous_state = 'mode_changed' "
+        "AND state IN ("
+        "'mode_change_requested', "
+        "'unsubscribe_requested', "
+        "'subscription_failed'"
+        ")) "
+        "OR (previous_state = 'unsubscribe_requested' "
+        "AND state IN ('unsubscribed', 'subscription_failed'))"
+        ")"
+        ")"
+        "), FALSE)",
+        name="raw_provider_lifecycle_events_transition",
+    ),
+    CheckConstraint(
+        "("
+        "lifecycle_kind = 'connection' "
+        "AND request_mode IS NULL"
+        ") OR ("
+        "lifecycle_kind = 'subscription' AND ("
+        "("
+        "state IN ("
+        "'subscribe_requested', "
+        "'subscribed', "
+        "'mode_change_requested', "
+        "'mode_changed'"
+        ") "
+        "AND request_mode IS NOT NULL"
+        ") OR ("
+        "state IN ("
+        "'unsubscribe_requested', "
+        "'unsubscribed', "
+        "'subscription_failed'"
+        ")"
+        ")"
+        ")"
+        ")",
+        name="raw_provider_lifecycle_events_mode_shape",
+    ),
+    CheckConstraint(
+        "request_mode IS NULL "
+        "OR (request_mode = 'ltpc' "
+        "AND instrument_key_count BETWEEN 1 AND 5000) "
+        "OR (request_mode = 'option_greeks' "
+        "AND instrument_key_count BETWEEN 1 AND 3000) "
+        "OR (request_mode = 'full_d5' "
+        "AND instrument_key_count BETWEEN 1 AND 2000) "
+        "OR (request_mode = 'full_d30' "
+        "AND instrument_key_count BETWEEN 1 AND 50)",
+        name="raw_provider_lifecycle_events_mode_limit",
+    ),
+    CheckConstraint(
+        "redacted_reason_code IS NULL OR ("
+        "octet_length(redacted_reason_code) BETWEEN 1 AND 128 "
+        "AND redacted_reason_code "
+        "~ '^[a-z0-9]+(_[a-z0-9]+)*$' "
+        "AND redacted_reason_code "
+        "!~ '(token|url|traceback|socket|account|user_id|exception)'"
+        ")",
+        name="raw_provider_lifecycle_events_reason_format",
+    ),
+    CheckConstraint(
+        "("
+        "lifecycle_kind = 'connection' AND ("
+        "(state = 'failed' AND redacted_reason_code IS NOT NULL) "
+        "OR (state <> 'failed' AND redacted_reason_code IS NULL)"
+        ")"
+        ") OR ("
+        "lifecycle_kind = 'subscription' AND ("
+        "(state = 'subscription_failed' "
+        "AND redacted_reason_code IS NOT NULL) "
+        "OR (state <> 'subscription_failed' "
+        "AND redacted_reason_code IS NULL)"
+        ")"
+        ")",
+        name="raw_provider_lifecycle_events_reason_shape",
+    ),
+    CheckConstraint(
+        "provider_sequence IS NULL",
+        name="raw_provider_lifecycle_events_provider_sequence",
+    ),
+    CheckConstraint(
+        "jsonb_typeof(payload) = 'object'",
+        name="raw_provider_lifecycle_events_payload_object",
+    ),
+    Index(
+        "ix_raw_provider_lifecycle_events_scope_order",
+        "provider",
+        "connection_session_id",
+        "source_order_scope_id",
+        "source_order",
+        "raw_event_id",
+    ),
+    Index(
+        "ix_raw_provider_lifecycle_events_subscription_scope",
+        "provider",
+        "connection_session_id",
+        "subscription_scope_id",
+        "source_order",
+        "raw_event_id",
+        postgresql_where=text(
+            "lifecycle_kind = 'subscription'"
+        ),
+    ),
+)
+
+
 DATA14_PLACEHOLDER_TABLE_COLUMNS = {
     "provider_lifecycle_observations": (
         Column(
@@ -1506,7 +1833,6 @@ DATA14_PLACEHOLDER_TABLE_COLUMNS = {
 }
 
 DATA14_REMAINING_PLACEHOLDER_TABLES = (
-    "raw_provider_lifecycle_events",
     "provider_lifecycle_batch_events",
     "provider_lifecycle_observations",
     "provider_connection_lifecycle_observations",
