@@ -1797,14 +1797,161 @@ def _create_provider_subscription_instrument_sets() -> None:
     )
 
 
+def _create_provider_lifecycle_batches() -> None:
+    op.create_table(
+        "provider_lifecycle_batches",
+        sa.Column(
+            "lifecycle_batch_id",
+            sa.String(ID),
+            primary_key=True,
+        ),
+        sa.Column(
+            "lifecycle_kind",
+            sa.String(32),
+            nullable=False,
+        ),
+        sa.Column(
+            "provider",
+            sa.String(128),
+            nullable=False,
+        ),
+        sa.Column(
+            "normalization_schema_version",
+            sa.Integer(),
+            nullable=False,
+        ),
+        sa.Column(
+            "normalizer_implementation_version",
+            sa.String(128),
+            nullable=False,
+        ),
+        sa.Column(
+            "input_count",
+            sa.Integer(),
+            nullable=False,
+        ),
+        sa.Column(
+            "unique_count",
+            sa.Integer(),
+            nullable=False,
+        ),
+        sa.Column(
+            "normalized_count",
+            sa.Integer(),
+            nullable=False,
+        ),
+        sa.Column(
+            "duplicate_count",
+            sa.Integer(),
+            nullable=False,
+        ),
+        sa.Column(
+            "batch_hash",
+            sa.String(ID),
+            nullable=False,
+        ),
+        sa.Column(
+            "normalized_sequence_hash",
+            sa.String(ID),
+            nullable=False,
+        ),
+        sa.Column(
+            "metadata_payload",
+            postgresql.JSONB(astext_type=sa.Text()),
+            nullable=False,
+        ),
+        sa.Column(
+            "persistence_recorded_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+        ),
+        sa.UniqueConstraint(
+            "lifecycle_batch_id",
+            "lifecycle_kind",
+            name="uq_provider_lifecycle_batches_id_kind",
+        ),
+        sa.CheckConstraint(
+            "lifecycle_batch_id ~ '^sha256:[0-9a-f]{64}$'",
+            name="provider_lifecycle_batches_id_sha256",
+        ),
+        sa.CheckConstraint(
+            "lifecycle_kind IN ('connection', 'subscription')",
+            name="provider_lifecycle_batches_kind",
+        ),
+        sa.CheckConstraint(
+            "provider = 'upstox'",
+            name="provider_lifecycle_batches_provider",
+        ),
+        sa.CheckConstraint(
+            "normalization_schema_version = 1 "
+            "AND normalizer_implementation_version = "
+            "'upstox-v3-normalizer-1'",
+            name="provider_lifecycle_batches_schema_label",
+        ),
+        sa.CheckConstraint(
+            "input_count BETWEEN 0 AND 10000 "
+            "AND unique_count BETWEEN 0 AND 10000 "
+            "AND normalized_count BETWEEN 0 AND 10000 "
+            "AND duplicate_count BETWEEN 0 AND 10000",
+            name="provider_lifecycle_batches_count_bounds",
+        ),
+        sa.CheckConstraint(
+            "normalized_count = unique_count "
+            "AND duplicate_count = input_count - unique_count "
+            "AND ("
+            "(input_count = 0 AND unique_count = 0) "
+            "OR ("
+            "input_count BETWEEN 1 AND 10000 "
+            "AND unique_count BETWEEN 1 AND input_count"
+            ")"
+            ")",
+            name="provider_lifecycle_batches_count_reconciliation",
+        ),
+        sa.CheckConstraint(
+            "batch_hash ~ '^sha256:[0-9a-f]{64}$'",
+            name="provider_lifecycle_batches_batch_hash",
+        ),
+        sa.CheckConstraint(
+            "normalized_sequence_hash "
+            "~ '^sha256:[0-9a-f]{64}$'",
+            name="provider_lifecycle_batches_sequence_hash",
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(metadata_payload) = 'object'",
+            name="provider_lifecycle_batches_metadata_object",
+        ),
+        sa.CheckConstraint(
+            "persistence_recorded_at "
+            "<> 'infinity'::timestamptz "
+            "AND persistence_recorded_at "
+            "<> '-infinity'::timestamptz",
+            name="provider_lifecycle_batches_persistence_finite",
+        ),
+    )
+
+    op.create_index(
+        "ix_provider_lifecycle_batches_acceptance",
+        "provider_lifecycle_batches",
+        (
+            "normalization_schema_version",
+            "provider",
+            "lifecycle_kind",
+            "persistence_recorded_at",
+            "lifecycle_batch_id",
+        ),
+    )
+
+
 def upgrade() -> None:
     _create_temporal_provenance_targets()
     _create_provider_subscription_instrument_sets()
+    _create_provider_lifecycle_batches()
 
     for name in TABLES:
         if name in {
             "provider_subscription_instrument_sets",
             "provider_subscription_instrument_set_keys",
+            "provider_lifecycle_batches"
         }:
             continue
 

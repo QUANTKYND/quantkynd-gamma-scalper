@@ -2085,3 +2085,85 @@ def test_subscription_instrument_set_key_metadata_preserves_order() -> None:
             "NO ACTION",
         ),
     ) in _foreign_key_shapes(table)
+
+
+def test_provider_lifecycle_batch_metadata_is_explicit_root() -> None:
+    table = Base.metadata.tables[
+        "provider_lifecycle_batches"
+    ]
+
+    assert set(table.c.keys()) == {
+        "lifecycle_batch_id",
+        "lifecycle_kind",
+        "provider",
+        "normalization_schema_version",
+        "normalizer_implementation_version",
+        "input_count",
+        "unique_count",
+        "normalized_count",
+        "duplicate_count",
+        "batch_hash",
+        "normalized_sequence_hash",
+        "metadata_payload",
+        "persistence_recorded_at",
+    }
+    assert tuple(table.primary_key.columns.keys()) == (
+        "lifecycle_batch_id",
+    )
+    assert "id" not in table.c
+    assert "created_at" not in table.c
+
+    for column_name in (
+        "normalization_schema_version",
+        "input_count",
+        "unique_count",
+        "normalized_count",
+        "duplicate_count",
+    ):
+        assert isinstance(
+            table.c[column_name].type,
+            Integer,
+        )
+
+    assert isinstance(
+        table.c.metadata_payload.type,
+        JSONB,
+    )
+    assert (
+        table.c.persistence_recorded_at.type.timezone
+        is True
+    )
+
+    assert (
+        "lifecycle_batch_id",
+        "lifecycle_kind",
+    ) in _unique_column_shapes(table)
+
+    check_names = {
+        constraint.name
+        for constraint in table.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert check_names == {
+        "ck_provider_lifecycle_batches_id_sha256",
+        "ck_provider_lifecycle_batches_kind",
+        "ck_provider_lifecycle_batches_provider",
+        "ck_provider_lifecycle_batches_schema_label",
+        "ck_provider_lifecycle_batches_count_bounds",
+        "ck_provider_lifecycle_batches_count_reconciliation",
+        "ck_provider_lifecycle_batches_batch_hash",
+        "ck_provider_lifecycle_batches_sequence_hash",
+        "ck_provider_lifecycle_batches_metadata_object",
+        "ck_provider_lifecycle_batches_persistence_finite",
+    }
+
+    assert _index_shapes(table) == {
+        "ix_provider_lifecycle_batches_acceptance": (
+            "normalization_schema_version",
+            "provider",
+            "lifecycle_kind",
+            "persistence_recorded_at",
+            "lifecycle_batch_id",
+        ),
+    }

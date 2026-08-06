@@ -1292,6 +1292,147 @@ PROVIDER_SUBSCRIPTION_INSTRUMENT_SETS_TABLE = Table(
 )
 
 
+PROVIDER_LIFECYCLE_BATCHES_TABLE = Table(
+    "provider_lifecycle_batches",
+    Base.metadata,
+    Column(
+        "lifecycle_batch_id",
+        String(ID_LENGTH),
+        primary_key=True,
+    ),
+    Column(
+        "lifecycle_kind",
+        String(32),
+        nullable=False,
+    ),
+    Column(
+        "provider",
+        String(NAME_LENGTH),
+        nullable=False,
+    ),
+    Column(
+        "normalization_schema_version",
+        Integer,
+        nullable=False,
+    ),
+    Column(
+        "normalizer_implementation_version",
+        String(NAME_LENGTH),
+        nullable=False,
+    ),
+    Column(
+        "input_count",
+        Integer,
+        nullable=False,
+    ),
+    Column(
+        "unique_count",
+        Integer,
+        nullable=False,
+    ),
+    Column(
+        "normalized_count",
+        Integer,
+        nullable=False,
+    ),
+    Column(
+        "duplicate_count",
+        Integer,
+        nullable=False,
+    ),
+    Column(
+        "batch_hash",
+        String(ID_LENGTH),
+        nullable=False,
+    ),
+    Column(
+        "normalized_sequence_hash",
+        String(ID_LENGTH),
+        nullable=False,
+    ),
+    Column(
+        "metadata_payload",
+        JSONB,
+        nullable=False,
+    ),
+    Column(
+        "persistence_recorded_at",
+        DateTime(timezone=True),
+        nullable=False,
+    ),
+    UniqueConstraint(
+        "lifecycle_batch_id",
+        "lifecycle_kind",
+        name="uq_provider_lifecycle_batches_id_kind",
+    ),
+    CheckConstraint(
+        "lifecycle_batch_id ~ '^sha256:[0-9a-f]{64}$'",
+        name="provider_lifecycle_batches_id_sha256",
+    ),
+    CheckConstraint(
+        "lifecycle_kind IN ('connection', 'subscription')",
+        name="provider_lifecycle_batches_kind",
+    ),
+    CheckConstraint(
+        "provider = 'upstox'",
+        name="provider_lifecycle_batches_provider",
+    ),
+    CheckConstraint(
+        "normalization_schema_version = 1 "
+        "AND normalizer_implementation_version = "
+        "'upstox-v3-normalizer-1'",
+        name="provider_lifecycle_batches_schema_label",
+    ),
+    CheckConstraint(
+        "input_count BETWEEN 0 AND 10000 "
+        "AND unique_count BETWEEN 0 AND 10000 "
+        "AND normalized_count BETWEEN 0 AND 10000 "
+        "AND duplicate_count BETWEEN 0 AND 10000",
+        name="provider_lifecycle_batches_count_bounds",
+    ),
+    CheckConstraint(
+        "normalized_count = unique_count "
+        "AND duplicate_count = input_count - unique_count "
+        "AND ("
+        "(input_count = 0 AND unique_count = 0) "
+        "OR ("
+        "input_count BETWEEN 1 AND 10000 "
+        "AND unique_count BETWEEN 1 AND input_count"
+        ")"
+        ")",
+        name="provider_lifecycle_batches_count_reconciliation",
+    ),
+    CheckConstraint(
+        "batch_hash ~ '^sha256:[0-9a-f]{64}$'",
+        name="provider_lifecycle_batches_batch_hash",
+    ),
+    CheckConstraint(
+        "normalized_sequence_hash "
+        "~ '^sha256:[0-9a-f]{64}$'",
+        name="provider_lifecycle_batches_sequence_hash",
+    ),
+    CheckConstraint(
+        "jsonb_typeof(metadata_payload) = 'object'",
+        name="provider_lifecycle_batches_metadata_object",
+    ),
+    CheckConstraint(
+        "persistence_recorded_at "
+        "<> 'infinity'::timestamptz "
+        "AND persistence_recorded_at "
+        "<> '-infinity'::timestamptz",
+        name="provider_lifecycle_batches_persistence_finite",
+    ),
+    Index(
+        "ix_provider_lifecycle_batches_acceptance",
+        "normalization_schema_version",
+        "provider",
+        "lifecycle_kind",
+        "persistence_recorded_at",
+        "lifecycle_batch_id",
+    ),
+)
+
+
 PROVIDER_SUBSCRIPTION_INSTRUMENT_SET_KEYS_TABLE = Table(
     "provider_subscription_instrument_set_keys",
     Base.metadata,
@@ -1365,7 +1506,6 @@ DATA14_PLACEHOLDER_TABLE_COLUMNS = {
 }
 
 DATA14_REMAINING_PLACEHOLDER_TABLES = (
-    "provider_lifecycle_batches",
     "raw_provider_lifecycle_events",
     "provider_lifecycle_batch_events",
     "provider_lifecycle_observations",

@@ -95,6 +95,32 @@ INSTRUMENT_SET_KEY_COLUMNS = {
     "provider_contract_key",
 }
 
+PROVIDER_LIFECYCLE_BATCH_COLUMNS = {
+    "lifecycle_batch_id",
+    "lifecycle_kind",
+    "provider",
+    "normalization_schema_version",
+    "normalizer_implementation_version",
+    "input_count",
+    "unique_count",
+    "normalized_count",
+    "duplicate_count",
+    "batch_hash",
+    "normalized_sequence_hash",
+    "metadata_payload",
+    "persistence_recorded_at",
+}
+
+PROVIDER_LIFECYCLE_BATCH_INDEXES = {
+    "ix_provider_lifecycle_batches_acceptance": (
+        "normalization_schema_version",
+        "provider",
+        "lifecycle_kind",
+        "persistence_recorded_at",
+        "lifecycle_batch_id",
+    ),
+}
+
 RAW_MARKET_FRAME_COLUMNS = {
     "raw_event_id",
     "provider",
@@ -1382,6 +1408,53 @@ async def _assert_head_schema(engine) -> None:
         )
         in instrument_set_keys["unique_constraints"]
     )
+    lifecycle_batches = details[
+        "provider_lifecycle_batches"
+    ]
+
+    assert (
+        set(lifecycle_batches["columns"])
+        == PROVIDER_LIFECYCLE_BATCH_COLUMNS
+    )
+    assert lifecycle_batches["primary_key"] == (
+        "lifecycle_batch_id",
+    )
+
+    for column_name in (
+        "normalization_schema_version",
+        "input_count",
+        "unique_count",
+        "normalized_count",
+        "duplicate_count",
+    ):
+        assert isinstance(
+            lifecycle_batches["columns"][
+                column_name
+            ]["type"],
+            Integer,
+        )
+
+    assert isinstance(
+        lifecycle_batches["columns"][
+            "metadata_payload"
+        ]["type"],
+        JSONB,
+    )
+
+    assert (
+        "lifecycle_batch_id",
+        "lifecycle_kind",
+    ) in lifecycle_batches["unique_constraints"]
+
+    for index_name, expected_columns in (
+        PROVIDER_LIFECYCLE_BATCH_INDEXES.items()
+    ):
+        assert (
+            lifecycle_batches["indexes"][
+                index_name
+            ]["columns"]
+            == expected_columns
+        )
     _assert_foreign_key(
         instrument_set_keys,
         ("instrument_keys_digest",),
@@ -1590,6 +1663,10 @@ def _schema_details(connection) -> dict[str, object]:
             schema,
             "provider_subscription_instrument_set_keys",
         ),
+        "provider_lifecycle_batches": _table_details(
+            schema,
+            "provider_lifecycle_batches",
+        ),
     }
 
 
@@ -1674,6 +1751,154 @@ def _raw_frame_values(
         "source_record_id": None,
         "persistence_recorded_at": when,
     }
+
+
+def _lifecycle_batch_values(
+    *,
+    marker: str,
+    **overrides,
+) -> dict[str, object]:
+    values = {
+        "lifecycle_batch_id": (
+            "sha256:" + marker * 64
+        ),
+        "lifecycle_kind": "connection",
+        "provider": "upstox",
+        "normalization_schema_version": 1,
+        "normalizer_implementation_version": (
+            "upstox-v3-normalizer-1"
+        ),
+        "input_count": 3,
+        "unique_count": 2,
+        "normalized_count": 2,
+        "duplicate_count": 1,
+        "batch_hash": "sha256:" + "a" * 64,
+        "normalized_sequence_hash": (
+            "sha256:" + "b" * 64
+        ),
+        "metadata_payload": {
+            "fixture": "provider_lifecycle_batch",
+        },
+        "persistence_recorded_at": (
+            RECORDED_AT + timedelta(hours=1)
+        ),
+    }
+    values.update(overrides)
+    return values
+
+
+@pytest.mark.anyio
+async def test_provider_lifecycle_batch_checks_reject_invalid_roots(
+    postgres_url: str,
+    postgres_settings: DatabaseSettings,
+) -> None:
+    engine = create_database_engine(postgres_settings)
+    config = alembic_config(postgres_url)
+    table = Base.metadata.tables[
+        "provider_lifecycle_batches"
+    ]
+
+    try:
+        async with destructive_database_lease(
+            engine,
+            postgres_url,
+            postgres_settings,
+            DestructiveDatabasePurpose.INTEGRATION,
+        ) as lease:
+            await lease.drop_and_recreate_public()
+            await asyncio.to_thread(
+                command.upgrade,
+                config,
+                "head",
+            )
+
+            # Prove that the valid immediate row shape is accepted.
+            # Roll back rather than committing an incomplete lifecycle
+            # aggregate; later slices will install deferred membership
+            # completeness checks.
+            async with engine.connect() as connection:
+                transaction = await connection.begin()
+                try:
+                    valid = _lifecycle_batch_values(
+                        marker="1",
+                    )
+                    await connection.execute(
+                        table.insert().values(**valid)
+                    )
+
+                    stored = (
+                        await connection.execute(
+                            text(
+                                "SELECT "
+                                "input_count, "
+                                "unique_count, "
+                                "normalized_count, "
+                                "duplicate_count "
+                                "FROM provider_lifecycle_batches "
+                                "WHERE lifecycle_batch_id = "
+                                ":lifecycle_batch_id"
+                            ),
+                            {
+                                "lifecycle_batch_id": (
+                                    valid[
+                                        "lifecycle_batch_id"
+                                    ]
+                                )
+                            },
+                        )
+                    ).mappings().one()
+
+                    assert dict(stored) == {
+                        "input_count": 3,
+                        "unique_count": 2,
+                        "normalized_count": 2,
+                        "duplicate_count": 1,
+                    }
+                finally:
+                    await transaction.rollback()
+
+            invalid_rows = (
+                _lifecycle_batch_values(
+                    marker="2",
+                    lifecycle_batch_id="not-a-hash",
+                ),
+                _lifecycle_batch_values(
+                    marker="3",
+                    lifecycle_kind="other",
+                ),
+                _lifecycle_batch_values(
+                    marker="4",
+                    normalized_count=1,
+                ),
+                _lifecycle_batch_values(
+                    marker="5",
+                    normalizer_implementation_version=(
+                        "other-normalizer"
+                    ),
+                ),
+                _lifecycle_batch_values(
+                    marker="6",
+                    metadata_payload=[],
+                ),
+                _lifecycle_batch_values(
+                    marker="7",
+                    input_count=1,
+                    unique_count=0,
+                    normalized_count=0,
+                    duplicate_count=1,
+                ),
+            )
+
+            for invalid in invalid_rows:
+                with pytest.raises(IntegrityError):
+                    async with engine.begin() as connection:
+                        await connection.execute(
+                            table.insert().values(
+                                **invalid
+                            )
+                        )
+    finally:
+        await dispose_database_engine(engine)
 
 
 @pytest.mark.anyio
