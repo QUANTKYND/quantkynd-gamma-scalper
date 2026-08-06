@@ -18,6 +18,7 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from app.core.database_config import DatabaseSettings
+from app.core.hashing import stable_hash
 from app.instruments.temporal_records import (
     catalogue_temporal_record,
     instrument_version_temporal_record,
@@ -79,6 +80,19 @@ DATA_1_1_TABLES = {
     "instrument_version_records",
     "provider_mapping_records",
     "trading_session_version_records",
+}
+
+INSTRUMENT_SET_COLUMNS = {
+    "instrument_keys_digest",
+    "instrument_key_count",
+    "provider_contract_keys",
+    "canonical_payload_hash",
+}
+
+INSTRUMENT_SET_KEY_COLUMNS = {
+    "instrument_keys_digest",
+    "key_ordinal",
+    "provider_contract_key",
 }
 
 RAW_MARKET_FRAME_COLUMNS = {
@@ -1327,6 +1341,53 @@ async def _assert_head_schema(engine) -> None:
         )
         in result_failures["unique_constraints"]
     )
+    instrument_sets = details[
+        "provider_subscription_instrument_sets"
+    ]
+    assert (
+        set(instrument_sets["columns"])
+        == INSTRUMENT_SET_COLUMNS
+    )
+    assert instrument_sets["primary_key"] == (
+        "instrument_keys_digest",
+    )
+    assert isinstance(
+        instrument_sets["columns"][
+            "instrument_key_count"
+        ]["type"],
+        Integer,
+    )
+    assert isinstance(
+        instrument_sets["columns"][
+            "provider_contract_keys"
+        ]["type"],
+        JSONB,
+    )
+
+    instrument_set_keys = details[
+        "provider_subscription_instrument_set_keys"
+    ]
+    assert (
+        set(instrument_set_keys["columns"])
+        == INSTRUMENT_SET_KEY_COLUMNS
+    )
+    assert instrument_set_keys["primary_key"] == (
+        "instrument_keys_digest",
+        "key_ordinal",
+    )
+    assert (
+        (
+            "instrument_keys_digest",
+            "provider_contract_key",
+        )
+        in instrument_set_keys["unique_constraints"]
+    )
+    _assert_foreign_key(
+        instrument_set_keys,
+        ("instrument_keys_digest",),
+        "provider_subscription_instrument_sets",
+        ("instrument_keys_digest",),
+    )
     _assert_foreign_key(
         result_failures,
         ("result_id", "raw_event_id"),
@@ -1520,6 +1581,14 @@ def _schema_details(connection) -> dict[str, object]:
                 schema,
                 "market_normalization_result_failures",
             )
+        ),
+        "provider_subscription_instrument_sets": _table_details(
+            schema,
+            "provider_subscription_instrument_sets",
+        ),
+        "provider_subscription_instrument_set_keys": _table_details(
+            schema,
+            "provider_subscription_instrument_set_keys",
         ),
     }
 
@@ -1883,3 +1952,170 @@ def test_all_data14_foreign_keys_are_no_action() -> None:
                 element.ondelete == "NO ACTION"
                 for element in constraint.elements
             )
+
+
+@pytest.mark.anyio
+async def test_subscription_instrument_set_integrity_is_deferred_and_exact(
+    postgres_url: str,
+    postgres_settings: DatabaseSettings,
+) -> None:
+    engine = create_database_engine(postgres_settings)
+    config = alembic_config(postgres_url)
+
+    set_table = Base.metadata.tables[
+        "provider_subscription_instrument_sets"
+    ]
+    key_table = Base.metadata.tables[
+        "provider_subscription_instrument_set_keys"
+    ]
+
+    def digest_for(keys: tuple[str, ...]) -> str:
+        return stable_hash(
+            {
+                "entity": (
+                    "provider_subscription_instrument_keys_v1"
+                ),
+                "provider_contract_keys": tuple(sorted(keys)),
+            }
+        )
+
+    async def insert_set(
+        connection,
+        *,
+        declared_keys: tuple[str, ...],
+        inserted_rows: tuple[tuple[int, str], ...],
+        digest_override: str | None = None,
+    ) -> None:
+        canonical_keys = tuple(sorted(declared_keys))
+        digest = digest_override or digest_for(canonical_keys)
+
+        await connection.execute(
+            set_table.insert().values(
+                instrument_keys_digest=digest,
+                instrument_key_count=len(canonical_keys),
+                provider_contract_keys=list(canonical_keys),
+                canonical_payload_hash=digest,
+            )
+        )
+
+        await connection.execute(
+            key_table.insert(),
+            [
+                {
+                    "instrument_keys_digest": digest,
+                    "key_ordinal": ordinal,
+                    "provider_contract_key": key,
+                }
+                for ordinal, key in inserted_rows
+            ],
+        )
+
+        await connection.execute(
+            text("SET CONSTRAINTS ALL IMMEDIATE")
+        )
+
+    try:
+        async with destructive_database_lease(
+            engine,
+            postgres_url,
+            postgres_settings,
+            DestructiveDatabasePurpose.INTEGRATION,
+        ) as lease:
+            await lease.drop_and_recreate_public()
+            await asyncio.to_thread(
+                command.upgrade,
+                config,
+                "head",
+            )
+
+            valid_keys = (
+                "NSE_FO|VALID_A",
+                "NSE_FO|VALID_B",
+            )
+            async with engine.begin() as connection:
+                await insert_set(
+                    connection,
+                    declared_keys=valid_keys,
+                    inserted_rows=(
+                        (0, valid_keys[0]),
+                        (1, valid_keys[1]),
+                    ),
+                )
+
+            count_mismatch_keys = (
+                "NSE_FO|COUNT_A",
+                "NSE_FO|COUNT_B",
+            )
+            with pytest.raises(DBAPIError):
+                async with engine.begin() as connection:
+                    await insert_set(
+                        connection,
+                        declared_keys=count_mismatch_keys,
+                        inserted_rows=(
+                            (0, count_mismatch_keys[0]),
+                        ),
+                    )
+
+            gap_keys = (
+                "NSE_FO|GAP_A",
+                "NSE_FO|GAP_B",
+            )
+            with pytest.raises(DBAPIError):
+                async with engine.begin() as connection:
+                    await insert_set(
+                        connection,
+                        declared_keys=gap_keys,
+                        inserted_rows=(
+                            (0, gap_keys[0]),
+                            (2, gap_keys[1]),
+                        ),
+                    )
+
+            sorted_keys = (
+                "NSE_FO|SORT_A",
+                "NSE_FO|SORT_B",
+            )
+            with pytest.raises(DBAPIError):
+                async with engine.begin() as connection:
+                    await insert_set(
+                        connection,
+                        declared_keys=sorted_keys,
+                        inserted_rows=(
+                            (0, sorted_keys[1]),
+                            (1, sorted_keys[0]),
+                        ),
+                    )
+
+            digest_keys = (
+                "NSE_FO|DIGEST_A",
+                "NSE_FO|DIGEST_B",
+            )
+            with pytest.raises(DBAPIError):
+                async with engine.begin() as connection:
+                    await insert_set(
+                        connection,
+                        declared_keys=digest_keys,
+                        inserted_rows=(
+                            (0, digest_keys[0]),
+                            (1, digest_keys[1]),
+                        ),
+                        digest_override=(
+                            "sha256:" + "f" * 64
+                        ),
+                    )
+
+            with pytest.raises(IntegrityError):
+                async with engine.begin() as connection:
+                    await connection.execute(
+                        key_table.insert().values(
+                            instrument_keys_digest=(
+                                "sha256:" + "e" * 64
+                            ),
+                            key_ordinal=0,
+                            provider_contract_key=(
+                                "NSE_FO|ORPHAN"
+                            ),
+                        )
+                    )
+    finally:
+        await dispose_database_engine(engine)

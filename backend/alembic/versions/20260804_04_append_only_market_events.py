@@ -1481,10 +1481,333 @@ def _create_market_segment_status_observations() -> None:
         ("segment", "provider_status_numeric", "event_id"),
     )
 
+
+def _create_provider_subscription_instrument_sets() -> None:
+    op.create_table(
+        "provider_subscription_instrument_sets",
+        sa.Column(
+            "instrument_keys_digest",
+            sa.String(ID),
+            primary_key=True,
+        ),
+        sa.Column(
+            "instrument_key_count",
+            sa.Integer(),
+            nullable=False,
+        ),
+        sa.Column(
+            "provider_contract_keys",
+            postgresql.JSONB(astext_type=sa.Text()),
+            nullable=False,
+        ),
+        sa.Column(
+            "canonical_payload_hash",
+            sa.String(ID),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "instrument_keys_digest ~ '^sha256:[0-9a-f]{64}$'",
+            name="instrument_sets_digest_sha256",
+        ),
+        sa.CheckConstraint(
+            "instrument_key_count BETWEEN 1 AND 5000",
+            name="instrument_sets_count_bounds",
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(provider_contract_keys) = 'array'",
+            name="instrument_sets_payload_array",
+        ),
+        sa.CheckConstraint(
+            """
+            CASE
+                WHEN jsonb_typeof(provider_contract_keys) = 'array'
+                THEN jsonb_array_length(provider_contract_keys)
+                     = instrument_key_count
+                ELSE FALSE
+            END
+            """,
+            name="instrument_sets_payload_count",
+        ),
+        sa.CheckConstraint(
+            "canonical_payload_hash ~ '^sha256:[0-9a-f]{64}$'",
+            name="instrument_sets_payload_hash_sha256",
+        ),
+        sa.CheckConstraint(
+            "canonical_payload_hash = instrument_keys_digest",
+            name="instrument_sets_payload_hash_identity",
+        ),
+    )
+
+    op.create_table(
+        "provider_subscription_instrument_set_keys",
+        sa.Column(
+            "instrument_keys_digest",
+            sa.String(ID),
+            nullable=False,
+        ),
+        sa.Column(
+            "key_ordinal",
+            sa.Integer(),
+            nullable=False,
+        ),
+        sa.Column(
+            "provider_contract_key",
+            sa.String(512),
+            nullable=False,
+        ),
+        sa.PrimaryKeyConstraint(
+            "instrument_keys_digest",
+            "key_ordinal",
+            name="pk_provider_subscription_instrument_set_keys",
+        ),
+        sa.UniqueConstraint(
+            "instrument_keys_digest",
+            "provider_contract_key",
+            name="uq_instrument_set_keys_digest_key",
+        ),
+        sa.ForeignKeyConstraint(
+            ["instrument_keys_digest"],
+            [
+                "provider_subscription_instrument_sets."
+                "instrument_keys_digest"
+            ],
+            ondelete="NO ACTION",
+            onupdate="NO ACTION",
+            name="fk_instrument_set_keys_set",
+        ),
+        sa.CheckConstraint(
+            "instrument_keys_digest ~ '^sha256:[0-9a-f]{64}$'",
+            name="instrument_set_keys_digest_sha256",
+        ),
+        sa.CheckConstraint(
+            "key_ordinal BETWEEN 0 AND 4999",
+            name="instrument_set_keys_ordinal_bounds",
+        ),
+        sa.CheckConstraint(
+            """
+            octet_length(provider_contract_key) BETWEEN 1 AND 512
+            AND provider_contract_key = btrim(provider_contract_key)
+            AND provider_contract_key !~ '[[:cntrl:]]'
+            """,
+            name="instrument_set_keys_provider_key_shape",
+        ),
+    )
+
+    # A key ordinal must fit within its owning set's declared count.
+    # This is an O(1) parent lookup and also prevents later additions
+    # to an already complete immutable set.
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION
+        data14_validate_subscription_instrument_key_ordinal()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        DECLARE
+            declared_count integer;
+        BEGIN
+            SELECT instrument_key_count
+            INTO declared_count
+            FROM provider_subscription_instrument_sets
+            WHERE instrument_keys_digest = NEW.instrument_keys_digest;
+
+            -- Parent existence is owned by
+            -- fk_instrument_set_keys_set. Do not mask its
+            -- foreign-key violation with a generic trigger error.
+            IF declared_count IS NULL THEN
+                RETURN NEW;
+            END IF;
+
+            IF NEW.key_ordinal >= declared_count THEN
+                RAISE EXCEPTION
+                    'subscription instrument key ordinal % exceeds '
+                    'declared count % for %',
+                    NEW.key_ordinal,
+                    declared_count,
+                    NEW.instrument_keys_digest;
+            END IF;
+
+            RETURN NEW;
+        END;
+        $$
+        """
+    )
+
+    op.execute(
+        """
+        CREATE TRIGGER
+        data14_subscription_instrument_key_ordinal
+        BEFORE INSERT
+        ON provider_subscription_instrument_set_keys
+        FOR EACH ROW
+        EXECUTE FUNCTION
+        data14_validate_subscription_instrument_key_ordinal()
+        """
+    )
+
+    # One deferred validation runs for each newly registered set.
+    # It sees all keys inserted later in the same transaction.
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION
+        data14_validate_subscription_instrument_set()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        DECLARE
+            declared_count integer;
+            stored_payload jsonb;
+            stored_payload_hash varchar(71);
+            actual_count integer;
+            minimum_ordinal integer;
+            maximum_ordinal integer;
+            ordered_keys text[];
+            canonically_sorted_keys text[];
+            ordered_keys_json text;
+            canonical_set_json text;
+            recomputed_digest text;
+        BEGIN
+            SELECT
+                instrument_key_count,
+                provider_contract_keys,
+                canonical_payload_hash
+            INTO
+                declared_count,
+                stored_payload,
+                stored_payload_hash
+            FROM provider_subscription_instrument_sets
+            WHERE instrument_keys_digest = NEW.instrument_keys_digest;
+
+            SELECT
+                count(*),
+                min(key_ordinal),
+                max(key_ordinal),
+                array_agg(
+                    provider_contract_key
+                    ORDER BY key_ordinal
+                ),
+                array_agg(
+                    provider_contract_key
+                    ORDER BY provider_contract_key COLLATE "C"
+                ),
+                '[' ||
+                COALESCE(
+                    string_agg(
+                        to_json(provider_contract_key)::text,
+                        ','
+                        ORDER BY key_ordinal
+                    ),
+                    ''
+                ) ||
+                ']'
+            INTO
+                actual_count,
+                minimum_ordinal,
+                maximum_ordinal,
+                ordered_keys,
+                canonically_sorted_keys,
+                ordered_keys_json
+            FROM provider_subscription_instrument_set_keys
+            WHERE instrument_keys_digest = NEW.instrument_keys_digest;
+
+            IF actual_count <> declared_count THEN
+                RAISE EXCEPTION
+                    'subscription instrument set count mismatch '
+                    'for %: declared %, stored %',
+                    NEW.instrument_keys_digest,
+                    declared_count,
+                    actual_count;
+            END IF;
+
+            IF minimum_ordinal <> 0
+               OR maximum_ordinal <> declared_count - 1 THEN
+                RAISE EXCEPTION
+                    'subscription instrument set ordinals are not '
+                    'contiguous for %',
+                    NEW.instrument_keys_digest;
+            END IF;
+
+            IF ordered_keys IS DISTINCT FROM canonically_sorted_keys THEN
+                RAISE EXCEPTION
+                    'subscription instrument set keys are not '
+                    'canonically sorted for %',
+                    NEW.instrument_keys_digest;
+            END IF;
+
+            IF stored_payload
+               IS DISTINCT FROM ordered_keys_json::jsonb THEN
+                RAISE EXCEPTION
+                    'subscription instrument set payload mismatch '
+                    'for %',
+                    NEW.instrument_keys_digest;
+            END IF;
+
+            canonical_set_json :=
+                '{"entity":'
+                '"provider_subscription_instrument_keys_v1",'
+                '"provider_contract_keys":'
+                || ordered_keys_json
+                || '}';
+
+            recomputed_digest :=
+                'sha256:'
+                || encode(
+                    sha256(
+                        convert_to(
+                            canonical_set_json,
+                            'UTF8'
+                        )
+                    ),
+                    'hex'
+                );
+
+            IF NEW.instrument_keys_digest
+               IS DISTINCT FROM recomputed_digest THEN
+                RAISE EXCEPTION
+                    'subscription instrument set digest mismatch '
+                    'for %',
+                    NEW.instrument_keys_digest;
+            END IF;
+
+            IF stored_payload_hash
+               IS DISTINCT FROM recomputed_digest THEN
+                RAISE EXCEPTION
+                    'subscription instrument set payload hash '
+                    'mismatch for %',
+                    NEW.instrument_keys_digest;
+            END IF;
+
+            RETURN NULL;
+        END;
+        $$
+        """
+    )
+
+    op.execute(
+        """
+        CREATE CONSTRAINT TRIGGER
+        data14_subscription_instrument_set_integrity
+        AFTER INSERT
+        ON provider_subscription_instrument_sets
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW
+        EXECUTE FUNCTION
+        data14_validate_subscription_instrument_set()
+        """
+    )
+
+
 def upgrade() -> None:
     _create_temporal_provenance_targets()
+    _create_provider_subscription_instrument_sets()
 
     for name in TABLES:
+        if name in {
+            "provider_subscription_instrument_sets",
+            "provider_subscription_instrument_set_keys",
+        }:
+            continue
+
         if name == "raw_market_frames":
             _create_raw_market_frames()
             continue

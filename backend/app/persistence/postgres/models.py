@@ -1235,16 +1235,136 @@ MARKET_SEGMENT_STATUS_OBSERVATIONS_TABLE = Table(
 )
 
 
-DATA14_TABLE_COLUMNS = {
+PROVIDER_SUBSCRIPTION_INSTRUMENT_SETS_TABLE = Table(
+    "provider_subscription_instrument_sets",
+    Base.metadata,
+    Column(
+        "instrument_keys_digest",
+        String(ID_LENGTH),
+        primary_key=True,
+    ),
+    Column(
+        "instrument_key_count",
+        Integer,
+        nullable=False,
+    ),
+    Column(
+        "provider_contract_keys",
+        JSONB,
+        nullable=False,
+    ),
+    Column(
+        "canonical_payload_hash",
+        String(ID_LENGTH),
+        nullable=False,
+    ),
+    CheckConstraint(
+        "instrument_keys_digest ~ '^sha256:[0-9a-f]{64}$'",
+        name="instrument_sets_digest_sha256",
+    ),
+    CheckConstraint(
+        "instrument_key_count BETWEEN 1 AND 5000",
+        name="instrument_sets_count_bounds",
+    ),
+    CheckConstraint(
+        "jsonb_typeof(provider_contract_keys) = 'array'",
+        name="instrument_sets_payload_array",
+    ),
+    CheckConstraint(
+        """
+        CASE
+            WHEN jsonb_typeof(provider_contract_keys) = 'array'
+            THEN jsonb_array_length(provider_contract_keys)
+                 = instrument_key_count
+            ELSE FALSE
+        END
+        """,
+        name="instrument_sets_payload_count",
+    ),
+    CheckConstraint(
+        "canonical_payload_hash ~ '^sha256:[0-9a-f]{64}$'",
+        name="instrument_sets_payload_hash_sha256",
+    ),
+    CheckConstraint(
+        "canonical_payload_hash = instrument_keys_digest",
+        name="instrument_sets_payload_hash_identity",
+    ),
+)
+
+
+PROVIDER_SUBSCRIPTION_INSTRUMENT_SET_KEYS_TABLE = Table(
+    "provider_subscription_instrument_set_keys",
+    Base.metadata,
+    Column(
+        "instrument_keys_digest",
+        String(ID_LENGTH),
+        nullable=False,
+    ),
+    Column(
+        "key_ordinal",
+        Integer,
+        nullable=False,
+    ),
+    Column(
+        "provider_contract_key",
+        String(KEY_LENGTH),
+        nullable=False,
+    ),
+    PrimaryKeyConstraint(
+        "instrument_keys_digest",
+        "key_ordinal",
+        name="pk_provider_subscription_instrument_set_keys",
+    ),
+    UniqueConstraint(
+        "instrument_keys_digest",
+        "provider_contract_key",
+        name="uq_instrument_set_keys_digest_key",
+    ),
+    ForeignKeyConstraint(
+        ["instrument_keys_digest"],
+        [
+            "provider_subscription_instrument_sets."
+            "instrument_keys_digest"
+        ],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_instrument_set_keys_set",
+    ),
+    CheckConstraint(
+        "instrument_keys_digest ~ '^sha256:[0-9a-f]{64}$'",
+        name="instrument_set_keys_digest_sha256",
+    ),
+    CheckConstraint(
+        "key_ordinal BETWEEN 0 AND 4999",
+        name="instrument_set_keys_ordinal_bounds",
+    ),
+    CheckConstraint(
+        """
+        octet_length(provider_contract_key) BETWEEN 1 AND 512
+        AND provider_contract_key = btrim(provider_contract_key)
+        AND provider_contract_key !~ '[[:cntrl:]]'
+        """,
+        name="instrument_set_keys_provider_key_shape",
+    ),
+)
+
+
+DATA14_PLACEHOLDER_TABLE_COLUMNS = {
     "provider_lifecycle_observations": (
-        Column("raw_event_id", String(ID_LENGTH), nullable=False),
-        Column("lifecycle_kind", String(32), nullable=False),
+        Column(
+            "raw_event_id",
+            String(ID_LENGTH),
+            nullable=False,
+        ),
+        Column(
+            "lifecycle_kind",
+            String(32),
+            nullable=False,
+        ),
     ),
 }
 
-DATA14_TABLES = (
-    "provider_subscription_instrument_sets",
-    "provider_subscription_instrument_set_keys",
+DATA14_REMAINING_PLACEHOLDER_TABLES = (
     "provider_lifecycle_batches",
     "raw_provider_lifecycle_events",
     "provider_lifecycle_batch_events",
@@ -1254,13 +1374,24 @@ DATA14_TABLES = (
     "provider_lifecycle_batch_observations",
 )
 
-for _data14_table in DATA14_TABLES:
+for _data14_table in DATA14_REMAINING_PLACEHOLDER_TABLES:
     Table(
         _data14_table,
         Base.metadata,
-        Column("id", String(ID_LENGTH), primary_key=True),
-        Column("created_at", DateTime(timezone=True), nullable=False),
-        *DATA14_TABLE_COLUMNS.get(_data14_table, ()),
+        Column(
+            "id",
+            String(ID_LENGTH),
+            primary_key=True,
+        ),
+        Column(
+            "created_at",
+            DateTime(timezone=True),
+            nullable=False,
+        ),
+        *DATA14_PLACEHOLDER_TABLE_COLUMNS.get(
+            _data14_table,
+            (),
+        ),
     )
 
 

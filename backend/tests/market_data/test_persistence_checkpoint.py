@@ -2007,3 +2007,81 @@ async def test_observation_queries_bind_schema_on_both_sides() -> None:
             "r.normalization_schema_version = :schema"
             in sql
         )
+
+
+def test_subscription_instrument_set_metadata_is_explicit_registry() -> None:
+    table = Base.metadata.tables[
+        "provider_subscription_instrument_sets"
+    ]
+
+    assert set(table.c.keys()) == {
+        "instrument_keys_digest",
+        "instrument_key_count",
+        "provider_contract_keys",
+        "canonical_payload_hash",
+    }
+    assert tuple(table.primary_key.columns.keys()) == (
+        "instrument_keys_digest",
+    )
+    assert "id" not in table.c
+    assert "created_at" not in table.c
+
+    assert isinstance(
+        table.c.instrument_key_count.type,
+        Integer,
+    )
+    assert isinstance(
+        table.c.provider_contract_keys.type,
+        JSONB,
+    )
+
+    check_names = {
+        constraint.name
+        for constraint in table.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert check_names == {
+        "ck_instrument_sets_digest_sha256",
+        "ck_instrument_sets_count_bounds",
+        "ck_instrument_sets_payload_array",
+        "ck_instrument_sets_payload_count",
+        "ck_instrument_sets_payload_hash_sha256",
+        "ck_instrument_sets_payload_hash_identity",
+    }
+
+
+def test_subscription_instrument_set_key_metadata_preserves_order() -> None:
+    table = Base.metadata.tables[
+        "provider_subscription_instrument_set_keys"
+    ]
+
+    assert set(table.c.keys()) == {
+        "instrument_keys_digest",
+        "key_ordinal",
+        "provider_contract_key",
+    }
+    assert tuple(table.primary_key.columns.keys()) == (
+        "instrument_keys_digest",
+        "key_ordinal",
+    )
+    assert "id" not in table.c
+    assert "created_at" not in table.c
+
+    assert (
+        "instrument_keys_digest",
+        "provider_contract_key",
+    ) in _unique_column_shapes(table)
+
+    assert (
+        (
+            "instrument_keys_digest",
+        ),
+        (
+            "provider_subscription_instrument_sets."
+            "instrument_keys_digest",
+        ),
+        (
+            "NO ACTION",
+        ),
+    ) in _foreign_key_shapes(table)
