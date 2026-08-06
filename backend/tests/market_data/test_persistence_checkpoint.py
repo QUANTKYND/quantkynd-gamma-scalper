@@ -2416,6 +2416,85 @@ def test_lifecycle_batch_event_metadata_preserves_input_order() -> None:
         ),
     }
 
+def test_lifecycle_batch_observation_metadata_preserves_normalized_order() -> None:
+    table = Base.metadata.tables[
+        "provider_lifecycle_batch_observations"
+    ]
+
+    assert set(table.c.keys()) == {
+        "lifecycle_batch_id",
+        "lifecycle_kind",
+        "event_ordinal",
+        "event_id",
+    }
+    assert tuple(table.primary_key.columns.keys()) == (
+        "lifecycle_batch_id",
+        "event_ordinal",
+    )
+    assert "id" not in table.c
+    assert "created_at" not in table.c
+    assert isinstance(
+        table.c.event_ordinal.type,
+        Integer,
+    )
+
+    assert (
+        "lifecycle_batch_id",
+        "event_id",
+        "lifecycle_kind",
+    ) in _unique_column_shapes(table)
+
+    foreign_keys = _foreign_key_shapes(table)
+    assert (
+        (
+            "lifecycle_batch_id",
+            "lifecycle_kind",
+        ),
+        (
+            "provider_lifecycle_batches.lifecycle_batch_id",
+            "provider_lifecycle_batches.lifecycle_kind",
+        ),
+        (
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ) in foreign_keys
+    assert (
+        (
+            "event_id",
+            "lifecycle_kind",
+        ),
+        (
+            "provider_lifecycle_observations.event_id",
+            "provider_lifecycle_observations.lifecycle_kind",
+        ),
+        (
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ) in foreign_keys
+
+    check_names = {
+        constraint.name
+        for constraint in table.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    assert check_names == {
+        "ck_lifecycle_batch_observations_batch_sha256",
+        "ck_lifecycle_batch_observations_event_sha256",
+        "ck_lifecycle_batch_observations_kind",
+        "ck_lifecycle_batch_observations_event_ordinal",
+    }
+
+    assert _index_shapes(table) == {
+        "ix_lifecycle_batch_observations_event": (
+            "event_id",
+            "lifecycle_batch_id",
+            "event_ordinal",
+        ),
+    }
+
+
 def test_provider_lifecycle_observation_metadata_is_explicit_registry() -> None:
     table = Base.metadata.tables[
         "provider_lifecycle_observations"
@@ -2472,7 +2551,12 @@ def test_provider_lifecycle_observation_metadata_is_explicit_registry() -> None:
     unique_columns = _unique_column_shapes(table)
     assert (
         "event_id",
+        "lifecycle_kind",
+    ) in unique_columns
+    assert (
+        "event_id",
         "raw_event_id",
+        "lifecycle_kind",
     ) in unique_columns
     assert (
         "raw_event_id",

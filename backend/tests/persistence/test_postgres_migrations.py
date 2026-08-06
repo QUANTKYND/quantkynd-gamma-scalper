@@ -271,6 +271,21 @@ PROVIDER_SUBSCRIPTION_LIFECYCLE_OBSERVATION_INDEXES = {
     ),
 }
 
+PROVIDER_LIFECYCLE_BATCH_OBSERVATION_COLUMNS = {
+    "lifecycle_batch_id",
+    "lifecycle_kind",
+    "event_ordinal",
+    "event_id",
+}
+
+PROVIDER_LIFECYCLE_BATCH_OBSERVATION_INDEXES = {
+    "ix_lifecycle_batch_observations_event": (
+        "event_id",
+        "lifecycle_batch_id",
+        "event_ordinal",
+    ),
+}
+
 RAW_MARKET_FRAME_COLUMNS = {
     "raw_event_id",
     "provider",
@@ -1785,7 +1800,12 @@ async def _assert_head_schema(engine) -> None:
 
     assert (
         "event_id",
+        "lifecycle_kind",
+    ) in lifecycle_observations["unique_constraints"]
+    assert (
+        "event_id",
         "raw_event_id",
+        "lifecycle_kind",
     ) in lifecycle_observations["unique_constraints"]
     assert (
         "raw_event_id",
@@ -1911,6 +1931,65 @@ async def _assert_head_schema(engine) -> None:
     ):
         assert (
             subscription_observations["indexes"][
+                index_name
+            ]["columns"]
+            == expected_columns
+        )
+
+    batch_observations = details[
+        "provider_lifecycle_batch_observations"
+    ]
+
+    assert (
+        set(batch_observations["columns"])
+        == PROVIDER_LIFECYCLE_BATCH_OBSERVATION_COLUMNS
+    )
+    assert batch_observations["primary_key"] == (
+        "lifecycle_batch_id",
+        "event_ordinal",
+    )
+    assert isinstance(
+        batch_observations["columns"][
+            "event_ordinal"
+        ]["type"],
+        Integer,
+    )
+    assert (
+        "lifecycle_batch_id",
+        "event_id",
+        "lifecycle_kind",
+    ) in batch_observations["unique_constraints"]
+
+    _assert_foreign_key(
+        batch_observations,
+        (
+            "lifecycle_batch_id",
+            "lifecycle_kind",
+        ),
+        "provider_lifecycle_batches",
+        (
+            "lifecycle_batch_id",
+            "lifecycle_kind",
+        ),
+    )
+    _assert_foreign_key(
+        batch_observations,
+        (
+            "event_id",
+            "lifecycle_kind",
+        ),
+        "provider_lifecycle_observations",
+        (
+            "event_id",
+            "lifecycle_kind",
+        ),
+    )
+
+    for index_name, expected_columns in (
+        PROVIDER_LIFECYCLE_BATCH_OBSERVATION_INDEXES.items()
+    ):
+        assert (
+            batch_observations["indexes"][
                 index_name
             ]["columns"]
             == expected_columns
@@ -2152,6 +2231,12 @@ def _schema_details(connection) -> dict[str, object]:
                 "provider_subscription_lifecycle_observations",
             )
         ),
+        "provider_lifecycle_batch_observations": (
+            _table_details(
+                schema,
+                "provider_lifecycle_batch_observations",
+            )
+        ),
     }
 
 
@@ -2299,8 +2384,8 @@ async def test_provider_lifecycle_batch_checks_reject_invalid_roots(
 
             # Prove that the valid immediate row shape is accepted.
             # Roll back rather than committing an incomplete lifecycle
-            # aggregate; later slices will install deferred membership
-            # completeness checks.
+            # aggregate because deferred event and observation
+            # membership checks require the complete batch.
             async with engine.connect() as connection:
                 transaction = await connection.begin()
                 try:
@@ -3122,12 +3207,24 @@ async def test_lifecycle_batch_event_order_and_duplicate_integrity(
     membership_table = Base.metadata.tables[
         "provider_lifecycle_batch_events"
     ]
+    observation_table = Base.metadata.tables[
+        "provider_lifecycle_observations"
+    ]
+    connection_table = Base.metadata.tables[
+        "provider_connection_lifecycle_observations"
+    ]
+    batch_observation_table = Base.metadata.tables[
+        "provider_lifecycle_batch_observations"
+    ]
 
     async def insert_batch(
         connection,
         *,
         marker: str,
         memberships: list[dict[str, object]],
+        observation_memberships: (
+            list[dict[str, object]] | None
+        ) = None,
         **batch_overrides,
     ) -> None:
         batch = _lifecycle_batch_values(
@@ -3153,6 +3250,35 @@ async def test_lifecycle_batch_event_order_and_duplicate_integrity(
                         **membership,
                     }
                     for membership in memberships
+                ],
+            )
+
+        if observation_memberships is None:
+            observation_memberships = [
+                {
+                    "event_ordinal": 0,
+                    "event_id": observation_one["event_id"],
+                },
+                {
+                    "event_ordinal": 1,
+                    "event_id": observation_two["event_id"],
+                },
+            ][: batch["normalized_count"]]
+
+        if observation_memberships:
+            await connection.execute(
+                batch_observation_table.insert(),
+                [
+                    {
+                        "lifecycle_batch_id": (
+                            batch["lifecycle_batch_id"]
+                        ),
+                        "lifecycle_kind": (
+                            batch["lifecycle_kind"]
+                        ),
+                        **membership,
+                    }
+                    for membership in observation_memberships
                 ],
             )
 
@@ -3188,10 +3314,57 @@ async def test_lifecycle_batch_event_order_and_duplicate_integrity(
                 source_order=0,
             )
 
+            observation_one = (
+                _provider_lifecycle_observation_values(
+                    raw_event=raw_one,
+                    marker="e",
+                    event_type=(
+                        "provider_connection_"
+                        "lifecycle_observation"
+                    ),
+                    subject_id=raw_one[
+                        "connection_session_id"
+                    ],
+                )
+            )
+            observation_two = (
+                _provider_lifecycle_observation_values(
+                    raw_event=raw_two,
+                    marker="f",
+                    event_type=(
+                        "provider_connection_"
+                        "lifecycle_observation"
+                    ),
+                    subject_id=raw_two[
+                        "connection_session_id"
+                    ],
+                )
+            )
+
             async with engine.begin() as connection:
                 await connection.execute(
                     raw_table.insert(),
                     [raw_one, raw_two],
+                )
+                await connection.execute(
+                    observation_table.insert(),
+                    [observation_one, observation_two],
+                )
+                await connection.execute(
+                    connection_table.insert(),
+                    [
+                        _connection_lifecycle_observation_values(
+                            observation=observation_one,
+                            raw_event=raw_one,
+                        ),
+                        _connection_lifecycle_observation_values(
+                            observation=observation_two,
+                            raw_event=raw_two,
+                        ),
+                    ],
+                )
+                await connection.execute(
+                    text("SET CONSTRAINTS ALL IMMEDIATE")
                 )
 
             # Insert in reversed physical order. Logical replay remains
@@ -3945,3 +4118,378 @@ async def test_provider_lifecycle_observation_subtypes_and_set_binding(
     finally:
         await dispose_database_engine(engine)
 
+
+
+@pytest.mark.anyio
+async def test_lifecycle_batch_observation_order_and_membership_integrity(
+    postgres_url: str,
+    postgres_settings: DatabaseSettings,
+) -> None:
+    engine = create_database_engine(postgres_settings)
+    config = alembic_config(postgres_url)
+
+    batch_table = Base.metadata.tables[
+        "provider_lifecycle_batches"
+    ]
+    raw_table = Base.metadata.tables[
+        "raw_provider_lifecycle_events"
+    ]
+    batch_event_table = Base.metadata.tables[
+        "provider_lifecycle_batch_events"
+    ]
+    observation_table = Base.metadata.tables[
+        "provider_lifecycle_observations"
+    ]
+    connection_table = Base.metadata.tables[
+        "provider_connection_lifecycle_observations"
+    ]
+    batch_observation_table = Base.metadata.tables[
+        "provider_lifecycle_batch_observations"
+    ]
+
+    async def insert_batch(
+        connection,
+        *,
+        marker: str,
+        event_memberships: list[dict[str, object]],
+        observation_memberships: list[dict[str, object]],
+    ) -> dict[str, object]:
+        batch = _lifecycle_batch_values(marker=marker)
+
+        await connection.execute(
+            batch_table.insert().values(**batch)
+        )
+        await connection.execute(
+            batch_event_table.insert(),
+            [
+                {
+                    "lifecycle_batch_id": (
+                        batch["lifecycle_batch_id"]
+                    ),
+                    "lifecycle_kind": (
+                        batch["lifecycle_kind"]
+                    ),
+                    **membership,
+                }
+                for membership in event_memberships
+            ],
+        )
+        await connection.execute(
+            batch_observation_table.insert(),
+            [
+                {
+                    "lifecycle_batch_id": (
+                        batch["lifecycle_batch_id"]
+                    ),
+                    "lifecycle_kind": (
+                        batch["lifecycle_kind"]
+                    ),
+                    **membership,
+                }
+                for membership in observation_memberships
+            ],
+        )
+        await connection.execute(
+            text("SET CONSTRAINTS ALL IMMEDIATE")
+        )
+        return batch
+
+    try:
+        async with destructive_database_lease(
+            engine,
+            postgres_url,
+            postgres_settings,
+            DestructiveDatabasePurpose.INTEGRATION,
+        ) as lease:
+            await lease.drop_and_recreate_public()
+            await asyncio.to_thread(
+                command.upgrade,
+                config,
+                "head",
+            )
+
+            raw_one = _raw_connection_lifecycle_values(
+                marker="1",
+                connection_session_id="batch-observation-session-1",
+                source_order_scope_id="batch-observation-scope-1",
+                source_order=0,
+            )
+            raw_two = _raw_connection_lifecycle_values(
+                marker="2",
+                connection_session_id="batch-observation-session-2",
+                source_order_scope_id="batch-observation-scope-2",
+                source_order=0,
+            )
+            raw_outside = _raw_connection_lifecycle_values(
+                marker="3",
+                connection_session_id="batch-observation-session-3",
+                source_order_scope_id="batch-observation-scope-3",
+                source_order=0,
+            )
+
+            observation_one = _provider_lifecycle_observation_values(
+                raw_event=raw_one,
+                marker="4",
+                event_type=(
+                    "provider_connection_lifecycle_observation"
+                ),
+                subject_id=raw_one["connection_session_id"],
+            )
+            observation_two = _provider_lifecycle_observation_values(
+                raw_event=raw_two,
+                marker="5",
+                event_type=(
+                    "provider_connection_lifecycle_observation"
+                ),
+                subject_id=raw_two["connection_session_id"],
+            )
+            observation_outside = (
+                _provider_lifecycle_observation_values(
+                    raw_event=raw_outside,
+                    marker="6",
+                    event_type=(
+                        "provider_connection_"
+                        "lifecycle_observation"
+                    ),
+                    subject_id=(
+                        raw_outside["connection_session_id"]
+                    ),
+                )
+            )
+
+            async with engine.begin() as connection:
+                await connection.execute(
+                    raw_table.insert(),
+                    [
+                        raw_one,
+                        raw_two,
+                        raw_outside,
+                    ],
+                )
+                await connection.execute(
+                    observation_table.insert(),
+                    [
+                        observation_one,
+                        observation_two,
+                        observation_outside,
+                    ],
+                )
+                await connection.execute(
+                    connection_table.insert(),
+                    [
+                        _connection_lifecycle_observation_values(
+                            observation=observation_one,
+                            raw_event=raw_one,
+                        ),
+                        _connection_lifecycle_observation_values(
+                            observation=observation_two,
+                            raw_event=raw_two,
+                        ),
+                        _connection_lifecycle_observation_values(
+                            observation=observation_outside,
+                            raw_event=raw_outside,
+                        ),
+                    ],
+                )
+                await connection.execute(
+                    text("SET CONSTRAINTS ALL IMMEDIATE")
+                )
+
+            valid_event_memberships = [
+                {
+                    "input_ordinal": 2,
+                    "raw_event_id": raw_one["raw_event_id"],
+                    "is_exact_duplicate": True,
+                    "first_occurrence_ordinal": 0,
+                },
+                {
+                    "input_ordinal": 1,
+                    "raw_event_id": raw_two["raw_event_id"],
+                    "is_exact_duplicate": False,
+                    "first_occurrence_ordinal": 1,
+                },
+                {
+                    "input_ordinal": 0,
+                    "raw_event_id": raw_one["raw_event_id"],
+                    "is_exact_duplicate": False,
+                    "first_occurrence_ordinal": 0,
+                },
+            ]
+            valid_observation_memberships = [
+                {
+                    "event_ordinal": 1,
+                    "event_id": observation_two["event_id"],
+                },
+                {
+                    "event_ordinal": 0,
+                    "event_id": observation_one["event_id"],
+                },
+            ]
+
+            async with engine.begin() as connection:
+                valid_batch = await insert_batch(
+                    connection,
+                    marker="7",
+                    event_memberships=valid_event_memberships,
+                    observation_memberships=(
+                        valid_observation_memberships
+                    ),
+                )
+
+            async with engine.connect() as connection:
+                stored = (
+                    await connection.execute(
+                        text(
+                            "SELECT event_ordinal, event_id "
+                            "FROM provider_lifecycle_batch_observations "
+                            "WHERE lifecycle_batch_id = :batch_id "
+                            "ORDER BY event_ordinal"
+                        ),
+                        {
+                            "batch_id": (
+                                valid_batch["lifecycle_batch_id"]
+                            )
+                        },
+                    )
+                ).mappings().all()
+
+            assert [
+                row["event_ordinal"]
+                for row in stored
+            ] == [0, 1]
+            assert [
+                row["event_id"]
+                for row in stored
+            ] == [
+                observation_one["event_id"],
+                observation_two["event_id"],
+            ]
+
+            with pytest.raises(
+                DBAPIError,
+                match="observation count mismatch",
+            ):
+                async with engine.begin() as connection:
+                    await insert_batch(
+                        connection,
+                        marker="8",
+                        event_memberships=(
+                            valid_event_memberships
+                        ),
+                        observation_memberships=[
+                            {
+                                "event_ordinal": 0,
+                                "event_id": (
+                                    observation_one["event_id"]
+                                ),
+                            },
+                        ],
+                    )
+
+            with pytest.raises(
+                DBAPIError,
+                match="normalized order mismatch",
+            ):
+                async with engine.begin() as connection:
+                    await insert_batch(
+                        connection,
+                        marker="9",
+                        event_memberships=(
+                            valid_event_memberships
+                        ),
+                        observation_memberships=[
+                            {
+                                "event_ordinal": 0,
+                                "event_id": (
+                                    observation_two["event_id"]
+                                ),
+                            },
+                            {
+                                "event_ordinal": 1,
+                                "event_id": (
+                                    observation_one["event_id"]
+                                ),
+                            },
+                        ],
+                    )
+
+            with pytest.raises(
+                DBAPIError,
+                match="normalized order mismatch",
+            ):
+                async with engine.begin() as connection:
+                    await insert_batch(
+                        connection,
+                        marker="a",
+                        event_memberships=(
+                            valid_event_memberships
+                        ),
+                        observation_memberships=[
+                            {
+                                "event_ordinal": 0,
+                                "event_id": (
+                                    observation_one["event_id"]
+                                ),
+                            },
+                            {
+                                "event_ordinal": 1,
+                                "event_id": (
+                                    observation_outside["event_id"]
+                                ),
+                            },
+                        ],
+                    )
+
+            with pytest.raises(
+                DBAPIError,
+                match="exceeds declared normalized count",
+            ):
+                async with engine.begin() as connection:
+                    await insert_batch(
+                        connection,
+                        marker="b",
+                        event_memberships=(
+                            valid_event_memberships
+                        ),
+                        observation_memberships=[
+                            {
+                                "event_ordinal": 0,
+                                "event_id": (
+                                    observation_one["event_id"]
+                                ),
+                            },
+                            {
+                                "event_ordinal": 2,
+                                "event_id": (
+                                    observation_two["event_id"]
+                                ),
+                            },
+                        ],
+                    )
+
+            with pytest.raises(IntegrityError):
+                async with engine.begin() as connection:
+                    await insert_batch(
+                        connection,
+                        marker="c",
+                        event_memberships=(
+                            valid_event_memberships
+                        ),
+                        observation_memberships=[
+                            {
+                                "event_ordinal": 0,
+                                "event_id": (
+                                    observation_one["event_id"]
+                                ),
+                                "lifecycle_kind": "subscription",
+                            },
+                            {
+                                "event_ordinal": 1,
+                                "event_id": (
+                                    observation_two["event_id"]
+                                ),
+                            },
+                        ],
+                    )
+    finally:
+        await dispose_database_engine(engine)

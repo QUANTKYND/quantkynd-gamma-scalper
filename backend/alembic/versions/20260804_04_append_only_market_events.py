@@ -2764,8 +2764,14 @@ def _create_provider_lifecycle_observations() -> None:
         ),
         sa.UniqueConstraint(
             "event_id",
+            "lifecycle_kind",
+            name="uq_provider_lifecycle_observations_event_kind",
+        ),
+        sa.UniqueConstraint(
+            "event_id",
             "raw_event_id",
-            name="uq_provider_lifecycle_observations_event_raw",
+            "lifecycle_kind",
+            name="uq_provider_lifecycle_observations_event_raw_kind",
         ),
         sa.UniqueConstraint(
             "raw_event_id",
@@ -3330,6 +3336,267 @@ def _create_provider_subscription_lifecycle_observations() -> None:
     )
 
 
+def _create_provider_lifecycle_batch_observations() -> None:
+    op.create_table(
+        "provider_lifecycle_batch_observations",
+        sa.Column(
+            "lifecycle_batch_id",
+            sa.String(ID),
+            nullable=False,
+        ),
+        sa.Column(
+            "lifecycle_kind",
+            sa.String(32),
+            nullable=False,
+        ),
+        sa.Column(
+            "event_ordinal",
+            sa.Integer(),
+            nullable=False,
+        ),
+        sa.Column(
+            "event_id",
+            sa.String(ID),
+            nullable=False,
+        ),
+        sa.PrimaryKeyConstraint(
+            "lifecycle_batch_id",
+            "event_ordinal",
+            name="pk_provider_lifecycle_batch_observations",
+        ),
+        sa.UniqueConstraint(
+            "lifecycle_batch_id",
+            "event_id",
+            "lifecycle_kind",
+            name="uq_lifecycle_batch_observations_membership",
+        ),
+        sa.ForeignKeyConstraint(
+            [
+                "lifecycle_batch_id",
+                "lifecycle_kind",
+            ],
+            [
+                "provider_lifecycle_batches.lifecycle_batch_id",
+                "provider_lifecycle_batches.lifecycle_kind",
+            ],
+            ondelete="NO ACTION",
+            onupdate="NO ACTION",
+            name="fk_lifecycle_batch_observations_batch",
+        ),
+        sa.ForeignKeyConstraint(
+            [
+                "event_id",
+                "lifecycle_kind",
+            ],
+            [
+                "provider_lifecycle_observations.event_id",
+                "provider_lifecycle_observations.lifecycle_kind",
+            ],
+            ondelete="NO ACTION",
+            onupdate="NO ACTION",
+            name="fk_lifecycle_batch_observations_event",
+        ),
+        sa.CheckConstraint(
+            "lifecycle_batch_id ~ '^sha256:[0-9a-f]{64}$'",
+            name="lifecycle_batch_observations_batch_sha256",
+        ),
+        sa.CheckConstraint(
+            "event_id ~ '^sha256:[0-9a-f]{64}$'",
+            name="lifecycle_batch_observations_event_sha256",
+        ),
+        sa.CheckConstraint(
+            "lifecycle_kind IN ('connection', 'subscription')",
+            name="lifecycle_batch_observations_kind",
+        ),
+        sa.CheckConstraint(
+            "event_ordinal BETWEEN 0 AND 9999",
+            name="lifecycle_batch_observations_event_ordinal",
+        ),
+    )
+
+    op.create_index(
+        "ix_lifecycle_batch_observations_event",
+        "provider_lifecycle_batch_observations",
+        (
+            "event_id",
+            "lifecycle_batch_id",
+            "event_ordinal",
+        ),
+    )
+
+    # Parent existence and kind equality remain owned by the
+    # composite foreign keys. This trigger only applies the owning
+    # batch's declared normalized-count bound.
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION
+        data14_validate_lifecycle_batch_observation_ordinal()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        DECLARE
+            declared_normalized_count integer;
+        BEGIN
+            SELECT normalized_count
+            INTO declared_normalized_count
+            FROM provider_lifecycle_batches
+            WHERE lifecycle_batch_id =
+                NEW.lifecycle_batch_id
+              AND lifecycle_kind =
+                NEW.lifecycle_kind;
+
+            IF declared_normalized_count IS NULL THEN
+                RETURN NEW;
+            END IF;
+
+            IF NEW.event_ordinal
+               >= declared_normalized_count THEN
+                RAISE EXCEPTION
+                    'lifecycle batch observation ordinal % '
+                    'exceeds declared normalized count % for %',
+                    NEW.event_ordinal,
+                    declared_normalized_count,
+                    NEW.lifecycle_batch_id;
+            END IF;
+
+            RETURN NEW;
+        END;
+        $$
+        """
+    )
+
+    op.execute(
+        """
+        CREATE TRIGGER
+        data14_lifecycle_batch_observation_ordinal
+        BEFORE INSERT
+        ON provider_lifecycle_batch_observations
+        FOR EACH ROW
+        EXECUTE FUNCTION
+        data14_validate_lifecycle_batch_observation_ordinal()
+        """
+    )
+
+    # The root batch is inserted before its raw, normalized and
+    # membership rows. Commit-time validation therefore sees the
+    # complete aggregate and proves both contiguous normalized
+    # ordinals and unique first-capture order.
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION
+        data14_validate_lifecycle_batch_observations()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        DECLARE
+            declared_normalized_count integer;
+            actual_count bigint;
+            minimum_ordinal integer;
+            maximum_ordinal integer;
+            invalid_normalized_order boolean;
+        BEGIN
+            SELECT normalized_count
+            INTO declared_normalized_count
+            FROM provider_lifecycle_batches
+            WHERE lifecycle_batch_id =
+                NEW.lifecycle_batch_id;
+
+            SELECT
+                count(*),
+                min(event_ordinal),
+                max(event_ordinal)
+            INTO
+                actual_count,
+                minimum_ordinal,
+                maximum_ordinal
+            FROM provider_lifecycle_batch_observations
+            WHERE lifecycle_batch_id =
+                NEW.lifecycle_batch_id;
+
+            IF actual_count
+               <> declared_normalized_count THEN
+                RAISE EXCEPTION
+                    'lifecycle batch observation count mismatch '
+                    'for %: declared %, stored %',
+                    NEW.lifecycle_batch_id,
+                    declared_normalized_count,
+                    actual_count;
+            END IF;
+
+            IF declared_normalized_count > 0
+               AND (
+                   minimum_ordinal <> 0
+                   OR maximum_ordinal
+                      <> declared_normalized_count - 1
+               ) THEN
+                RAISE EXCEPTION
+                    'lifecycle batch observation ordinals are not '
+                    'contiguous for %',
+                    NEW.lifecycle_batch_id;
+            END IF;
+
+            WITH expected AS (
+                SELECT
+                    membership.raw_event_id,
+                    (
+                        row_number() OVER (
+                            ORDER BY membership.input_ordinal
+                        ) - 1
+                    )::integer AS event_ordinal
+                FROM provider_lifecycle_batch_events membership
+                WHERE membership.lifecycle_batch_id =
+                      NEW.lifecycle_batch_id
+                  AND NOT membership.is_exact_duplicate
+            ),
+            actual AS (
+                SELECT
+                    membership.event_ordinal,
+                    observation.raw_event_id
+                FROM provider_lifecycle_batch_observations membership
+                JOIN provider_lifecycle_observations observation
+                  ON observation.event_id = membership.event_id
+                 AND observation.lifecycle_kind =
+                     membership.lifecycle_kind
+                WHERE membership.lifecycle_batch_id =
+                      NEW.lifecycle_batch_id
+            )
+            SELECT EXISTS (
+                SELECT 1
+                FROM expected
+                FULL OUTER JOIN actual
+                  USING (event_ordinal)
+                WHERE expected.raw_event_id
+                      IS DISTINCT FROM actual.raw_event_id
+            )
+            INTO invalid_normalized_order;
+
+            IF invalid_normalized_order THEN
+                RAISE EXCEPTION
+                    'lifecycle batch normalized order mismatch '
+                    'for %',
+                    NEW.lifecycle_batch_id;
+            END IF;
+
+            RETURN NULL;
+        END;
+        $$
+        """
+    )
+
+    op.execute(
+        """
+        CREATE CONSTRAINT TRIGGER
+        data14_lifecycle_batch_observations_integrity
+        AFTER INSERT
+        ON provider_lifecycle_batches
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW
+        EXECUTE FUNCTION
+        data14_validate_lifecycle_batch_observations()
+        """
+    )
+
+
 def _create_provider_lifecycle_observation_integrity() -> None:
     # A normalized lifecycle observation root must have exactly one
     # typed subtype by commit. The root is inserted first, so this
@@ -3409,6 +3676,7 @@ def upgrade() -> None:
     _create_provider_connection_lifecycle_observations()
     _create_provider_subscription_lifecycle_observations()
     _create_provider_lifecycle_observation_integrity()
+    _create_provider_lifecycle_batch_observations()
 
     for name in TABLES:
         if name in {
@@ -3420,6 +3688,7 @@ def upgrade() -> None:
             "provider_lifecycle_observations",
             "provider_connection_lifecycle_observations",
             "provider_subscription_lifecycle_observations",
+            "provider_lifecycle_batch_observations",
         }:
             continue
 
@@ -3509,25 +3778,8 @@ def upgrade() -> None:
             _create_market_segment_status_observations()
             continue
 
-        columns = [
-            sa.Column(
-                "id",
-                sa.String(ID),
-                primary_key=True,
-            ),
-            sa.Column(
-                "created_at",
-                sa.DateTime(timezone=True),
-                nullable=False,
-            ),
-        ]
-
-        op.create_table(name, *columns)
-
-        op.create_check_constraint(
-            f"ck_{name}_append_created",
-            name,
-            "id <> ''",
+        raise RuntimeError(
+            f"unhandled DATA-1.4 table: {name}"
         )
 
     op.execute(

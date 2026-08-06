@@ -2030,8 +2030,14 @@ PROVIDER_LIFECYCLE_OBSERVATIONS_TABLE = Table(
     ),
     UniqueConstraint(
         "event_id",
+        "lifecycle_kind",
+        name="uq_provider_lifecycle_observations_event_kind",
+    ),
+    UniqueConstraint(
+        "event_id",
         "raw_event_id",
-        name="uq_provider_lifecycle_observations_event_raw",
+        "lifecycle_kind",
+        name="uq_provider_lifecycle_observations_event_raw_kind",
     ),
     UniqueConstraint(
         "raw_event_id",
@@ -2518,25 +2524,89 @@ PROVIDER_SUBSCRIPTION_LIFECYCLE_OBSERVATIONS_TABLE = Table(
 )
 
 
-DATA14_REMAINING_PLACEHOLDER_TABLES = (
+PROVIDER_LIFECYCLE_BATCH_OBSERVATIONS_TABLE = Table(
     "provider_lifecycle_batch_observations",
+    Base.metadata,
+    Column(
+        "lifecycle_batch_id",
+        String(ID_LENGTH),
+        nullable=False,
+    ),
+    Column(
+        "lifecycle_kind",
+        String(32),
+        nullable=False,
+    ),
+    Column(
+        "event_ordinal",
+        Integer,
+        nullable=False,
+    ),
+    Column(
+        "event_id",
+        String(ID_LENGTH),
+        nullable=False,
+    ),
+    PrimaryKeyConstraint(
+        "lifecycle_batch_id",
+        "event_ordinal",
+        name="pk_provider_lifecycle_batch_observations",
+    ),
+    UniqueConstraint(
+        "lifecycle_batch_id",
+        "event_id",
+        "lifecycle_kind",
+        name="uq_lifecycle_batch_observations_membership",
+    ),
+    ForeignKeyConstraint(
+        [
+            "lifecycle_batch_id",
+            "lifecycle_kind",
+        ],
+        [
+            "provider_lifecycle_batches.lifecycle_batch_id",
+            "provider_lifecycle_batches.lifecycle_kind",
+        ],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_lifecycle_batch_observations_batch",
+    ),
+    ForeignKeyConstraint(
+        [
+            "event_id",
+            "lifecycle_kind",
+        ],
+        [
+            "provider_lifecycle_observations.event_id",
+            "provider_lifecycle_observations.lifecycle_kind",
+        ],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_lifecycle_batch_observations_event",
+    ),
+    CheckConstraint(
+        "lifecycle_batch_id ~ '^sha256:[0-9a-f]{64}$'",
+        name="lifecycle_batch_observations_batch_sha256",
+    ),
+    CheckConstraint(
+        "event_id ~ '^sha256:[0-9a-f]{64}$'",
+        name="lifecycle_batch_observations_event_sha256",
+    ),
+    CheckConstraint(
+        "lifecycle_kind IN ('connection', 'subscription')",
+        name="lifecycle_batch_observations_kind",
+    ),
+    CheckConstraint(
+        "event_ordinal BETWEEN 0 AND 9999",
+        name="lifecycle_batch_observations_event_ordinal",
+    ),
+    Index(
+        "ix_lifecycle_batch_observations_event",
+        "event_id",
+        "lifecycle_batch_id",
+        "event_ordinal",
+    ),
 )
-
-for _data14_table in DATA14_REMAINING_PLACEHOLDER_TABLES:
-    Table(
-        _data14_table,
-        Base.metadata,
-        Column(
-            "id",
-            String(ID_LENGTH),
-            primary_key=True,
-        ),
-        Column(
-            "created_at",
-            DateTime(timezone=True),
-            nullable=False,
-        ),
-    )
 
 
 def _temporal_record_constraints(
