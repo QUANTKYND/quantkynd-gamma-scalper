@@ -23,7 +23,10 @@ from app.market_data.persistence.contracts import (
     QueryCursor,
 )
 from app.market_data.persistence.errors import (
+    CatalogueProvenanceConflictError,
     MarketEventDurableCorruptionError,
+    MarketEventReferentialIntegrityError,
+    PersistenceTimeBindingError,
 )
 from app.market_data.persistence.planner import (
     derive_lock_stripes,
@@ -34,6 +37,7 @@ from app.persistence.postgres.base import Base
 from app.persistence.postgres.repositories import (
     EVENT_MEMBERSHIP_IMMUTABLE_FIELDS,
     FAILURE_MEMBERSHIP_IMMUTABLE_FIELDS,
+    OBSERVATION_IMMUTABLE_FIELDS,
     QUOTE_SUBTYPE_IMMUTABLE_FIELDS,
     STATUS_SUBTYPE_IMMUTABLE_FIELDS,
     PostgresMarketEventRepository,
@@ -84,6 +88,57 @@ class _RecordingSession:
         ]
 
 
+class _AggregateResult:
+    def __init__(self, rows):
+        self._rows = list(rows)
+
+    def all(self):
+        return list(self._rows)
+
+
+class _AggregateSession:
+    def __init__(self, event_row):
+        self.event_row = event_row
+
+    async def execute(self, statement, parameters):
+        sql = str(statement)
+        if "FROM market_normalization_result_events AS m" in sql:
+            return _AggregateResult([self.event_row])
+        if "FROM market_normalization_result_failures AS m" in sql:
+            return _AggregateResult([])
+        raise AssertionError(f"unexpected aggregate query: {sql}")
+
+
+class _AggregateRepository(PostgresMarketEventRepository):
+    def __init__(self, session, result, raw_frame, subtype):
+        super().__init__(session, require_active=lambda: None)
+        self._result = result
+        self._raw_frame = raw_frame
+        self._subtype = subtype
+
+    async def get_result(
+        self,
+        raw_event_id,
+        normalization_schema_version,
+    ):
+        return self._result
+
+    async def get_raw_frame(self, raw_event_id):
+        return self._raw_frame
+
+    async def _fetch_existing_rows(
+        self,
+        table,
+        key_name,
+        identifiers,
+        fields,
+    ):
+        assert table == "option_quote_observations"
+        assert key_name == "event_id"
+        assert identifiers == (self._subtype["event_id"],)
+        return {self._subtype["event_id"]: self._subtype}
+
+
 class _DuplicateDurableKeySession(
     _RecordingSession
 ):
@@ -110,6 +165,74 @@ class _DuplicateDurableKeySession(
             )
 
         return rows
+
+
+@pytest.mark.anyio
+async def test_load_result_aggregate_returns_complete_typed_frame() -> None:
+    raw_event_id = "sha256:" + "1" * 64
+    result_id = "sha256:" + "2" * 64
+    event_id = "sha256:" + "3" * 64
+    mapping_record_id = "sha256:" + "4" * 64
+    version_record_id = "sha256:" + "5" * 64
+    catalogue_record_id = "sha256:" + "6" * 64
+
+    result = SimpleNamespace(
+        result_id=result_id,
+        raw_event_id=raw_event_id,
+        accepted_entry_count=1,
+        failed_entry_count=0,
+        frame_failure_present=False,
+    )
+    raw_frame = SimpleNamespace(raw_event_id=raw_event_id)
+    event_row = _FakeRow(
+        {
+            "event_ordinal": 0,
+            "event_id": event_id,
+            "event_type": "option_quote_observation",
+            "provider_mapping_record_id": mapping_record_id,
+            "contract_version_record_id": version_record_id,
+            "catalogue_version_record_id": catalogue_record_id,
+        }
+    )
+    subtype = {
+        field: None
+        for field in QUOTE_SUBTYPE_IMMUTABLE_FIELDS
+    }
+    subtype.update(
+        {
+            "event_id": event_id,
+            "event_type": "option_quote_observation",
+            "subject_id": "sha256:" + "7" * 64,
+        }
+    )
+    repository = _AggregateRepository(
+        _AggregateSession(event_row),
+        result,
+        raw_frame,
+        subtype,
+    )
+
+    aggregate = await repository.load_result_aggregate(
+        raw_event_id,
+        1,
+    )
+
+    assert aggregate["raw_frame"] is raw_frame
+    assert aggregate["result"] is result
+    assert aggregate["events"][0][
+        "provider_mapping_record_id"
+    ] == mapping_record_id
+    assert aggregate["events"][0][
+        "contract_version_record_id"
+    ] == version_record_id
+    assert aggregate["events"][0][
+        "catalogue_version_record_id"
+    ] == catalogue_record_id
+    assert aggregate["subtypes"][0]["table"] == (
+        "option_quote_observations"
+    )
+    assert aggregate["subtypes"][0]["event_id"] == event_id
+    assert aggregate["failures"] == ()
 
 
 def test_data14_namespace_derivation() -> None:
@@ -742,6 +865,39 @@ def test_market_observations_metadata_is_explicit_registry() -> None:
         ("raw_market_frames.raw_event_id",),
         ("NO ACTION",),
     ) in foreign_keys
+    assert (
+        (
+            "provider_mapping_record_id",
+            "provider_mapping_id",
+        ),
+        (
+            "provider_mapping_records.record_id",
+            "provider_mapping_records.mapping_id",
+        ),
+        ("NO ACTION", "NO ACTION"),
+    ) in foreign_keys
+    assert (
+        (
+            "contract_version_record_id",
+            "contract_version_id",
+        ),
+        (
+            "instrument_version_records.record_id",
+            "instrument_version_records.version_id",
+        ),
+        ("NO ACTION", "NO ACTION"),
+    ) in foreign_keys
+    assert (
+        (
+            "catalogue_version_record_id",
+            "catalogue_version_id",
+        ),
+        (
+            "catalogue_version_records.record_id",
+            "catalogue_version_records.catalogue_version_id",
+        ),
+        ("NO ACTION", "NO ACTION"),
+    ) in foreign_keys
 
     assert _index_shapes(table) == {
         "ix_market_observations_subject_provider_time": (
@@ -769,7 +925,217 @@ def test_market_observations_metadata_is_explicit_registry() -> None:
             "catalogue_version_id",
             "event_id",
         ),
+        "ix_market_observations_temporal_provenance": (
+            "provider_mapping_record_id",
+            "contract_version_record_id",
+            "catalogue_version_record_id",
+            "event_id",
+        ),
     }
+
+
+def test_temporal_record_targets_expose_composite_identity() -> None:
+    expected = {
+        "provider_mapping_records": "mapping_id",
+        "instrument_version_records": "version_id",
+        "catalogue_version_records": "catalogue_version_id",
+    }
+
+    for table_name, semantic_column in expected.items():
+        table = Base.metadata.tables[table_name]
+        assert (
+            "record_id",
+            semantic_column,
+        ) in _unique_column_shapes(table)
+
+
+def _provenance_binding_fixture():
+    when = datetime(2026, 8, 5, 9, 15, tzinfo=UTC)
+    mapping_id = "sha256:" + "1" * 64
+    version_id = "sha256:" + "2" * 64
+    catalogue_id = "sha256:" + "3" * 64
+    subject_id = "sha256:" + "4" * 64
+
+    mapping = SimpleNamespace(
+        mapping_id=mapping_id,
+        provider="upstox",
+        provider_contract_key="NSE_FO|fixture",
+        contract_version_id=version_id,
+        effective_at=lambda market_as_of, known_as_of: True,
+    )
+    version = SimpleNamespace(
+        version_id=version_id,
+        catalogue_version_id=catalogue_id,
+        effective_at=lambda market_as_of, known_as_of: True,
+    )
+    catalogue = SimpleNamespace(
+        provider="upstox",
+        catalogue_version_id=catalogue_id,
+        visible_at=lambda market_as_of, known_as_of: True,
+    )
+    subject = SimpleNamespace(
+        resolution_market_as_of=when,
+        resolution_known_as_of=when,
+        provider_mapping=mapping,
+        contract_version=version,
+    )
+    event = SimpleNamespace(
+        provider="upstox",
+        provider_contract_key="NSE_FO|fixture",
+        provider_mapping_id=mapping_id,
+        contract_version_id=version_id,
+        economic_subject_id=subject_id,
+        subject=subject,
+    )
+    command = SimpleNamespace(
+        market_as_of=when,
+        known_as_of=when,
+    )
+    mapping_state = SimpleNamespace(
+        value=mapping,
+        record=SimpleNamespace(
+            record_id="sha256:" + "5" * 64
+        ),
+    )
+    version_state = SimpleNamespace(
+        value=version,
+        record=SimpleNamespace(
+            record_id="sha256:" + "6" * 64
+        ),
+    )
+    catalogue_state = SimpleNamespace(
+        value=catalogue,
+        record=SimpleNamespace(
+            record_id="sha256:" + "7" * 64
+        ),
+    )
+    return (
+        event,
+        command,
+        mapping_state,
+        subject_id,
+        version_state,
+        catalogue_state,
+    )
+
+
+def test_quote_provenance_binding_returns_exact_record_ids() -> None:
+    (
+        event,
+        command,
+        mapping_state,
+        mapping_instrument_id,
+        version_state,
+        catalogue_state,
+    ) = _provenance_binding_fixture()
+
+    values = (
+        PostgresMarketEventRepository
+        ._bind_resolved_quote_provenance(
+            event,
+            command,
+            mapping_state,
+            mapping_instrument_id,
+            version_state,
+            catalogue_state,
+        )
+    )
+
+    assert values == {
+        "provider_mapping_record_id": (
+            mapping_state.record.record_id
+        ),
+        "contract_version_record_id": (
+            version_state.record.record_id
+        ),
+        "catalogue_version_record_id": (
+            catalogue_state.record.record_id
+        ),
+    }
+    assert all(
+        field in OBSERVATION_IMMUTABLE_FIELDS
+        for field in values
+    )
+
+
+def test_quote_provenance_binding_rejects_time_mismatch() -> None:
+    (
+        event,
+        command,
+        mapping_state,
+        mapping_instrument_id,
+        version_state,
+        catalogue_state,
+    ) = _provenance_binding_fixture()
+    event.subject.resolution_known_as_of = datetime(
+        2026,
+        8,
+        5,
+        9,
+        16,
+        tzinfo=UTC,
+    )
+
+    with pytest.raises(PersistenceTimeBindingError):
+        (
+            PostgresMarketEventRepository
+            ._bind_resolved_quote_provenance(
+                event,
+                command,
+                mapping_state,
+                mapping_instrument_id,
+                version_state,
+                catalogue_state,
+            )
+        )
+
+
+def test_quote_provenance_binding_rejects_cross_link() -> None:
+    (
+        event,
+        command,
+        mapping_state,
+        mapping_instrument_id,
+        version_state,
+        catalogue_state,
+    ) = _provenance_binding_fixture()
+
+    with pytest.raises(CatalogueProvenanceConflictError):
+        (
+            PostgresMarketEventRepository
+            ._bind_resolved_quote_provenance(
+                event,
+                command,
+                mapping_state,
+                "sha256:" + "8" * 64,
+                version_state,
+                catalogue_state,
+            )
+        )
+
+
+def test_quote_provenance_binding_rejects_missing_record() -> None:
+    (
+        event,
+        command,
+        mapping_state,
+        mapping_instrument_id,
+        version_state,
+        catalogue_state,
+    ) = _provenance_binding_fixture()
+
+    with pytest.raises(MarketEventReferentialIntegrityError):
+        (
+            PostgresMarketEventRepository
+            ._bind_resolved_quote_provenance(
+                event,
+                command,
+                None,
+                mapping_instrument_id,
+                version_state,
+                catalogue_state,
+            )
+        )
 
 
 def test_result_event_membership_metadata_preserves_order() -> None:

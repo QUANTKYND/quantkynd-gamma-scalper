@@ -26,7 +26,10 @@ from app.instruments.ports import (
     SemanticCollisionError,
 )
 from app.market_data.persistence.errors import (
+    CatalogueProvenanceConflictError,
     MarketEventDurableCorruptionError,
+    MarketEventReferentialIntegrityError,
+    PersistenceTimeBindingError,
 )
 from app.market_data.persistence.planner import (
     plan_parameter_chunks,
@@ -577,11 +580,19 @@ class PostgresMarketEventRepository:
                 )
             result_inserted = False
 
+        provenance_by_event_id = (
+            await self._resolve_quote_provenance(
+                result.accepted_events,
+                command,
+            )
+        )
+
         event_values = [
             self._observation_values(
                 event,
                 raw,
                 canonical_json,
+                provenance_by_event_id.get(event.event_id),
             )
             for event in result.accepted_events
         ]
@@ -874,16 +885,556 @@ class PostgresMarketEventRepository:
             ),
         )
 
+    async def _resolve_quote_provenance(
+        self,
+        events,
+        command,
+    ) -> dict[str, dict[str, str]]:
+        quote_events = tuple(
+            event
+            for event in events
+            if hasattr(event, "event_time")
+        )
+        if not quote_events:
+            return {}
+
+        for event in quote_events:
+            if (
+                event.subject.resolution_market_as_of
+                != command.market_as_of
+                or event.subject.resolution_known_as_of
+                != command.known_as_of
+            ):
+                raise PersistenceTimeBindingError(
+                    "quote provenance cutoffs differ from "
+                    "the frame persistence command"
+                )
+
+        version_states_by_scope = (
+            await self._load_version_states_by_scope(
+                tuple(
+                    sorted(
+                        {
+                            event.economic_subject_id
+                            for event in quote_events
+                        }
+                    )
+                ),
+                command.known_as_of,
+            )
+        )
+        resolved_versions = {
+            scope_id: self._resolve_temporal_state_or_fail(
+                states,
+                command.known_as_of,
+                lambda value: value.effective_at(
+                    command.market_as_of,
+                    command.known_as_of,
+                ),
+                "instrument version",
+            )
+            for scope_id, states in version_states_by_scope.items()
+        }
+
+        catalogue_states_by_provider = (
+            await self._load_catalogue_states_by_provider(
+                tuple(
+                    sorted(
+                        {
+                            event.provider
+                            for event in quote_events
+                        }
+                    )
+                ),
+                command.known_as_of,
+            )
+        )
+        resolved_catalogues = {
+            provider: self._resolve_temporal_state_or_fail(
+                states,
+                command.known_as_of,
+                lambda value: value.visible_at(
+                    command.market_as_of,
+                    command.known_as_of,
+                ),
+                "catalogue version",
+            )
+            for provider, states
+            in catalogue_states_by_provider.items()
+        }
+
+        (
+            mapping_states_by_key,
+            mapping_instrument_by_semantic,
+        ) = await self._load_mapping_states_by_key(
+            tuple(
+                sorted(
+                    {
+                        (
+                            event.provider,
+                            event.provider_contract_key,
+                        )
+                        for event in quote_events
+                    }
+                )
+            ),
+            command.known_as_of,
+        )
+
+        resolved_mappings = {}
+        for provider_key, states in (
+            mapping_states_by_key.items()
+        ):
+            def eligible(value) -> bool:
+                instrument_id = (
+                    mapping_instrument_by_semantic.get(
+                        value.mapping_id
+                    )
+                )
+                version_state = resolved_versions.get(
+                    instrument_id
+                )
+                return (
+                    instrument_id is not None
+                    and version_state is not None
+                    and value.contract_version_id
+                    == version_state.value.version_id
+                    and value.effective_at(
+                        command.market_as_of,
+                        command.known_as_of,
+                    )
+                )
+
+            resolved_mappings[provider_key] = (
+                self._resolve_temporal_state_or_fail(
+                    states,
+                    command.known_as_of,
+                    eligible,
+                    "provider mapping",
+                )
+            )
+
+        provenance: dict[str, dict[str, str]] = {}
+        for event in quote_events:
+            mapping_state = resolved_mappings.get(
+                (
+                    event.provider,
+                    event.provider_contract_key,
+                )
+            )
+            version_state = resolved_versions.get(
+                event.economic_subject_id
+            )
+            catalogue_state = resolved_catalogues.get(
+                event.provider
+            )
+            mapping_instrument_id = None
+            if mapping_state is not None:
+                mapping_instrument_id = (
+                    mapping_instrument_by_semantic.get(
+                        mapping_state.value.mapping_id
+                    )
+                )
+
+            provenance[event.event_id] = (
+                self._bind_resolved_quote_provenance(
+                    event,
+                    command,
+                    mapping_state,
+                    mapping_instrument_id,
+                    version_state,
+                    catalogue_state,
+                )
+            )
+
+        return provenance
+
+    @staticmethod
+    def _resolve_temporal_state_or_fail(
+        states,
+        known_as_of,
+        market_eligible,
+        label: str,
+    ):
+        if not states:
+            raise MarketEventReferentialIntegrityError(
+                f"missing {label} temporal records"
+            )
+        try:
+            resolved = resolve_temporal_state(
+                states,
+                known_as_of,
+                market_eligible,
+            )
+        except ValueError as exc:
+            raise CatalogueProvenanceConflictError(
+                f"invalid or ambiguous {label} graph"
+            ) from exc
+        if resolved is None:
+            raise MarketEventReferentialIntegrityError(
+                f"no point-in-time {label} is eligible"
+            )
+        return resolved
+
+    @staticmethod
+    def _bind_resolved_quote_provenance(
+        event,
+        command,
+        mapping_state,
+        mapping_instrument_id,
+        version_state,
+        catalogue_state,
+    ) -> dict[str, str]:
+        subject = event.subject
+        if (
+            subject.resolution_market_as_of
+            != command.market_as_of
+            or subject.resolution_known_as_of
+            != command.known_as_of
+        ):
+            raise PersistenceTimeBindingError(
+                "quote provenance cutoffs differ from "
+                "the frame persistence command"
+            )
+        if (
+            mapping_state is None
+            or version_state is None
+            or catalogue_state is None
+        ):
+            raise MarketEventReferentialIntegrityError(
+                "quote provenance record is missing"
+            )
+
+        mapping = mapping_state.value
+        version = version_state.value
+        catalogue = catalogue_state.value
+
+        if (
+            mapping.mapping_id != event.provider_mapping_id
+            or mapping != subject.provider_mapping
+            or mapping.provider != event.provider
+            or mapping.provider_contract_key
+            != event.provider_contract_key
+            or mapping.contract_version_id
+            != event.contract_version_id
+            or mapping_instrument_id
+            != event.economic_subject_id
+        ):
+            raise CatalogueProvenanceConflictError(
+                "resolved provider mapping does not match "
+                "the normalized quote"
+            )
+
+        if (
+            version.version_id != event.contract_version_id
+            or version != subject.contract_version
+            or version.catalogue_version_id
+            != catalogue.catalogue_version_id
+        ):
+            raise CatalogueProvenanceConflictError(
+                "resolved contract version does not match "
+                "the normalized quote"
+            )
+
+        if (
+            catalogue.provider != event.provider
+            or catalogue.catalogue_version_id
+            != subject.contract_version.catalogue_version_id
+        ):
+            raise CatalogueProvenanceConflictError(
+                "resolved catalogue version does not match "
+                "the normalized quote"
+            )
+
+        if (
+            not mapping.effective_at(
+                command.market_as_of,
+                command.known_as_of,
+            )
+            or not version.effective_at(
+                command.market_as_of,
+                command.known_as_of,
+            )
+            or not catalogue.visible_at(
+                command.market_as_of,
+                command.known_as_of,
+            )
+        ):
+            raise CatalogueProvenanceConflictError(
+                "resolved quote provenance is stale"
+            )
+
+        return {
+            "provider_mapping_record_id": (
+                mapping_state.record.record_id
+            ),
+            "contract_version_record_id": (
+                version_state.record.record_id
+            ),
+            "catalogue_version_record_id": (
+                catalogue_state.record.record_id
+            ),
+        }
+
+    async def _load_version_states_by_scope(
+        self,
+        scope_ids: tuple[str, ...],
+        known_as_of,
+    ) -> dict[str, tuple[object, ...]]:
+        grouped: dict[str, list[object]] = {
+            scope_id: []
+            for scope_id in scope_ids
+        }
+        for chunk in plan_parameter_chunks(
+            len(scope_ids),
+            parameters_per_item=1,
+        ):
+            batch = scope_ids[
+                chunk.offset:
+                chunk.offset + chunk.size
+            ]
+            rows = (
+                await self._session.execute(
+                    select(
+                        InstrumentVersionRow,
+                        InstrumentVersionRecordRow,
+                        MarketInstrumentRow.instrument_kind,
+                    )
+                    .join(
+                        InstrumentVersionRecordRow,
+                        InstrumentVersionRecordRow.version_id
+                        == InstrumentVersionRow.version_id,
+                    )
+                    .join(
+                        MarketInstrumentRow,
+                        MarketInstrumentRow.instrument_id
+                        == InstrumentVersionRow.instrument_id,
+                    )
+                    .where(
+                        InstrumentVersionRecordRow.scope_id.in_(
+                            batch
+                        ),
+                        InstrumentVersionRecordRow.recorded_at
+                        <= known_as_of,
+                    )
+                    .order_by(
+                        InstrumentVersionRecordRow.scope_id,
+                        InstrumentVersionRecordRow.recorded_at,
+                        InstrumentVersionRecordRow.record_id,
+                    )
+                )
+            ).all()
+            for value_row, record_row, kind in rows:
+                grouped.setdefault(
+                    record_row.scope_id,
+                    [],
+                ).append(
+                    TemporalState(
+                        temporal_record_from_row(
+                            record_row,
+                            TemporalRecordKind.INSTRUMENT_VERSION,
+                            "version_id",
+                        ),
+                        version_from_row(
+                            value_row,
+                            record_row,
+                            kind,
+                        ),
+                    )
+                )
+        return {
+            scope_id: tuple(states)
+            for scope_id, states in grouped.items()
+        }
+
+    async def _load_catalogue_states_by_provider(
+        self,
+        providers: tuple[str, ...],
+        known_as_of,
+    ) -> dict[str, tuple[object, ...]]:
+        grouped: dict[str, list[object]] = {
+            provider: []
+            for provider in providers
+        }
+        for chunk in plan_parameter_chunks(
+            len(providers),
+            parameters_per_item=1,
+        ):
+            batch = providers[
+                chunk.offset:
+                chunk.offset + chunk.size
+            ]
+            rows = (
+                await self._session.execute(
+                    select(
+                        CatalogueVersionRow,
+                        CatalogueVersionRecordRow,
+                    )
+                    .join(
+                        CatalogueVersionRecordRow,
+                        CatalogueVersionRecordRow.catalogue_version_id
+                        == CatalogueVersionRow.catalogue_version_id,
+                    )
+                    .where(
+                        CatalogueVersionRow.provider.in_(batch),
+                        CatalogueVersionRecordRow.recorded_at
+                        <= known_as_of,
+                    )
+                    .order_by(
+                        CatalogueVersionRow.provider,
+                        CatalogueVersionRecordRow.recorded_at,
+                        CatalogueVersionRecordRow.record_id,
+                    )
+                )
+            ).all()
+            for value_row, record_row in rows:
+                grouped.setdefault(
+                    value_row.provider,
+                    [],
+                ).append(
+                    TemporalState(
+                        temporal_record_from_row(
+                            record_row,
+                            TemporalRecordKind.CATALOGUE_VERSION,
+                            "catalogue_version_id",
+                        ),
+                        catalogue_from_row(
+                            value_row,
+                            record_row,
+                        ),
+                    )
+                )
+        return {
+            provider: tuple(states)
+            for provider, states in grouped.items()
+        }
+
+    async def _load_mapping_states_by_key(
+        self,
+        provider_keys: tuple[tuple[str, str], ...],
+        known_as_of,
+    ) -> tuple[
+        dict[tuple[str, str], tuple[object, ...]],
+        dict[str, str],
+    ]:
+        grouped: dict[
+            tuple[str, str],
+            list[object],
+        ] = {
+            provider_key: []
+            for provider_key in provider_keys
+        }
+        instrument_by_semantic: dict[str, str] = {}
+        keys_by_provider: dict[str, list[str]] = {}
+        for provider, provider_key in provider_keys:
+            keys_by_provider.setdefault(provider, []).append(
+                provider_key
+            )
+
+        for provider in sorted(keys_by_provider):
+            keys = tuple(sorted(set(keys_by_provider[provider])))
+            for chunk in plan_parameter_chunks(
+                len(keys),
+                parameters_per_item=1,
+            ):
+                batch = keys[
+                    chunk.offset:
+                    chunk.offset + chunk.size
+                ]
+                rows = (
+                    await self._session.execute(
+                        select(
+                            ProviderContractMappingRow,
+                            ProviderMappingRecordRow,
+                            InstrumentVersionRow.instrument_id,
+                        )
+                        .join(
+                            ProviderMappingRecordRow,
+                            ProviderMappingRecordRow.mapping_id
+                            == ProviderContractMappingRow.mapping_id,
+                        )
+                        .join(
+                            InstrumentVersionRow,
+                            InstrumentVersionRow.version_id
+                            == ProviderContractMappingRow.contract_version_id,
+                        )
+                        .where(
+                            ProviderContractMappingRow.provider
+                            == provider,
+                            ProviderContractMappingRow.provider_contract_key.in_(
+                                batch
+                            ),
+                            ProviderMappingRecordRow.recorded_at
+                            <= known_as_of,
+                        )
+                        .order_by(
+                            ProviderContractMappingRow.provider_contract_key,
+                            ProviderMappingRecordRow.recorded_at,
+                            ProviderMappingRecordRow.record_id,
+                        )
+                    )
+                ).all()
+                for value_row, record_row, instrument_id in rows:
+                    provider_key = (
+                        value_row.provider,
+                        value_row.provider_contract_key,
+                    )
+                    existing_instrument = (
+                        instrument_by_semantic.get(
+                            value_row.mapping_id
+                        )
+                    )
+                    if (
+                        existing_instrument is not None
+                        and existing_instrument != instrument_id
+                    ):
+                        raise CatalogueProvenanceConflictError(
+                            "one provider mapping semantic identity "
+                            "points to multiple instruments"
+                        )
+                    instrument_by_semantic[
+                        value_row.mapping_id
+                    ] = instrument_id
+                    grouped.setdefault(
+                        provider_key,
+                        [],
+                    ).append(
+                        TemporalState(
+                            temporal_record_from_row(
+                                record_row,
+                                TemporalRecordKind.PROVIDER_MAPPING,
+                                "mapping_id",
+                            ),
+                            provider_mapping_from_row(
+                                value_row,
+                                record_row,
+                            ),
+                        )
+                    )
+
+        return (
+            {
+                provider_key: tuple(states)
+                for provider_key, states in grouped.items()
+            },
+            instrument_by_semantic,
+        )
+
     @staticmethod
     def _observation_values(
         event,
         raw,
         canonical_json,
+        provenance: dict[str, str] | None = None,
     ) -> dict[str, object]:
         event_type = event.identity.event_type
         is_quote = hasattr(event, "event_time")
 
         if is_quote:
+            if provenance is None:
+                raise MarketEventReferentialIntegrityError(
+                    "quote observation provenance is required"
+                )
             subject = event.subject
             event_time = event.event_time
             catalogue_version_id = (
@@ -923,6 +1474,11 @@ class PostgresMarketEventRepository:
                 event.supersedes_event_id
             )
         else:
+            if provenance is not None:
+                raise CatalogueProvenanceConflictError(
+                    "status observations cannot carry "
+                    "catalogue provenance"
+                )
             catalogue_version_id = None
             provider_contract_key = None
             economic_subject_id = None
@@ -956,10 +1512,21 @@ class PostgresMarketEventRepository:
             "provider_mapping_id": provider_mapping_id,
             "contract_version_id": contract_version_id,
             "catalogue_version_id": catalogue_version_id,
-            # Step 5 resolves and binds these exact record IDs.
-            "provider_mapping_record_id": None,
-            "contract_version_record_id": None,
-            "catalogue_version_record_id": None,
+            "provider_mapping_record_id": (
+                provenance["provider_mapping_record_id"]
+                if provenance is not None
+                else None
+            ),
+            "contract_version_record_id": (
+                provenance["contract_version_record_id"]
+                if provenance is not None
+                else None
+            ),
+            "catalogue_version_record_id": (
+                provenance["catalogue_version_record_id"]
+                if provenance is not None
+                else None
+            ),
             "resolution_market_as_of": (
                 resolution_market_as_of
             ),
@@ -1399,14 +1966,23 @@ class PostgresMarketEventRepository:
         if result is None:
             return None
 
-        events = (
+        raw_frame = await self.get_raw_frame(raw_event_id)
+        if raw_frame is None:
+            raise MarketEventDurableCorruptionError(
+                "normalization result is missing its raw frame"
+            )
+
+        event_rows = (
             await self._session.execute(
                 text(
                     """
-                    SELECT o.*
+                    SELECT
+                        m.event_ordinal,
+                        o.*
                     FROM market_normalization_result_events AS m
                     JOIN market_observations AS o
                       ON o.event_id = m.event_id
+                     AND o.raw_event_id = m.raw_event_id
                     WHERE m.result_id = :result_id
                     ORDER BY m.event_ordinal
                     """
@@ -1414,8 +1990,90 @@ class PostgresMarketEventRepository:
                 {"result_id": result.result_id},
             )
         ).all()
+        events = tuple(
+            dict(row._mapping)
+            for row in event_rows
+        )
+        if tuple(
+            event["event_ordinal"]
+            for event in events
+        ) != tuple(range(len(events))):
+            raise MarketEventDurableCorruptionError(
+                "event memberships are not contiguous"
+            )
+        if len(events) != result.accepted_entry_count:
+            raise MarketEventDurableCorruptionError(
+                "event membership count differs from result"
+            )
 
-        failures = (
+        event_ids_by_table: dict[str, list[str]] = {}
+        for event in events:
+            event_type = event["event_type"]
+            table_name = QUOTE_SUBTYPE_TABLE_BY_EVENT_TYPE.get(
+                event_type
+            )
+            if table_name is None:
+                if (
+                    event_type
+                    == "market_segment_status_observation"
+                ):
+                    table_name = (
+                        "market_segment_status_observations"
+                    )
+                else:
+                    raise MarketEventDurableCorruptionError(
+                        "unsupported persisted event subtype"
+                    )
+            event_ids_by_table.setdefault(
+                table_name,
+                [],
+            ).append(event["event_id"])
+
+        subtypes_by_table: dict[
+            str,
+            dict[object, dict[str, object]],
+        ] = {}
+        for table_name, event_ids in (
+            event_ids_by_table.items()
+        ):
+            immutable_fields = (
+                STATUS_SUBTYPE_IMMUTABLE_FIELDS
+                if table_name
+                == "market_segment_status_observations"
+                else QUOTE_SUBTYPE_IMMUTABLE_FIELDS
+            )
+            subtypes_by_table[table_name] = (
+                await self._fetch_existing_rows(
+                    table_name,
+                    "event_id",
+                    tuple(event_ids),
+                    immutable_fields,
+                )
+            )
+
+        subtypes: list[dict[str, object]] = []
+        for event in events:
+            event_type = event["event_type"]
+            table_name = QUOTE_SUBTYPE_TABLE_BY_EVENT_TYPE.get(
+                event_type,
+                "market_segment_status_observations",
+            )
+            subtype = subtypes_by_table.get(
+                table_name,
+                {},
+            ).get(event["event_id"])
+            if subtype is None:
+                raise MarketEventDurableCorruptionError(
+                    "persisted event is missing its typed subtype"
+                )
+            subtypes.append(
+                {
+                    "table": table_name,
+                    **subtype,
+                }
+            )
+
+        failure_rows = (
             await self._session.execute(
                 text(
                     """
@@ -1426,6 +2084,8 @@ class PostgresMarketEventRepository:
                     FROM market_normalization_result_failures AS m
                     JOIN market_normalization_failures AS f
                       ON f.failure_id = m.failure_id
+                     AND f.result_id = m.result_id
+                     AND f.raw_event_id = m.raw_event_id
                     WHERE m.result_id = :result_id
                     ORDER BY
                         CASE m.failure_role
@@ -1438,11 +2098,25 @@ class PostgresMarketEventRepository:
                 {"result_id": result.result_id},
             )
         ).all()
+        failures = tuple(
+            dict(row._mapping)
+            for row in failure_rows
+        )
+        expected_failure_count = (
+            result.failed_entry_count
+            + int(result.frame_failure_present)
+        )
+        if len(failures) != expected_failure_count:
+            raise MarketEventDurableCorruptionError(
+                "failure membership count differs from result"
+            )
 
         return {
+            "raw_frame": raw_frame,
             "result": result,
-            "events": tuple(events),
-            "failures": tuple(failures),
+            "events": events,
+            "subtypes": tuple(subtypes),
+            "failures": failures,
         }
 
     async def scan_normalization_results(

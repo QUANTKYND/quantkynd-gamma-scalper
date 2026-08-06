@@ -14,6 +14,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.exc import IntegrityError
 
 from app.core.database_config import DatabaseSettings
 from app.instruments.temporal_records import (
@@ -42,6 +43,7 @@ from app.persistence.postgres.mappings import (
     option_values,
     provider_mapping_values,
     trading_session_values,
+    temporal_record_values,
     trading_session_version_values,
     underlying_values,
     version_values,
@@ -216,6 +218,12 @@ MARKET_OBSERVATION_INDEXES = {
         "provider_mapping_id",
         "contract_version_id",
         "catalogue_version_id",
+        "event_id",
+    ),
+    "ix_market_observations_temporal_provenance": (
+        "provider_mapping_record_id",
+        "contract_version_record_id",
+        "catalogue_version_record_id",
         "event_id",
     ),
 }
@@ -482,6 +490,252 @@ async def test_data_1_2_migration_lifecycle_preserves_data_1_1(
             await _assert_head_schema(engine)
     finally:
         await dispose_database_engine(engine)
+
+
+@pytest.mark.anyio
+async def test_temporal_provenance_foreign_keys_reject_cross_links(
+    postgres_url: str,
+    postgres_settings: DatabaseSettings,
+) -> None:
+    engine = create_database_engine(postgres_settings)
+    config = alembic_config(postgres_url)
+
+    try:
+        async with destructive_database_lease(
+            engine,
+            postgres_url,
+            postgres_settings,
+            DestructiveDatabasePurpose.INTEGRATION,
+        ) as lease:
+            await lease.drop_and_recreate_public()
+            await asyncio.to_thread(command.upgrade, config, "head")
+
+            fixture = deterministic_fixture()
+            async with engine.begin() as connection:
+                records = await _insert_head_provenance_fixture(
+                    connection,
+                    fixture,
+                )
+                raw_event_id = "sha256:" + "8" * 64
+                result_id = "sha256:" + "9" * 64
+                event_id = "sha256:" + "a" * 64
+                now = RECORDED_AT + timedelta(hours=1)
+
+                await connection.execute(
+                    Base.metadata.tables[
+                        "raw_market_frames"
+                    ].insert().values(
+                        raw_event_id=raw_event_id,
+                        provider="upstox",
+                        provider_schema_id="fixture-schema",
+                        provider_schema_sha256="b" * 64,
+                        connection_session_id="fixture-session",
+                        source_order_scope_id="fixture-scope",
+                        source_order=0,
+                        frame_bytes=b"x",
+                        frame_content_hash=(
+                            "sha256:" + "c" * 64
+                        ),
+                        received_at=None,
+                        available_at=now,
+                        recorded_at=now,
+                        capture_basis="historical_import",
+                        source_file_id=None,
+                        source_record_id=None,
+                        persistence_recorded_at=now,
+                    )
+                )
+                await connection.execute(
+                    Base.metadata.tables[
+                        "market_normalization_results"
+                    ].insert().values(
+                        result_id=result_id,
+                        raw_event_id=raw_event_id,
+                        normalization_schema_version=1,
+                        normalizer_implementation_version=(
+                            "upstox-v3-normalizer-1"
+                        ),
+                        response_type="live_feed",
+                        status="complete",
+                        decoded_entry_count=1,
+                        accepted_entry_count=1,
+                        failed_entry_count=0,
+                        frame_failure_present=False,
+                        unadopted_schema_paths=[],
+                        present_unadopted_message_paths=[],
+                        secondary_payload_paths_present=[],
+                        full_result_hash=(
+                            "sha256:" + "d" * 64
+                        ),
+                        adopted_semantics_hash=(
+                            "sha256:" + "e" * 64
+                        ),
+                        metadata_payload={},
+                        persistence_recorded_at=now,
+                    )
+                )
+
+                observation_values = {
+                    "event_id": event_id,
+                    "raw_event_id": raw_event_id,
+                    "event_type": "option_quote_observation",
+                    "subject_id": fixture.option.contract_id,
+                    "provider": "upstox",
+                    "provider_contract_key": (
+                        fixture.provider_mapping
+                        .provider_contract_key
+                    ),
+                    "economic_subject_id": (
+                        fixture.option.contract_id
+                    ),
+                    "provider_mapping_id": (
+                        fixture.provider_mapping.mapping_id
+                    ),
+                    "contract_version_id": (
+                        fixture.option_version.version_id
+                    ),
+                    "catalogue_version_id": (
+                        fixture.catalogue.catalogue_version_id
+                    ),
+                    "provider_mapping_record_id": (
+                        records["mapping"]
+                    ),
+                    "contract_version_record_id": (
+                        records["option_version"]
+                    ),
+                    "catalogue_version_record_id": (
+                        records["catalogue"]
+                    ),
+                    "resolution_market_as_of": now,
+                    "resolution_known_as_of": now,
+                    "provider_timestamp": now,
+                    "exchange_timestamp": None,
+                    "received_at": None,
+                    "available_at": now,
+                    "recorded_at": now,
+                    "availability_basis": "historical_import",
+                    "source_order_scope_id": "fixture-scope",
+                    "source_order": 0,
+                    "normalization_schema_version": 1,
+                    "normalizer_implementation_version": (
+                        "upstox-v3-normalizer-1"
+                    ),
+                    "provider_sequence": None,
+                    "supersedes_event_id": None,
+                    "payload": {},
+                }
+                await connection.execute(
+                    Base.metadata.tables[
+                        "market_observations"
+                    ].insert().values(**observation_values)
+                )
+
+                invalid = {
+                    **observation_values,
+                    "event_id": "sha256:" + "f" * 64,
+                    "contract_version_record_id": (
+                        records["underlying_version"]
+                    ),
+                }
+                with pytest.raises(IntegrityError):
+                    async with connection.begin_nested():
+                        await connection.execute(
+                            Base.metadata.tables[
+                                "market_observations"
+                            ].insert().values(**invalid)
+                        )
+    finally:
+        await dispose_database_engine(engine)
+
+
+async def _insert_head_provenance_fixture(
+    connection,
+    fixture: DataFoundationFixture,
+) -> dict[str, str]:
+    tables = Base.metadata.tables
+
+    await connection.execute(
+        tables["catalogue_versions"].insert().values(
+            **catalogue_values(fixture.catalogue)
+        )
+    )
+    catalogue_record = catalogue_temporal_record(
+        fixture.catalogue
+    )
+    await connection.execute(
+        tables["catalogue_version_records"].insert().values(
+            **temporal_record_values(
+                catalogue_record,
+                "catalogue_version_id",
+            )
+        )
+    )
+
+    for identity in (
+        fixture.underlying,
+        fixture.option,
+    ):
+        await connection.execute(
+            tables["market_instruments"].insert().values(
+                **market_instrument_values(identity)
+            )
+        )
+    await connection.execute(
+        tables["underlying_instruments"].insert().values(
+            **underlying_values(fixture.underlying)
+        )
+    )
+    await connection.execute(
+        tables["option_contracts"].insert().values(
+            **option_values(fixture.option)
+        )
+    )
+
+    version_records = {}
+    for label, version in (
+        ("underlying_version", fixture.underlying_version),
+        ("option_version", fixture.option_version),
+    ):
+        await connection.execute(
+            tables["instrument_versions"].insert().values(
+                **version_values(version)
+            )
+        )
+        record = instrument_version_temporal_record(version)
+        await connection.execute(
+            tables["instrument_version_records"].insert().values(
+                **temporal_record_values(
+                    record,
+                    "version_id",
+                )
+            )
+        )
+        version_records[label] = record.record_id
+
+    await connection.execute(
+        tables["provider_contract_mappings"].insert().values(
+            **provider_mapping_values(
+                fixture.provider_mapping
+            )
+        )
+    )
+    mapping_record = provider_mapping_temporal_record(
+        fixture.provider_mapping
+    )
+    await connection.execute(
+        tables["provider_mapping_records"].insert().values(
+            **temporal_record_values(
+                mapping_record,
+                "mapping_id",
+            )
+        )
+    )
+
+    return {
+        "catalogue": catalogue_record.record_id,
+        "mapping": mapping_record.record_id,
+        **version_records,
+    }
 
 
 async def _revision(engine) -> str | None:
@@ -816,6 +1070,25 @@ async def _assert_head_schema(engine) -> None:
             == expected_columns
         )
 
+    assert (
+        "record_id",
+        "mapping_id",
+    ) in details[
+        "provider_mapping_records"
+    ]["unique_constraints"]
+    assert (
+        "record_id",
+        "version_id",
+    ) in details[
+        "instrument_version_records"
+    ]["unique_constraints"]
+    assert (
+        "record_id",
+        "catalogue_version_id",
+    ) in details[
+        "catalogue_version_records"
+    ]["unique_constraints"]
+
     observations = details["market_observations"]
     assert (
         set(observations["columns"])
@@ -843,6 +1116,33 @@ async def _assert_head_schema(engine) -> None:
         ("raw_event_id",),
         "raw_market_frames",
         ("raw_event_id",),
+    )
+    _assert_foreign_key(
+        observations,
+        (
+            "provider_mapping_record_id",
+            "provider_mapping_id",
+        ),
+        "provider_mapping_records",
+        ("record_id", "mapping_id"),
+    )
+    _assert_foreign_key(
+        observations,
+        (
+            "contract_version_record_id",
+            "contract_version_id",
+        ),
+        "instrument_version_records",
+        ("record_id", "version_id"),
+    )
+    _assert_foreign_key(
+        observations,
+        (
+            "catalogue_version_record_id",
+            "catalogue_version_id",
+        ),
+        "catalogue_version_records",
+        ("record_id", "catalogue_version_id"),
     )
     for index_name, expected_columns in (
         MARKET_OBSERVATION_INDEXES.items()
@@ -1171,6 +1471,18 @@ def _schema_details(connection) -> dict[str, object]:
         "market_normalization_results": _table_details(
             schema,
             "market_normalization_results",
+        ),
+        "provider_mapping_records": _table_details(
+            schema,
+            "provider_mapping_records",
+        ),
+        "instrument_version_records": _table_details(
+            schema,
+            "instrument_version_records",
+        ),
+        "catalogue_version_records": _table_details(
+            schema,
+            "catalogue_version_records",
         ),
         "market_observations": _table_details(
             schema,

@@ -391,6 +391,25 @@ def _create_market_normalization_results() -> None:
     )
 
 
+
+def _create_temporal_provenance_targets() -> None:
+    op.create_unique_constraint(
+        "uq_provider_mapping_records_record_semantic",
+        "provider_mapping_records",
+        ("record_id", "mapping_id"),
+    )
+    op.create_unique_constraint(
+        "uq_instrument_version_records_record_semantic",
+        "instrument_version_records",
+        ("record_id", "version_id"),
+    )
+    op.create_unique_constraint(
+        "uq_catalogue_version_records_record_semantic",
+        "catalogue_version_records",
+        ("record_id", "catalogue_version_id"),
+    )
+
+
 def _create_market_observations() -> None:
     op.create_table(
         "market_observations",
@@ -448,7 +467,6 @@ def _create_market_observations() -> None:
             ),
             nullable=True,
         ),
-        # Step 5 binds these three IDs to temporal-record composite FKs.
         sa.Column(
             "provider_mapping_record_id",
             sa.String(ID),
@@ -538,6 +556,51 @@ def _create_market_observations() -> None:
             "payload",
             postgresql.JSONB(astext_type=sa.Text()),
             nullable=False,
+        ),
+        sa.ForeignKeyConstraint(
+            [
+                "provider_mapping_record_id",
+                "provider_mapping_id",
+            ],
+            [
+                "provider_mapping_records.record_id",
+                "provider_mapping_records.mapping_id",
+            ],
+            ondelete="NO ACTION",
+            name=(
+                "fk_market_observations_"
+                "mapping_record_semantic"
+            ),
+        ),
+        sa.ForeignKeyConstraint(
+            [
+                "contract_version_record_id",
+                "contract_version_id",
+            ],
+            [
+                "instrument_version_records.record_id",
+                "instrument_version_records.version_id",
+            ],
+            ondelete="NO ACTION",
+            name=(
+                "fk_market_observations_"
+                "contract_record_semantic"
+            ),
+        ),
+        sa.ForeignKeyConstraint(
+            [
+                "catalogue_version_record_id",
+                "catalogue_version_id",
+            ],
+            [
+                "catalogue_version_records.record_id",
+                "catalogue_version_records.catalogue_version_id",
+            ],
+            ondelete="NO ACTION",
+            name=(
+                "fk_market_observations_"
+                "catalogue_record_semantic"
+            ),
         ),
         sa.CheckConstraint(
             "event_id ~ '^sha256:[0-9a-f]{64}$'",
@@ -713,6 +776,9 @@ def _create_market_observations() -> None:
             "AND provider_mapping_id IS NOT NULL "
             "AND contract_version_id IS NOT NULL "
             "AND catalogue_version_id IS NOT NULL "
+            "AND provider_mapping_record_id IS NOT NULL "
+            "AND contract_version_record_id IS NOT NULL "
+            "AND catalogue_version_record_id IS NOT NULL "
             "AND resolution_market_as_of IS NOT NULL "
             "AND resolution_known_as_of IS NOT NULL "
             "AND subject_id = economic_subject_id"
@@ -782,6 +848,16 @@ def _create_market_observations() -> None:
             "provider_mapping_id",
             "contract_version_id",
             "catalogue_version_id",
+            "event_id",
+        ),
+    )
+    op.create_index(
+        "ix_market_observations_temporal_provenance",
+        "market_observations",
+        (
+            "provider_mapping_record_id",
+            "contract_version_record_id",
+            "catalogue_version_record_id",
             "event_id",
         ),
     )
@@ -1387,6 +1463,8 @@ def _create_market_segment_status_observations() -> None:
     )
 
 def upgrade() -> None:
+    _create_temporal_provenance_targets()
+
     for name in TABLES:
         if name == "raw_market_frames":
             _create_raw_market_frames()
@@ -1559,3 +1637,19 @@ def downgrade() -> None:
 
     for name in reversed(TABLES):
         op.drop_table(name)
+
+    op.drop_constraint(
+        "uq_catalogue_version_records_record_semantic",
+        "catalogue_version_records",
+        type_="unique",
+    )
+    op.drop_constraint(
+        "uq_instrument_version_records_record_semantic",
+        "instrument_version_records",
+        type_="unique",
+    )
+    op.drop_constraint(
+        "uq_provider_mapping_records_record_semantic",
+        "provider_mapping_records",
+        type_="unique",
+    )

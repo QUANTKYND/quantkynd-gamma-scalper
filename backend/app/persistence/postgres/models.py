@@ -349,7 +349,6 @@ MARKET_OBSERVATIONS_TABLE = Table(
         ForeignKey("catalogue_versions.catalogue_version_id", ondelete="NO ACTION"),
         nullable=True,
     ),
-    # Step 5 binds these three IDs to temporal-record composite FKs.
     Column("provider_mapping_record_id", String(ID_LENGTH), nullable=True),
     Column("contract_version_record_id", String(ID_LENGTH), nullable=True),
     Column("catalogue_version_record_id", String(ID_LENGTH), nullable=True),
@@ -368,6 +367,33 @@ MARKET_OBSERVATIONS_TABLE = Table(
     Column("provider_sequence", BigInteger, nullable=True),
     Column("supersedes_event_id", String(ID_LENGTH), nullable=True),
     Column("payload", JSONB, nullable=False),
+    ForeignKeyConstraint(
+        ["provider_mapping_record_id", "provider_mapping_id"],
+        [
+            "provider_mapping_records.record_id",
+            "provider_mapping_records.mapping_id",
+        ],
+        ondelete="NO ACTION",
+        name="fk_market_observations_mapping_record_semantic",
+    ),
+    ForeignKeyConstraint(
+        ["contract_version_record_id", "contract_version_id"],
+        [
+            "instrument_version_records.record_id",
+            "instrument_version_records.version_id",
+        ],
+        ondelete="NO ACTION",
+        name="fk_market_observations_contract_record_semantic",
+    ),
+    ForeignKeyConstraint(
+        ["catalogue_version_record_id", "catalogue_version_id"],
+        [
+            "catalogue_version_records.record_id",
+            "catalogue_version_records.catalogue_version_id",
+        ],
+        ondelete="NO ACTION",
+        name="fk_market_observations_catalogue_record_semantic",
+    ),
     CheckConstraint(
         "event_id ~ '^sha256:[0-9a-f]{64}$'",
         name="market_observations_event_sha256",
@@ -538,6 +564,9 @@ MARKET_OBSERVATIONS_TABLE = Table(
         "AND provider_mapping_id IS NOT NULL "
         "AND contract_version_id IS NOT NULL "
         "AND catalogue_version_id IS NOT NULL "
+        "AND provider_mapping_record_id IS NOT NULL "
+        "AND contract_version_record_id IS NOT NULL "
+        "AND catalogue_version_record_id IS NOT NULL "
         "AND resolution_market_as_of IS NOT NULL "
         "AND resolution_known_as_of IS NOT NULL "
         "AND subject_id = economic_subject_id"
@@ -590,6 +619,13 @@ MARKET_OBSERVATIONS_TABLE = Table(
         "provider_mapping_id",
         "contract_version_id",
         "catalogue_version_id",
+        "event_id",
+    ),
+    Index(
+        "ix_market_observations_temporal_provenance",
+        "provider_mapping_record_id",
+        "contract_version_record_id",
+        "catalogue_version_record_id",
         "event_id",
     ),
 )
@@ -1794,10 +1830,18 @@ class TradingSessionVersionRow(Base):
 
 class CatalogueVersionRecordRow(Base):
     __tablename__ = "catalogue_version_records"
-    __table_args__ = _temporal_record_constraints(
-        "catalogue_version_records",
-        "catalogue_version_id",
+    __table_args__ = (
+        *_temporal_record_constraints(
+            "catalogue_version_records",
+            "catalogue_version_id",
+        ),
+        UniqueConstraint(
+            "record_id",
+            "catalogue_version_id",
+            name="uq_catalogue_version_records_record_semantic",
+        ),
     )
+
 
     record_id: Mapped[str] = mapped_column(
         String(ID_LENGTH),
@@ -1827,10 +1871,18 @@ class CatalogueVersionRecordRow(Base):
 
 class InstrumentVersionRecordRow(Base):
     __tablename__ = "instrument_version_records"
-    __table_args__ = _temporal_record_constraints(
-        "instrument_version_records",
-        "version_id",
+    __table_args__ = (
+        *_temporal_record_constraints(
+            "instrument_version_records",
+            "version_id",
+        ),
+        UniqueConstraint(
+            "record_id",
+            "version_id",
+            name="uq_instrument_version_records_record_semantic",
+        ),
     )
+
 
     record_id: Mapped[str] = mapped_column(
         String(ID_LENGTH),
@@ -1860,10 +1912,18 @@ class InstrumentVersionRecordRow(Base):
 
 class ProviderMappingRecordRow(Base):
     __tablename__ = "provider_mapping_records"
-    __table_args__ = _temporal_record_constraints(
-        "provider_mapping_records",
-        "mapping_id",
+    __table_args__ = (
+        *_temporal_record_constraints(
+            "provider_mapping_records",
+            "mapping_id",
+        ),
+        UniqueConstraint(
+            "record_id",
+            "mapping_id",
+            name="uq_provider_mapping_records_record_semantic",
+        ),
     )
+
 
     record_id: Mapped[str] = mapped_column(
         String(ID_LENGTH),
