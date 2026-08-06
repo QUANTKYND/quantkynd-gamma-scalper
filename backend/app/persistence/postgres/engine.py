@@ -22,7 +22,7 @@ def create_database_engine(settings: DatabaseSettings) -> AsyncEngine:
     }
     return create_async_engine(
         settings.require_database_url(),
-        isolation_level="REPEATABLE READ",
+        isolation_level="READ COMMITTED",
         echo=settings.database_echo,
         pool_size=settings.database_pool_size,
         max_overflow=settings.database_max_overflow,

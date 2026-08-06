@@ -185,7 +185,10 @@ class PostgresMarketEventRepository:
     ):
         self._require_active()
 
-        from app.core.hashing import canonical_json
+        from app.core.hashing import (
+            canonical_json,
+            stable_hash,
+        )
         from app.market_data.persistence.contracts import (
             CANONICAL_IMPLEMENTATION,
             CANONICAL_SCHEMA_VERSION,
@@ -261,7 +264,23 @@ class PostgresMarketEventRepository:
                 (role, failure, failure_id)
             )
 
+        capture_identity = stable_hash(
+            {
+                "entity": "raw_market_capture_identity",
+                "provider": raw.provider,
+                "provider_schema_id": raw.provider_schema_id,
+                "connection_session_id": (
+                    raw.connection_session_id
+                ),
+                "source_order_scope_id": (
+                    raw.source_order_scope_id
+                ),
+                "source_order": raw.source_order,
+            }
+        )
+
         roots = [
+            ("raw_capture", capture_identity),
             ("raw_frame", raw.raw_event_id),
             ("normalization_result", result_id),
         ]
@@ -312,11 +331,12 @@ class PostgresMarketEventRepository:
             "source_record_id": raw.source_record_id,
         }
 
-        existing_raw = (
+        raw_matches = (
             await self._session.execute(
                 text(
                     """
                     SELECT
+                        raw_event_id,
                         provider,
                         provider_schema_id,
                         provider_schema_sha256,
@@ -333,13 +353,47 @@ class PostgresMarketEventRepository:
                         source_record_id
                     FROM raw_market_frames
                     WHERE raw_event_id = :raw_event_id
+                       OR (
+                            provider = :provider
+                        AND provider_schema_id = :provider_schema_id
+                        AND connection_session_id = :connection_session_id
+                        AND source_order_scope_id = :source_order_scope_id
+                        AND source_order = :source_order
+                       )
+                    ORDER BY
+                        CASE
+                            WHEN raw_event_id = :raw_event_id
+                            THEN 0
+                            ELSE 1
+                        END
                     """
                 ),
                 {
                     "raw_event_id": raw.raw_event_id,
+                    "provider": raw.provider,
+                    "provider_schema_id": raw.provider_schema_id,
+                    "connection_session_id": (
+                        raw.connection_session_id
+                    ),
+                    "source_order_scope_id": (
+                        raw.source_order_scope_id
+                    ),
+                    "source_order": raw.source_order,
                 },
             )
-        ).first()
+        ).all()
+
+        if len(raw_matches) > 1:
+            raise MarketEventDurableCorruptionError(
+                "raw identity and capture identity resolve "
+                "to different durable rows"
+            )
+
+        existing_raw = (
+            raw_matches[0]
+            if raw_matches
+            else None
+        )
 
         if existing_raw is None:
             await self._session.execute(
@@ -395,6 +449,16 @@ class PostgresMarketEventRepository:
             existing_values = dict(
                 existing_raw._mapping
             )
+
+            if (
+                existing_values["raw_event_id"]
+                != raw.raw_event_id
+            ):
+                raise RawCaptureIdentityConflictError(
+                    "capture identity is already bound to "
+                    f"{existing_values['raw_event_id']}"
+                )
+
             existing_frame_bytes = bytes(
                 existing_values["frame_bytes"]
             )

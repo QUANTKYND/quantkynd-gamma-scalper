@@ -1,4 +1,5 @@
 import hashlib
+import inspect
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -36,6 +37,7 @@ from app.market_data.persistence.planner import (
 from app.persistence.postgres.base import Base
 from app.persistence.postgres.repositories import (
     EVENT_MEMBERSHIP_IMMUTABLE_FIELDS,
+    FAILURE_IMMUTABLE_FIELDS,
     FAILURE_MEMBERSHIP_IMMUTABLE_FIELDS,
     OBSERVATION_IMMUTABLE_FIELDS,
     QUOTE_SUBTYPE_IMMUTABLE_FIELDS,
@@ -1630,3 +1632,378 @@ def test_status_subtype_projection_preserves_provider_code() -> None:
     assert tuple(values) == STATUS_SUBTYPE_IMMUTABLE_FIELDS
     assert values["provider_status_numeric"] == 2
     assert values["status_is_known"] is True
+
+
+class _FlexibleAggregateSession:
+    def __init__(
+        self,
+        *,
+        event_rows=(),
+        failure_rows=(),
+    ) -> None:
+        self._event_rows = tuple(event_rows)
+        self._failure_rows = tuple(failure_rows)
+
+    async def execute(self, statement, parameters):
+        sql = str(statement)
+        if "FROM market_normalization_result_events AS m" in sql:
+            return _AggregateResult(self._event_rows)
+        if "FROM market_normalization_result_failures AS m" in sql:
+            return _AggregateResult(self._failure_rows)
+        raise AssertionError(f"unexpected aggregate query: {sql}")
+
+
+class _FlexibleAggregateRepository(PostgresMarketEventRepository):
+    def __init__(
+        self,
+        *,
+        session,
+        result,
+        raw_frame,
+        subtypes=None,
+    ) -> None:
+        super().__init__(session, require_active=lambda: None)
+        self._result = result
+        self._raw_frame = raw_frame
+        self._subtypes = dict(subtypes or {})
+
+    async def get_result(
+        self,
+        raw_event_id,
+        normalization_schema_version,
+    ):
+        return self._result
+
+    async def get_raw_frame(self, raw_event_id):
+        return self._raw_frame
+
+    async def _fetch_existing_rows(
+        self,
+        table,
+        key_name,
+        identifiers,
+        fields,
+    ):
+        assert key_name == "event_id"
+        return {
+            event_id: self._subtypes[event_id]
+            for event_id in identifiers
+            if event_id in self._subtypes
+        }
+
+
+class _SqlCaptureResult:
+    def first(self):
+        return None
+
+    def all(self):
+        return []
+
+
+class _SqlCaptureSession:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    async def execute(self, statement, parameters):
+        self.calls.append((str(statement), dict(parameters)))
+        return _SqlCaptureResult()
+
+
+def _aggregate_fixture(
+    *,
+    accepted_count: int = 1,
+    failed_count: int = 0,
+    frame_failure_present: bool = False,
+):
+    raw_event_id = "sha256:" + "b" * 64
+    result_id = "sha256:" + "c" * 64
+    event_id = "sha256:" + "d" * 64
+    result = SimpleNamespace(
+        result_id=result_id,
+        raw_event_id=raw_event_id,
+        accepted_entry_count=accepted_count,
+        failed_entry_count=failed_count,
+        frame_failure_present=frame_failure_present,
+    )
+    raw_frame = SimpleNamespace(raw_event_id=raw_event_id)
+    event_row = _FakeRow(
+        {
+            "event_ordinal": 0,
+            "event_id": event_id,
+            "event_type": "option_quote_observation",
+            "provider_mapping_record_id": "sha256:" + "1" * 64,
+            "contract_version_record_id": "sha256:" + "2" * 64,
+            "catalogue_version_record_id": "sha256:" + "3" * 64,
+        }
+    )
+    subtype = {
+        field: None
+        for field in QUOTE_SUBTYPE_IMMUTABLE_FIELDS
+    }
+    subtype.update(
+        {
+            "event_id": event_id,
+            "event_type": "option_quote_observation",
+            "subject_id": "sha256:" + "4" * 64,
+        }
+    )
+    return result, raw_frame, event_row, subtype
+
+
+def test_advisory_lock_sql_is_two_integer_key_form() -> None:
+    source = inspect.getsource(
+        PostgresMarketEventRepository.persist_frame_result
+    )
+
+    assert "SELECT pg_advisory_xact_lock(" in source
+    assert "CAST(:data14_namespace AS integer)" in source
+    assert "CAST(:stripe AS integer)" in source
+    assert '"data14_namespace": -1377601296' in source
+
+
+@pytest.mark.parametrize("root_count", (5_000, 10_000))
+def test_lock_stripe_boundary_is_deterministic_and_bounded(
+    root_count: int,
+) -> None:
+    roots = tuple(
+        ("market_observation", f"sha256:{index:064x}")
+        for index in range(root_count)
+    )
+
+    first = derive_lock_stripes(roots)
+    second = derive_lock_stripes(reversed(roots))
+
+    assert first == second
+    assert first == tuple(sorted(set(first)))
+    assert 1 <= len(first) <= 64
+    assert all(0 <= stripe < 64 for stripe in first)
+
+
+@pytest.mark.parametrize(
+    ("parameters_per_item", "expected_size"),
+    (
+        (1, 1_000),
+        (60, 1_000),
+        (61, 983),
+        (60_000, 1),
+        (60_001, 1),
+    ),
+)
+def test_parameter_chunk_formula(
+    parameters_per_item: int,
+    expected_size: int,
+) -> None:
+    chunks = plan_parameter_chunks(
+        2_500,
+        parameters_per_item,
+    )
+
+    assert chunks[0].size == expected_size
+    assert sum(chunk.size for chunk in chunks) == 2_500
+    assert all(1 <= chunk.size <= 1_000 for chunk in chunks)
+    if parameters_per_item <= 60_000:
+        assert all(
+            chunk.size * parameters_per_item <= 60_000
+            for chunk in chunks
+        )
+
+
+def test_provenance_record_ids_are_immutable_retry_material() -> None:
+    existing = {
+        field: None
+        for field in OBSERVATION_IMMUTABLE_FIELDS
+    }
+    existing.update(
+        {
+            "event_id": "sha256:" + "1" * 64,
+            "provider_mapping_record_id": "sha256:" + "2" * 64,
+            "contract_version_record_id": "sha256:" + "3" * 64,
+            "catalogue_version_record_id": "sha256:" + "4" * 64,
+        }
+    )
+
+    assert _rows_match_on_fields(
+        existing,
+        dict(existing),
+        OBSERVATION_IMMUTABLE_FIELDS,
+    )
+
+    for field in (
+        "provider_mapping_record_id",
+        "contract_version_record_id",
+        "catalogue_version_record_id",
+    ):
+        changed = dict(existing)
+        changed[field] = "sha256:" + "f" * 64
+        assert not _rows_match_on_fields(
+            existing,
+            changed,
+            OBSERVATION_IMMUTABLE_FIELDS,
+        )
+
+
+def test_failure_payload_is_immutable_retry_material() -> None:
+    existing = {
+        field: None
+        for field in FAILURE_IMMUTABLE_FIELDS
+    }
+    existing.update(
+        {
+            "failure_id": "sha256:" + "1" * 64,
+            "payload": {"reason": "first"},
+        }
+    )
+    changed = {
+        **existing,
+        "payload": {"reason": "changed"},
+    }
+
+    assert not _rows_match_on_fields(
+        existing,
+        changed,
+        FAILURE_IMMUTABLE_FIELDS,
+    )
+
+
+@pytest.mark.anyio
+async def test_load_result_aggregate_rejects_missing_raw_frame() -> None:
+    result, _, _, _ = _aggregate_fixture()
+    repository = _FlexibleAggregateRepository(
+        session=_FlexibleAggregateSession(),
+        result=result,
+        raw_frame=None,
+    )
+
+    with pytest.raises(
+        MarketEventDurableCorruptionError,
+        match="missing its raw frame",
+    ):
+        await repository.load_result_aggregate(
+            result.raw_event_id,
+            1,
+        )
+
+
+@pytest.mark.anyio
+async def test_load_result_aggregate_rejects_non_contiguous_events() -> None:
+    result, raw_frame, event_row, subtype = _aggregate_fixture(
+        accepted_count=2,
+    )
+    second = _FakeRow(
+        {
+            **event_row._mapping,
+            "event_ordinal": 2,
+            "event_id": "sha256:" + "e" * 64,
+        }
+    )
+    second_subtype = dict(subtype)
+    second_subtype["event_id"] = second._mapping["event_id"]
+    repository = _FlexibleAggregateRepository(
+        session=_FlexibleAggregateSession(
+            event_rows=(event_row, second),
+        ),
+        result=result,
+        raw_frame=raw_frame,
+        subtypes={
+            subtype["event_id"]: subtype,
+            second_subtype["event_id"]: second_subtype,
+        },
+    )
+
+    with pytest.raises(
+        MarketEventDurableCorruptionError,
+        match="not contiguous",
+    ):
+        await repository.load_result_aggregate(
+            result.raw_event_id,
+            1,
+        )
+
+
+@pytest.mark.anyio
+async def test_load_result_aggregate_rejects_event_count_mismatch() -> None:
+    result, raw_frame, event_row, subtype = _aggregate_fixture(
+        accepted_count=2,
+    )
+    repository = _FlexibleAggregateRepository(
+        session=_FlexibleAggregateSession(event_rows=(event_row,)),
+        result=result,
+        raw_frame=raw_frame,
+        subtypes={subtype["event_id"]: subtype},
+    )
+
+    with pytest.raises(
+        MarketEventDurableCorruptionError,
+        match="event membership count differs",
+    ):
+        await repository.load_result_aggregate(
+            result.raw_event_id,
+            1,
+        )
+
+
+@pytest.mark.anyio
+async def test_load_result_aggregate_rejects_missing_subtype() -> None:
+    result, raw_frame, event_row, _ = _aggregate_fixture()
+    repository = _FlexibleAggregateRepository(
+        session=_FlexibleAggregateSession(event_rows=(event_row,)),
+        result=result,
+        raw_frame=raw_frame,
+        subtypes={},
+    )
+
+    with pytest.raises(
+        MarketEventDurableCorruptionError,
+        match="missing its typed subtype",
+    ):
+        await repository.load_result_aggregate(
+            result.raw_event_id,
+            1,
+        )
+
+
+@pytest.mark.anyio
+async def test_load_result_aggregate_rejects_failure_count_mismatch() -> None:
+    result, raw_frame, event_row, subtype = _aggregate_fixture(
+        failed_count=1,
+    )
+    repository = _FlexibleAggregateRepository(
+        session=_FlexibleAggregateSession(event_rows=(event_row,)),
+        result=result,
+        raw_frame=raw_frame,
+        subtypes={subtype["event_id"]: subtype},
+    )
+
+    with pytest.raises(
+        MarketEventDurableCorruptionError,
+        match="failure membership count differs",
+    ):
+        await repository.load_result_aggregate(
+            result.raw_event_id,
+            1,
+        )
+
+
+@pytest.mark.anyio
+async def test_observation_queries_bind_schema_on_both_sides() -> None:
+    session = _SqlCaptureSession()
+    repository = PostgresMarketEventRepository(
+        session,
+        require_active=lambda: None,
+    )
+
+    await repository.get_event("event", 1)
+    await repository.list_subject_observations(1, "subject")
+    await repository.list_provider_status(1, "upstox")
+
+    assert len(session.calls) == 3
+    for sql, parameters in session.calls:
+        assert parameters["schema"] == 1
+        assert (
+            "o.normalization_schema_version = :schema"
+            in sql
+        )
+        assert (
+            "r.normalization_schema_version = :schema"
+            in sql
+        )

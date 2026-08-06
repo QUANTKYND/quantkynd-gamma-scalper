@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -14,7 +15,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from app.core.database_config import DatabaseSettings
 from app.instruments.temporal_records import (
@@ -1549,3 +1550,336 @@ async def _assert_tables(
 
     assert present <= tables
     assert absent.isdisjoint(tables)
+
+DATA_1_4_TABLES = (
+    "raw_market_frames",
+    "market_normalization_results",
+    "market_observations",
+    "underlying_quote_observations",
+    "futures_quote_observations",
+    "option_quote_observations",
+    "market_segment_status_observations",
+    "market_normalization_result_events",
+    "market_normalization_failures",
+    "market_normalization_result_failures",
+    "provider_subscription_instrument_sets",
+    "provider_subscription_instrument_set_keys",
+    "provider_lifecycle_batches",
+    "raw_provider_lifecycle_events",
+    "provider_lifecycle_batch_events",
+    "provider_lifecycle_observations",
+    "provider_connection_lifecycle_observations",
+    "provider_subscription_lifecycle_observations",
+    "provider_lifecycle_batch_observations",
+)
+
+
+def _raw_frame_values(
+    *,
+    marker: str,
+    source_order: int,
+    frame_bytes: bytes = b"x",
+    available_at: datetime | None = None,
+) -> dict[str, object]:
+    when = available_at or (
+        RECORDED_AT + timedelta(hours=1)
+    )
+    return {
+        "raw_event_id": "sha256:" + marker * 64,
+        "provider": "upstox",
+        "provider_schema_id": "fixture-schema",
+        "provider_schema_sha256": "a" * 64,
+        "connection_session_id": "fixture-session",
+        "source_order_scope_id": "fixture-scope",
+        "source_order": source_order,
+        "frame_bytes": frame_bytes,
+        "frame_content_hash": (
+            "sha256:"
+            + hashlib.sha256(frame_bytes).hexdigest()
+        ),
+        "received_at": None,
+        "available_at": when,
+        "recorded_at": when,
+        "capture_basis": "historical_import",
+        "source_file_id": None,
+        "source_record_id": None,
+        "persistence_recorded_at": when,
+    }
+
+
+@pytest.mark.anyio
+async def test_data14_downgrade_refuses_non_empty_history_before_ddl(
+    postgres_url: str,
+    postgres_settings: DatabaseSettings,
+) -> None:
+    engine = create_database_engine(postgres_settings)
+    config = alembic_config(postgres_url)
+
+    try:
+        async with destructive_database_lease(
+            engine,
+            postgres_url,
+            postgres_settings,
+            DestructiveDatabasePurpose.INTEGRATION,
+        ) as lease:
+            await lease.drop_and_recreate_public()
+            await asyncio.to_thread(command.upgrade, config, "head")
+
+            raw_values = _raw_frame_values(
+                marker="1",
+                source_order=0,
+            )
+            async with engine.begin() as connection:
+                await connection.execute(
+                    Base.metadata.tables[
+                        "raw_market_frames"
+                    ].insert().values(**raw_values)
+                )
+
+            with pytest.raises(
+                RuntimeError,
+                match=(
+                    "DATA-1.4 downgrade refused.*"
+                    "raw_market_frames"
+                ),
+            ):
+                await asyncio.to_thread(
+                    command.downgrade,
+                    config,
+                    "20260804_03",
+                )
+
+            assert await _revision(engine) == EXPECTED_REVISION
+
+            async with engine.connect() as connection:
+                row_count = await connection.scalar(
+                    text(
+                        "SELECT count(*) "
+                        "FROM raw_market_frames"
+                    )
+                )
+                trigger_names = set(
+                    (
+                        await connection.execute(
+                            text(
+                                "SELECT tgname "
+                                "FROM pg_trigger "
+                                "WHERE tgrelid = "
+                                "'raw_market_frames'::regclass "
+                                "AND NOT tgisinternal"
+                            )
+                        )
+                    ).scalars()
+                )
+                constraint_names = set(
+                    (
+                        await connection.execute(
+                            text(
+                                "SELECT conname "
+                                "FROM pg_constraint "
+                                "WHERE conname = ANY("
+                                "CAST(:names AS text[]))"
+                            ),
+                            {
+                                "names": [
+                                    "uq_catalogue_version_records_record_semantic",
+                                    "uq_instrument_version_records_record_semantic",
+                                    "uq_provider_mapping_records_record_semantic",
+                                ]
+                            },
+                        )
+                    ).scalars()
+                )
+
+            assert row_count == 1
+            assert trigger_names == {
+                "data14_raw_market_frames_immutable",
+                "data14_raw_market_frames_no_truncate",
+            }
+            assert constraint_names == {
+                "uq_catalogue_version_records_record_semantic",
+                "uq_instrument_version_records_record_semantic",
+                "uq_provider_mapping_records_record_semantic",
+            }
+    finally:
+        await dispose_database_engine(engine)
+
+
+@pytest.mark.anyio
+async def test_raw_frame_one_byte_roundtrip_and_zero_byte_rejection(
+    postgres_url: str,
+    postgres_settings: DatabaseSettings,
+) -> None:
+    engine = create_database_engine(postgres_settings)
+    config = alembic_config(postgres_url)
+
+    try:
+        async with destructive_database_lease(
+            engine,
+            postgres_url,
+            postgres_settings,
+            DestructiveDatabasePurpose.INTEGRATION,
+        ) as lease:
+            await lease.drop_and_recreate_public()
+            await asyncio.to_thread(command.upgrade, config, "head")
+
+            async with engine.begin() as connection:
+                one_byte = _raw_frame_values(
+                    marker="2",
+                    source_order=0,
+                    frame_bytes=b"x",
+                )
+                await connection.execute(
+                    Base.metadata.tables[
+                        "raw_market_frames"
+                    ].insert().values(**one_byte)
+                )
+                stored = await connection.scalar(
+                    text(
+                        "SELECT frame_bytes "
+                        "FROM raw_market_frames "
+                        "WHERE raw_event_id = :raw_event_id"
+                    ),
+                    {"raw_event_id": one_byte["raw_event_id"]},
+                )
+                assert bytes(stored) == b"x"
+
+                zero_byte = _raw_frame_values(
+                    marker="3",
+                    source_order=1,
+                    frame_bytes=b"",
+                )
+                with pytest.raises(IntegrityError):
+                    async with connection.begin_nested():
+                        await connection.execute(
+                            Base.metadata.tables[
+                                "raw_market_frames"
+                            ].insert().values(**zero_byte)
+                        )
+    finally:
+        await dispose_database_engine(engine)
+
+
+@pytest.mark.anyio
+async def test_raw_frame_append_only_trigger_rejects_mutations(
+    postgres_url: str,
+    postgres_settings: DatabaseSettings,
+) -> None:
+    engine = create_database_engine(postgres_settings)
+    config = alembic_config(postgres_url)
+
+    try:
+        async with destructive_database_lease(
+            engine,
+            postgres_url,
+            postgres_settings,
+            DestructiveDatabasePurpose.INTEGRATION,
+        ) as lease:
+            await lease.drop_and_recreate_public()
+            await asyncio.to_thread(command.upgrade, config, "head")
+
+            raw_values = _raw_frame_values(
+                marker="4",
+                source_order=0,
+            )
+            async with engine.begin() as connection:
+                await connection.execute(
+                    Base.metadata.tables[
+                        "raw_market_frames"
+                    ].insert().values(**raw_values)
+                )
+
+            statements = (
+                "UPDATE raw_market_frames "
+                "SET provider_schema_id = 'changed'",
+                "DELETE FROM raw_market_frames",
+                "TRUNCATE raw_market_frames",
+            )
+            for statement in statements:
+                async with engine.begin() as connection:
+                    with pytest.raises(DBAPIError):
+                        async with connection.begin_nested():
+                            await connection.execute(text(statement))
+
+            async with engine.connect() as connection:
+                assert await connection.scalar(
+                    text(
+                        "SELECT count(*) "
+                        "FROM raw_market_frames"
+                    )
+                ) == 1
+    finally:
+        await dispose_database_engine(engine)
+
+
+@pytest.mark.anyio
+async def test_raw_frame_rejects_infinite_semantic_timestamp(
+    postgres_url: str,
+    postgres_settings: DatabaseSettings,
+) -> None:
+    engine = create_database_engine(postgres_settings)
+    config = alembic_config(postgres_url)
+
+    try:
+        async with destructive_database_lease(
+            engine,
+            postgres_url,
+            postgres_settings,
+            DestructiveDatabasePurpose.INTEGRATION,
+        ) as lease:
+            await lease.drop_and_recreate_public()
+            await asyncio.to_thread(command.upgrade, config, "head")
+
+            for marker, literal, source_order in (
+                ("5", "infinity", 0),
+                ("6", "-infinity", 1),
+            ):
+                values = _raw_frame_values(
+                    marker=marker,
+                    source_order=source_order,
+                )
+                async with engine.begin() as connection:
+                    with pytest.raises(IntegrityError):
+                        async with connection.begin_nested():
+                            await connection.execute(
+                                text(
+                                    "INSERT INTO raw_market_frames ("
+                                    "raw_event_id, provider, "
+                                    "provider_schema_id, "
+                                    "provider_schema_sha256, "
+                                    "connection_session_id, "
+                                    "source_order_scope_id, "
+                                    "source_order, frame_bytes, "
+                                    "frame_content_hash, received_at, "
+                                    "available_at, recorded_at, "
+                                    "capture_basis, source_file_id, "
+                                    "source_record_id, "
+                                    "persistence_recorded_at"
+                                    ") VALUES ("
+                                    ":raw_event_id, :provider, "
+                                    ":provider_schema_id, "
+                                    ":provider_schema_sha256, "
+                                    ":connection_session_id, "
+                                    ":source_order_scope_id, "
+                                    ":source_order, :frame_bytes, "
+                                    ":frame_content_hash, NULL, "
+                                    f"'{literal}'::timestamptz, "
+                                    ":recorded_at, :capture_basis, "
+                                    "NULL, NULL, :persistence_recorded_at"
+                                    ")"
+                                ),
+                                values,
+                            )
+    finally:
+        await dispose_database_engine(engine)
+
+
+def test_all_data14_foreign_keys_are_no_action() -> None:
+    for table_name in DATA_1_4_TABLES:
+        table = Base.metadata.tables[table_name]
+        for constraint in table.foreign_key_constraints:
+            assert constraint.elements
+            assert all(
+                element.ondelete == "NO ACTION"
+                for element in constraint.elements
+            )

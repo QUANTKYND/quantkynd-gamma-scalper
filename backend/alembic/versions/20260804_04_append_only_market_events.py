@@ -36,6 +36,25 @@ TABLES = (
 )
 
 
+def _non_empty_data14_tables() -> tuple[str, ...]:
+    connection = op.get_bind()
+    non_empty: list[str] = []
+
+    for table_name in sorted(TABLES):
+        has_rows = connection.execute(
+            sa.text(
+                f"SELECT EXISTS ("
+                f"SELECT 1 FROM {table_name} LIMIT 1"
+                f")"
+            )
+        ).scalar_one()
+
+        if has_rows:
+            non_empty.append(table_name)
+
+    return tuple(non_empty)
+
+
 def _create_raw_market_frames() -> None:
     op.create_table(
         "raw_market_frames",
@@ -1621,6 +1640,15 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    non_empty_tables = _non_empty_data14_tables()
+
+    if non_empty_tables:
+        raise RuntimeError(
+            "DATA-1.4 downgrade refused because durable "
+            "history exists in: "
+            + ", ".join(non_empty_tables)
+        )
+    
     for name in TABLES:
         op.execute(
             f"DROP TRIGGER IF EXISTS "
