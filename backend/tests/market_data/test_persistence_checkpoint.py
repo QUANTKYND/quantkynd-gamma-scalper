@@ -1,12 +1,17 @@
 import hashlib
 from datetime import UTC, datetime
+from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     ForeignKeyConstraint,
+    Integer,
     LargeBinary,
+    Numeric,
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
@@ -29,6 +34,8 @@ from app.persistence.postgres.base import Base
 from app.persistence.postgres.repositories import (
     EVENT_MEMBERSHIP_IMMUTABLE_FIELDS,
     FAILURE_MEMBERSHIP_IMMUTABLE_FIELDS,
+    QUOTE_SUBTYPE_IMMUTABLE_FIELDS,
+    STATUS_SUBTYPE_IMMUTABLE_FIELDS,
     PostgresMarketEventRepository,
     _rows_match_on_fields,
 )
@@ -986,3 +993,274 @@ def test_result_failure_membership_metadata_preserves_role_order() -> None:
             False,
         ),
     }
+
+
+QUOTE_SUBTYPE_COLUMNS = {
+    "event_id",
+    "event_type",
+    "subject_id",
+    "feed_response_type",
+    "request_mode",
+    "feed_union",
+    "is_snapshot",
+    "presence_semantics",
+    "numeric_basis",
+    "quantity_basis",
+    "bid_price",
+    "bid_size",
+    "ask_price",
+    "ask_size",
+    "last_price",
+    "last_size",
+    "last_trade_at",
+    "previous_close_price",
+    "reported_volume",
+    "open_interest",
+    "provider_depth_levels_present",
+    "normalized_depth_levels",
+    "unadopted_depth_level_count",
+    "unadopted_schema_paths",
+    "present_unadopted_message_paths",
+    "secondary_payload_paths_present",
+}
+
+
+@pytest.mark.parametrize(
+    ("table_name", "event_type"),
+    (
+        (
+            "underlying_quote_observations",
+            "underlying_quote_observation",
+        ),
+        (
+            "futures_quote_observations",
+            "futures_quote_observation",
+        ),
+        (
+            "option_quote_observations",
+            "option_quote_observation",
+        ),
+    ),
+)
+def test_quote_subtype_metadata_is_typed_and_bound(
+    table_name: str,
+    event_type: str,
+) -> None:
+    table = Base.metadata.tables[table_name]
+
+    assert tuple(
+        table.primary_key.columns.keys()
+    ) == ("event_id",)
+    assert "id" not in table.c
+    assert "created_at" not in table.c
+    assert set(table.c.keys()) == QUOTE_SUBTYPE_COLUMNS
+
+    for column_name in (
+        "bid_price",
+        "ask_price",
+        "last_price",
+        "previous_close_price",
+    ):
+        assert isinstance(
+            table.c[column_name].type,
+            Numeric,
+        )
+
+    for column_name in (
+        "bid_size",
+        "ask_size",
+        "last_size",
+        "reported_volume",
+        "open_interest",
+    ):
+        assert isinstance(
+            table.c[column_name].type,
+            BigInteger,
+        )
+
+    assert isinstance(table.c.is_snapshot.type, Boolean)
+    assert isinstance(
+        table.c.unadopted_schema_paths.type,
+        ARRAY,
+    )
+    assert isinstance(
+        table.c.present_unadopted_message_paths.type,
+        ARRAY,
+    )
+    assert isinstance(
+        table.c.secondary_payload_paths_present.type,
+        ARRAY,
+    )
+
+    assert (
+        (
+            "event_id",
+            "event_type",
+            "subject_id",
+        ),
+        (
+            "market_observations.event_id",
+            "market_observations.event_type",
+            "market_observations.subject_id",
+        ),
+        (
+            "NO ACTION",
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ) in _foreign_key_shapes(table)
+
+    assert _index_shapes(table) == {
+        f"ix_{table_name}_mode_union": (
+            "request_mode",
+            "feed_union",
+            "event_id",
+        ),
+    }
+
+    checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in table.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    assert event_type in checks[
+        f"ck_{table_name}_event_type"
+    ]
+    assert f"ck_{table_name}_feed_shape" in checks
+    assert f"ck_{table_name}_depth_reconciliation" in checks
+
+
+def test_market_segment_status_subtype_metadata_is_typed_and_bound() -> None:
+    table = Base.metadata.tables[
+        "market_segment_status_observations"
+    ]
+
+    assert tuple(
+        table.primary_key.columns.keys()
+    ) == ("event_id",)
+    assert "id" not in table.c
+    assert "created_at" not in table.c
+    assert set(table.c.keys()) == {
+        "event_id",
+        "event_type",
+        "subject_id",
+        "segment",
+        "provider_status_name",
+        "provider_status_numeric",
+        "status_is_known",
+    }
+    assert isinstance(
+        table.c.provider_status_numeric.type,
+        Integer,
+    )
+    assert isinstance(
+        table.c.status_is_known.type,
+        Boolean,
+    )
+    assert (
+        (
+            "event_id",
+            "event_type",
+            "subject_id",
+        ),
+        (
+            "market_observations.event_id",
+            "market_observations.event_type",
+            "market_observations.subject_id",
+        ),
+        (
+            "NO ACTION",
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ) in _foreign_key_shapes(table)
+    assert _index_shapes(table) == {
+        "ix_market_segment_status_segment_code": (
+            "segment",
+            "provider_status_numeric",
+            "event_id",
+        ),
+    }
+
+
+def test_quote_subtype_projection_preserves_exact_numeric_values() -> None:
+    event_id = "sha256:" + "7" * 64
+    subject_id = "sha256:" + "8" * 64
+    event = SimpleNamespace(
+        event_id=event_id,
+        identity=SimpleNamespace(
+            event_type="option_quote_observation",
+            subject_id=subject_id,
+        ),
+        feed_response_type=SimpleNamespace(value="live_feed"),
+        request_mode=SimpleNamespace(value="option_greeks"),
+        feed_union=SimpleNamespace(
+            value="firstLevelWithGreeks"
+        ),
+        is_snapshot=False,
+        presence_semantics="proto3_parent_implied_v1",
+        numeric_basis=(
+            "protobuf_double_roundtrip_decimal_v1"
+        ),
+        quantity_basis="upstox_reported_quantity_v1",
+        bid_price=Decimal("101.125"),
+        bid_size=5,
+        ask_price=Decimal("101.250"),
+        ask_size=7,
+        last_price=Decimal("101.200"),
+        last_size=2,
+        last_trade_at=datetime(2026, 8, 5, tzinfo=UTC),
+        previous_close_price=Decimal("100.000"),
+        reported_volume=1000,
+        open_interest=500,
+        provider_depth_levels_present=1,
+        normalized_depth_levels=1,
+        unadopted_depth_level_count=0,
+        unadopted_schema_paths=("feeds[*].ff",),
+        present_unadopted_message_paths=(),
+        secondary_payload_paths_present=(),
+    )
+
+    table_name, values = (
+        PostgresMarketEventRepository._subtype_values(
+            event
+        )
+    )
+
+    assert table_name == "option_quote_observations"
+    assert tuple(values) == QUOTE_SUBTYPE_IMMUTABLE_FIELDS
+    assert values["bid_price"] == Decimal("101.125")
+    assert values["ask_price"] == Decimal("101.250")
+    assert values["unadopted_schema_paths"] == [
+        "feeds[*].ff"
+    ]
+
+
+def test_status_subtype_projection_preserves_provider_code() -> None:
+    event = SimpleNamespace(
+        event_id="sha256:" + "9" * 64,
+        identity=SimpleNamespace(
+            event_type=(
+                "market_segment_status_observation"
+            ),
+            subject_id="sha256:" + "a" * 64,
+        ),
+        segment="NSE_FO",
+        provider_status_name="NORMAL_OPEN",
+        provider_status_numeric=2,
+        status_is_known=True,
+    )
+
+    table_name, values = (
+        PostgresMarketEventRepository._subtype_values(
+            event
+        )
+    )
+
+    assert (
+        table_name
+        == "market_segment_status_observations"
+    )
+    assert tuple(values) == STATUS_SUBTYPE_IMMUTABLE_FIELDS
+    assert values["provider_status_numeric"] == 2
+    assert values["status_is_known"] is True

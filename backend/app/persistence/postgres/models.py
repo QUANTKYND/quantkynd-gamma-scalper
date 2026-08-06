@@ -539,7 +539,8 @@ MARKET_OBSERVATIONS_TABLE = Table(
         "AND contract_version_id IS NOT NULL "
         "AND catalogue_version_id IS NOT NULL "
         "AND resolution_market_as_of IS NOT NULL "
-        "AND resolution_known_as_of IS NOT NULL"
+        "AND resolution_known_as_of IS NOT NULL "
+        "AND subject_id = economic_subject_id"
         ") OR ("
         "event_type = 'market_segment_status_observation' "
         "AND provider_contract_key IS NULL "
@@ -867,6 +868,337 @@ MARKET_NORMALIZATION_RESULT_FAILURES_TABLE = Table(
 )
 
 
+QUOTE_PRICE_COLUMNS = (
+    "bid_price",
+    "ask_price",
+    "last_price",
+    "previous_close_price",
+)
+
+QUOTE_QUANTITY_COLUMNS = (
+    "bid_size",
+    "ask_size",
+    "last_size",
+    "reported_volume",
+)
+
+
+def _quote_subtype_table(
+    table_name: str,
+    event_type: str,
+    feed_shape: str,
+) -> Table:
+    finite_nonnegative_prices = " AND ".join(
+        f"({column} IS NULL OR ("
+        f"{column} >= 0 AND "
+        f"{column}::text NOT IN "
+        f"('NaN', 'Infinity', '-Infinity')"
+        f"))"
+        for column in QUOTE_PRICE_COLUMNS
+    )
+    quantity_bounds = " AND ".join(
+        f"({column} IS NULL OR "
+        f"{column} BETWEEN 0 AND 9223372036854775807)"
+        for column in QUOTE_QUANTITY_COLUMNS
+    )
+
+    return Table(
+        table_name,
+        Base.metadata,
+        Column("event_id", String(ID_LENGTH), primary_key=True),
+        Column("event_type", String(64), nullable=False),
+        Column("subject_id", String(ID_LENGTH), nullable=False),
+        Column("feed_response_type", String(32), nullable=False),
+        Column("request_mode", String(32), nullable=False),
+        Column("feed_union", String(64), nullable=False),
+        Column("is_snapshot", Boolean, nullable=False),
+        Column("presence_semantics", String(64), nullable=False),
+        Column("numeric_basis", String(64), nullable=False),
+        Column("quantity_basis", String(64), nullable=False),
+        Column("bid_price", DECIMAL_TYPE, nullable=True),
+        Column("bid_size", BigInteger, nullable=True),
+        Column("ask_price", DECIMAL_TYPE, nullable=True),
+        Column("ask_size", BigInteger, nullable=True),
+        Column("last_price", DECIMAL_TYPE, nullable=True),
+        Column("last_size", BigInteger, nullable=True),
+        Column(
+            "last_trade_at",
+            DateTime(timezone=True),
+            nullable=True,
+        ),
+        Column(
+            "previous_close_price",
+            DECIMAL_TYPE,
+            nullable=True,
+        ),
+        Column("reported_volume", BigInteger, nullable=True),
+        Column("open_interest", BigInteger, nullable=True),
+        Column(
+            "provider_depth_levels_present",
+            Integer,
+            nullable=False,
+        ),
+        Column(
+            "normalized_depth_levels",
+            Integer,
+            nullable=False,
+        ),
+        Column(
+            "unadopted_depth_level_count",
+            Integer,
+            nullable=False,
+        ),
+        Column(
+            "unadopted_schema_paths",
+            ARRAY(String(KEY_LENGTH)),
+            nullable=False,
+        ),
+        Column(
+            "present_unadopted_message_paths",
+            ARRAY(String(KEY_LENGTH)),
+            nullable=False,
+        ),
+        Column(
+            "secondary_payload_paths_present",
+            ARRAY(String(KEY_LENGTH)),
+            nullable=False,
+        ),
+        ForeignKeyConstraint(
+            ["event_id", "event_type", "subject_id"],
+            [
+                "market_observations.event_id",
+                "market_observations.event_type",
+                "market_observations.subject_id",
+            ],
+            ondelete="NO ACTION",
+            name=f"fk_{table_name}_event_type_subject",
+        ),
+        CheckConstraint(
+            "event_id ~ '^sha256:[0-9a-f]{64}$'",
+            name=f"{table_name}_event_sha256",
+        ),
+        CheckConstraint(
+            "subject_id ~ '^sha256:[0-9a-f]{64}$'",
+            name=f"{table_name}_subject_sha256",
+        ),
+        CheckConstraint(
+            f"event_type = '{event_type}'",
+            name=f"{table_name}_event_type",
+        ),
+        CheckConstraint(
+            "feed_response_type IN ('initial_feed', 'live_feed')",
+            name=f"{table_name}_response_type",
+        ),
+        CheckConstraint(
+            "request_mode IN "
+            "('ltpc', 'full_d5', 'option_greeks', 'full_d30')",
+            name=f"{table_name}_request_mode",
+        ),
+        CheckConstraint(
+            "feed_union IN "
+            "('ltpc', 'indexFF', 'marketFF', "
+            "'firstLevelWithGreeks')",
+            name=f"{table_name}_feed_union",
+        ),
+        CheckConstraint(
+            "(feed_response_type = 'initial_feed' AND is_snapshot) "
+            "OR (feed_response_type = 'live_feed' AND NOT is_snapshot)",
+            name=f"{table_name}_snapshot_shape",
+        ),
+        CheckConstraint(
+            "presence_semantics = 'proto3_parent_implied_v1' "
+            "AND numeric_basis = "
+            "'protobuf_double_roundtrip_decimal_v1' "
+            "AND quantity_basis = 'upstox_reported_quantity_v1'",
+            name=f"{table_name}_semantic_basis",
+        ),
+        CheckConstraint(
+            finite_nonnegative_prices,
+            name=f"{table_name}_price_shape",
+        ),
+        CheckConstraint(
+            quantity_bounds,
+            name=f"{table_name}_quantity_shape",
+        ),
+        CheckConstraint(
+            "open_interest IS NULL OR "
+            "open_interest BETWEEN 0 AND 9007199254740992",
+            name=f"{table_name}_open_interest",
+        ),
+        CheckConstraint(
+            "last_trade_at IS NULL OR ("
+            "last_trade_at <> 'infinity'::timestamptz "
+            "AND last_trade_at <> '-infinity'::timestamptz"
+            ")",
+            name=f"{table_name}_last_trade_finite",
+        ),
+        CheckConstraint(
+            "provider_depth_levels_present BETWEEN 0 AND 30 "
+            "AND normalized_depth_levels IN (0, 1) "
+            "AND unadopted_depth_level_count BETWEEN 0 AND 30 "
+            "AND unadopted_depth_level_count = "
+            "provider_depth_levels_present - normalized_depth_levels",
+            name=f"{table_name}_depth_reconciliation",
+        ),
+        CheckConstraint(
+            feed_shape,
+            name=f"{table_name}_feed_shape",
+        ),
+        CheckConstraint(
+            "array_position(unadopted_schema_paths, NULL) IS NULL "
+            "AND cardinality(unadopted_schema_paths) <= 5000",
+            name=f"{table_name}_unadopted_paths",
+        ),
+        CheckConstraint(
+            "array_position("
+            "present_unadopted_message_paths, NULL"
+            ") IS NULL "
+            "AND cardinality("
+            "present_unadopted_message_paths"
+            ") <= 5000",
+            name=f"{table_name}_present_paths",
+        ),
+        CheckConstraint(
+            "array_position("
+            "secondary_payload_paths_present, NULL"
+            ") IS NULL "
+            "AND cardinality("
+            "secondary_payload_paths_present"
+            ") <= 5000",
+            name=f"{table_name}_secondary_paths",
+        ),
+        Index(
+            f"ix_{table_name}_mode_union",
+            "request_mode",
+            "feed_union",
+            "event_id",
+        ),
+    )
+
+
+UNDERLYING_QUOTE_OBSERVATIONS_TABLE = _quote_subtype_table(
+    "underlying_quote_observations",
+    "underlying_quote_observation",
+    "(feed_union = 'ltpc' "
+    "AND request_mode = 'ltpc' "
+    "AND provider_depth_levels_present = 0 "
+    "AND normalized_depth_levels = 0) "
+    "OR (feed_union = 'indexFF' "
+    "AND request_mode IN ('full_d5', 'full_d30') "
+    "AND provider_depth_levels_present = 0 "
+    "AND normalized_depth_levels = 0)",
+)
+
+FUTURES_QUOTE_OBSERVATIONS_TABLE = _quote_subtype_table(
+    "futures_quote_observations",
+    "futures_quote_observation",
+    "(feed_union = 'ltpc' "
+    "AND request_mode = 'ltpc' "
+    "AND provider_depth_levels_present = 0 "
+    "AND normalized_depth_levels = 0) "
+    "OR (feed_union = 'marketFF' "
+    "AND ((request_mode = 'full_d5' "
+    "AND provider_depth_levels_present <= 5) "
+    "OR (request_mode = 'full_d30' "
+    "AND provider_depth_levels_present <= 30)) "
+    "AND normalized_depth_levels = CASE "
+    "WHEN provider_depth_levels_present > 0 THEN 1 ELSE 0 END)",
+)
+
+OPTION_QUOTE_OBSERVATIONS_TABLE = _quote_subtype_table(
+    "option_quote_observations",
+    "option_quote_observation",
+    "(feed_union = 'ltpc' "
+    "AND request_mode = 'ltpc' "
+    "AND provider_depth_levels_present = 0 "
+    "AND normalized_depth_levels = 0) "
+    "OR (feed_union = 'marketFF' "
+    "AND ((request_mode = 'full_d5' "
+    "AND provider_depth_levels_present <= 5) "
+    "OR (request_mode = 'full_d30' "
+    "AND provider_depth_levels_present <= 30)) "
+    "AND normalized_depth_levels = CASE "
+    "WHEN provider_depth_levels_present > 0 THEN 1 ELSE 0 END) "
+    "OR (feed_union = 'firstLevelWithGreeks' "
+    "AND request_mode = 'option_greeks' "
+    "AND provider_depth_levels_present IN (0, 1) "
+    "AND normalized_depth_levels = provider_depth_levels_present)",
+)
+
+
+MARKET_SEGMENT_STATUS_OBSERVATIONS_TABLE = Table(
+    "market_segment_status_observations",
+    Base.metadata,
+    Column("event_id", String(ID_LENGTH), primary_key=True),
+    Column("event_type", String(64), nullable=False),
+    Column("subject_id", String(ID_LENGTH), nullable=False),
+    Column("segment", String(NAME_LENGTH), nullable=False),
+    Column("provider_status_name", String(NAME_LENGTH), nullable=False),
+    Column("provider_status_numeric", Integer, nullable=False),
+    Column("status_is_known", Boolean, nullable=False),
+    ForeignKeyConstraint(
+        ["event_id", "event_type", "subject_id"],
+        [
+            "market_observations.event_id",
+            "market_observations.event_type",
+            "market_observations.subject_id",
+        ],
+        ondelete="NO ACTION",
+        name="fk_market_segment_status_event_type_subject",
+    ),
+    CheckConstraint(
+        "event_id ~ '^sha256:[0-9a-f]{64}$'",
+        name="market_segment_status_event_sha256",
+    ),
+    CheckConstraint(
+        "subject_id ~ '^sha256:[0-9a-f]{64}$'",
+        name="market_segment_status_subject_sha256",
+    ),
+    CheckConstraint(
+        "event_type = 'market_segment_status_observation'",
+        name="market_segment_status_event_type",
+    ),
+    CheckConstraint(
+        "octet_length(segment) BETWEEN 1 AND 128 "
+        "AND segment = btrim(segment) "
+        "AND segment !~ '[[:cntrl:]]'",
+        name="market_segment_status_segment_shape",
+    ),
+    CheckConstraint(
+        "octet_length(provider_status_name) BETWEEN 1 AND 128 "
+        "AND provider_status_name ~ '^[A-Z0-9_]+$'",
+        name="market_segment_status_name_shape",
+    ),
+    CheckConstraint(
+        "(status_is_known AND ("
+        "(provider_status_numeric = 0 "
+        "AND provider_status_name = 'PRE_OPEN_START') OR "
+        "(provider_status_numeric = 1 "
+        "AND provider_status_name = 'PRE_OPEN_END') OR "
+        "(provider_status_numeric = 2 "
+        "AND provider_status_name = 'NORMAL_OPEN') OR "
+        "(provider_status_numeric = 3 "
+        "AND provider_status_name = 'NORMAL_CLOSE') OR "
+        "(provider_status_numeric = 4 "
+        "AND provider_status_name = 'CLOSING_START') OR "
+        "(provider_status_numeric = 5 "
+        "AND provider_status_name = 'CLOSING_END')"
+        ")) OR ("
+        "NOT status_is_known "
+        "AND provider_status_numeric NOT IN (0, 1, 2, 3, 4, 5) "
+        "AND provider_status_name = 'UNKNOWN'"
+        ")",
+        name="market_segment_status_known_mapping",
+    ),
+    Index(
+        "ix_market_segment_status_segment_code",
+        "segment",
+        "provider_status_numeric",
+        "event_id",
+    ),
+)
+
+
 DATA14_TABLE_COLUMNS = {
     "provider_lifecycle_observations": (
         Column("raw_event_id", String(ID_LENGTH), nullable=False),
@@ -875,10 +1207,6 @@ DATA14_TABLE_COLUMNS = {
 }
 
 DATA14_TABLES = (
-    "underlying_quote_observations",
-    "futures_quote_observations",
-    "option_quote_observations",
-    "market_segment_status_observations",
     "provider_subscription_instrument_sets",
     "provider_subscription_instrument_set_keys",
     "provider_lifecycle_batches",

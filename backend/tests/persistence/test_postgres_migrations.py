@@ -6,8 +6,10 @@ from alembic import command
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Integer,
     LargeBinary,
     MetaData,
+    Numeric,
     inspect,
     text,
 )
@@ -260,6 +262,52 @@ MARKET_RESULT_FAILURE_COLUMNS = {
     "failure_role",
     "failure_ordinal",
     "failure_id",
+}
+
+
+QUOTE_SUBTYPE_COLUMNS = {
+    "event_id",
+    "event_type",
+    "subject_id",
+    "feed_response_type",
+    "request_mode",
+    "feed_union",
+    "is_snapshot",
+    "presence_semantics",
+    "numeric_basis",
+    "quantity_basis",
+    "bid_price",
+    "bid_size",
+    "ask_price",
+    "ask_size",
+    "last_price",
+    "last_size",
+    "last_trade_at",
+    "previous_close_price",
+    "reported_volume",
+    "open_interest",
+    "provider_depth_levels_present",
+    "normalized_depth_levels",
+    "unadopted_depth_level_count",
+    "unadopted_schema_paths",
+    "present_unadopted_message_paths",
+    "secondary_payload_paths_present",
+}
+
+QUOTE_SUBTYPE_TABLES = (
+    "underlying_quote_observations",
+    "futures_quote_observations",
+    "option_quote_observations",
+)
+
+STATUS_SUBTYPE_COLUMNS = {
+    "event_id",
+    "event_type",
+    "subject_id",
+    "segment",
+    "provider_status_name",
+    "provider_status_numeric",
+    "status_is_known",
 }
 
 
@@ -804,6 +852,87 @@ async def _assert_head_schema(engine) -> None:
             == expected_columns
         )
 
+    for table_name in QUOTE_SUBTYPE_TABLES:
+        quote = details[table_name]
+        assert set(quote["columns"]) == QUOTE_SUBTYPE_COLUMNS
+        assert quote["primary_key"] == ("event_id",)
+        assert isinstance(
+            quote["columns"]["bid_price"]["type"],
+            Numeric,
+        )
+        assert isinstance(
+            quote["columns"]["bid_size"]["type"],
+            BigInteger,
+        )
+        assert isinstance(
+            quote["columns"]["is_snapshot"]["type"],
+            Boolean,
+        )
+        assert isinstance(
+            quote["columns"][
+                "unadopted_schema_paths"
+            ]["type"],
+            ARRAY,
+        )
+        _assert_foreign_key(
+            quote,
+            (
+                "event_id",
+                "event_type",
+                "subject_id",
+            ),
+            "market_observations",
+            (
+                "event_id",
+                "event_type",
+                "subject_id",
+            ),
+        )
+        assert quote["indexes"][
+            f"ix_{table_name}_mode_union"
+        ]["columns"] == (
+            "request_mode",
+            "feed_union",
+            "event_id",
+        )
+
+    status = details[
+        "market_segment_status_observations"
+    ]
+    assert set(status["columns"]) == STATUS_SUBTYPE_COLUMNS
+    assert status["primary_key"] == ("event_id",)
+    assert isinstance(
+        status["columns"][
+            "provider_status_numeric"
+        ]["type"],
+        Integer,
+    )
+    assert isinstance(
+        status["columns"]["status_is_known"]["type"],
+        Boolean,
+    )
+    _assert_foreign_key(
+        status,
+        (
+            "event_id",
+            "event_type",
+            "subject_id",
+        ),
+        "market_observations",
+        (
+            "event_id",
+            "event_type",
+            "subject_id",
+        ),
+    )
+    assert status["indexes"][
+        "ix_market_segment_status_segment_code"
+    ]["columns"] == (
+        "segment",
+        "provider_status_numeric",
+        "event_id",
+    )
+
     result_events = details[
         "market_normalization_result_events"
     ]
@@ -1052,6 +1181,22 @@ def _schema_details(connection) -> dict[str, object]:
                 schema,
                 "market_normalization_result_events",
             )
+        ),
+        "underlying_quote_observations": _table_details(
+            schema,
+            "underlying_quote_observations",
+        ),
+        "futures_quote_observations": _table_details(
+            schema,
+            "futures_quote_observations",
+        ),
+        "option_quote_observations": _table_details(
+            schema,
+            "option_quote_observations",
+        ),
+        "market_segment_status_observations": _table_details(
+            schema,
+            "market_segment_status_observations",
         ),
         "market_normalization_failures": _table_details(
             schema,

@@ -96,6 +96,57 @@ FAILURE_IMMUTABLE_FIELDS = (
     "payload",
 )
 
+QUOTE_SUBTYPE_TABLE_BY_EVENT_TYPE = {
+    "underlying_quote_observation": (
+        "underlying_quote_observations"
+    ),
+    "futures_quote_observation": (
+        "futures_quote_observations"
+    ),
+    "option_quote_observation": (
+        "option_quote_observations"
+    ),
+}
+
+QUOTE_SUBTYPE_IMMUTABLE_FIELDS = (
+    "event_id",
+    "event_type",
+    "subject_id",
+    "feed_response_type",
+    "request_mode",
+    "feed_union",
+    "is_snapshot",
+    "presence_semantics",
+    "numeric_basis",
+    "quantity_basis",
+    "bid_price",
+    "bid_size",
+    "ask_price",
+    "ask_size",
+    "last_price",
+    "last_size",
+    "last_trade_at",
+    "previous_close_price",
+    "reported_volume",
+    "open_interest",
+    "provider_depth_levels_present",
+    "normalized_depth_levels",
+    "unadopted_depth_level_count",
+    "unadopted_schema_paths",
+    "present_unadopted_message_paths",
+    "secondary_payload_paths_present",
+)
+
+STATUS_SUBTYPE_IMMUTABLE_FIELDS = (
+    "event_id",
+    "event_type",
+    "subject_id",
+    "segment",
+    "provider_status_name",
+    "provider_status_numeric",
+    "status_is_known",
+)
+
 
 def _rows_match_on_fields(
     existing: dict[str, object],
@@ -539,6 +590,19 @@ class PostgresMarketEventRepository:
             for values in event_values
         }
 
+        subtype_values_by_table: dict[
+            str,
+            dict[str, dict[str, object]],
+        ] = {}
+        for event in result.accepted_events:
+            subtype_table, subtype_values = (
+                self._subtype_values(event)
+            )
+            subtype_values_by_table.setdefault(
+                subtype_table,
+                {},
+            )[event.event_id] = subtype_values
+
         existing_observations = (
             await self._fetch_existing_rows(
                 "market_observations",
@@ -570,12 +634,100 @@ class PostgresMarketEventRepository:
                 "new result encountered pre-existing "
                 "market observation rows"
             )
+        if not result_inserted and missing_event_rows:
+            raise MarketEventDurableCorruptionError(
+                "existing result is missing market "
+                "observation rows"
+            )
+
+        existing_subtypes_by_table: dict[
+            str,
+            dict[object, dict[str, object]],
+        ] = {}
+        for table_name, values_by_id in (
+            subtype_values_by_table.items()
+        ):
+            immutable_fields = (
+                STATUS_SUBTYPE_IMMUTABLE_FIELDS
+                if table_name
+                == "market_segment_status_observations"
+                else QUOTE_SUBTYPE_IMMUTABLE_FIELDS
+            )
+            existing_subtypes_by_table[table_name] = (
+                await self._fetch_existing_rows(
+                    table_name,
+                    "event_id",
+                    tuple(values_by_id),
+                    immutable_fields,
+                )
+            )
+
+        missing_subtypes_by_table: dict[
+            str,
+            list[dict[str, object]],
+        ] = {}
+        for table_name, values_by_id in (
+            subtype_values_by_table.items()
+        ):
+            immutable_fields = (
+                STATUS_SUBTYPE_IMMUTABLE_FIELDS
+                if table_name
+                == "market_segment_status_observations"
+                else QUOTE_SUBTYPE_IMMUTABLE_FIELDS
+            )
+            existing_subtypes = (
+                existing_subtypes_by_table[table_name]
+            )
+            for event_id, values in values_by_id.items():
+                existing_subtype = existing_subtypes.get(
+                    event_id
+                )
+                parent_exists = (
+                    event_id in existing_observations
+                )
+
+                if existing_subtype is None:
+                    if parent_exists:
+                        raise MarketEventDurableCorruptionError(
+                            "market observation registry row "
+                            "is missing its typed subtype: "
+                            f"{event_id}"
+                        )
+                    missing_subtypes_by_table.setdefault(
+                        table_name,
+                        [],
+                    ).append(values)
+                    continue
+
+                if not parent_exists:
+                    raise MarketEventDurableCorruptionError(
+                        "typed market observation subtype "
+                        "exists without its registry row: "
+                        f"{event_id}"
+                    )
+
+                if not _rows_match_on_fields(
+                    existing_subtype,
+                    values,
+                    immutable_fields,
+                ):
+                    raise NormalizedEventIdentityConflictError(
+                        event_id
+                    )
 
         await self._bulk_insert_json_rows(
             "market_observations",
             missing_event_rows,
             payload_cast=True,
         )
+
+        for table_name in sorted(
+            missing_subtypes_by_table
+        ):
+            await self._bulk_insert_rows(
+                table_name,
+                missing_subtypes_by_table[table_name],
+            )
 
         event_memberships = [
             {
@@ -834,6 +986,89 @@ class PostgresMarketEventRepository:
             "supersedes_event_id": supersedes_event_id,
             "payload": json.loads(canonical_json(event)),
         }
+
+    @staticmethod
+    def _subtype_values(
+        event,
+    ) -> tuple[str, dict[str, object]]:
+        event_type = event.identity.event_type
+        quote_table = (
+            QUOTE_SUBTYPE_TABLE_BY_EVENT_TYPE.get(
+                event_type
+            )
+        )
+
+        if quote_table is not None:
+            return quote_table, {
+                "event_id": event.event_id,
+                "event_type": event_type,
+                "subject_id": event.identity.subject_id,
+                "feed_response_type": _enum_value(
+                    event.feed_response_type
+                ),
+                "request_mode": _enum_value(
+                    event.request_mode
+                ),
+                "feed_union": _enum_value(
+                    event.feed_union
+                ),
+                "is_snapshot": event.is_snapshot,
+                "presence_semantics": (
+                    event.presence_semantics
+                ),
+                "numeric_basis": event.numeric_basis,
+                "quantity_basis": event.quantity_basis,
+                "bid_price": event.bid_price,
+                "bid_size": event.bid_size,
+                "ask_price": event.ask_price,
+                "ask_size": event.ask_size,
+                "last_price": event.last_price,
+                "last_size": event.last_size,
+                "last_trade_at": event.last_trade_at,
+                "previous_close_price": (
+                    event.previous_close_price
+                ),
+                "reported_volume": event.reported_volume,
+                "open_interest": event.open_interest,
+                "provider_depth_levels_present": (
+                    event.provider_depth_levels_present
+                ),
+                "normalized_depth_levels": (
+                    event.normalized_depth_levels
+                ),
+                "unadopted_depth_level_count": (
+                    event.unadopted_depth_level_count
+                ),
+                "unadopted_schema_paths": list(
+                    event.unadopted_schema_paths
+                ),
+                "present_unadopted_message_paths": list(
+                    event.present_unadopted_message_paths
+                ),
+                "secondary_payload_paths_present": list(
+                    event.secondary_payload_paths_present
+                ),
+            }
+
+        if event_type == "market_segment_status_observation":
+            return "market_segment_status_observations", {
+                "event_id": event.event_id,
+                "event_type": event_type,
+                "subject_id": event.identity.subject_id,
+                "segment": event.segment,
+                "provider_status_name": (
+                    event.provider_status_name
+                ),
+                "provider_status_numeric": (
+                    event.provider_status_numeric
+                ),
+                "status_is_known": event.status_is_known,
+            }
+
+        raise ValueError(
+            "unsupported market observation subtype: "
+            f"{event_type}"
+        )
 
     async def _require_exact_event_memberships(
         self,
@@ -1280,8 +1515,17 @@ class PostgresMarketEventRepository:
         rows = await self._session.execute(
             text(
                 """
-                SELECT DISTINCT o.*
+                SELECT DISTINCT
+                    o.*,
+                    s.segment,
+                    s.provider_status_name,
+                    s.provider_status_numeric,
+                    s.status_is_known
                 FROM market_observations AS o
+                JOIN market_segment_status_observations AS s
+                  ON s.event_id = o.event_id
+                 AND s.event_type = o.event_type
+                 AND s.subject_id = o.subject_id
                 JOIN market_normalization_result_events AS m
                   ON m.event_id = o.event_id
                 JOIN market_normalization_results AS r
@@ -1289,8 +1533,6 @@ class PostgresMarketEventRepository:
                 WHERE o.normalization_schema_version = :schema
                   AND r.normalization_schema_version = :schema
                   AND o.provider = :provider
-                  AND o.event_type =
-                    'market_segment_status_observation'
                 ORDER BY
                     o.provider_timestamp,
                     o.event_id
