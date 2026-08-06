@@ -2285,3 +2285,133 @@ def test_raw_provider_lifecycle_event_metadata_is_explicit_registry() -> None:
             "raw_event_id",
         ),
     }
+
+
+def test_lifecycle_batch_event_metadata_preserves_input_order() -> None:
+    table = Base.metadata.tables[
+        "provider_lifecycle_batch_events"
+    ]
+
+    assert set(table.c.keys()) == {
+        "lifecycle_batch_id",
+        "lifecycle_kind",
+        "input_ordinal",
+        "raw_event_id",
+        "is_exact_duplicate",
+        "first_occurrence_ordinal",
+    }
+
+    assert tuple(table.primary_key.columns.keys()) == (
+        "lifecycle_batch_id",
+        "input_ordinal",
+    )
+
+    assert isinstance(
+        table.c.input_ordinal.type,
+        Integer,
+    )
+    assert isinstance(
+        table.c.first_occurrence_ordinal.type,
+        Integer,
+    )
+    assert isinstance(
+        table.c.is_exact_duplicate.type,
+        Boolean,
+    )
+
+    assert (
+        "lifecycle_batch_id",
+        "raw_event_id",
+        "input_ordinal",
+    ) in _unique_column_shapes(table)
+
+    foreign_keys = _foreign_key_shapes(table)
+
+    assert (
+        (
+            "lifecycle_batch_id",
+            "lifecycle_kind",
+        ),
+        (
+            "provider_lifecycle_batches.lifecycle_batch_id",
+            "provider_lifecycle_batches.lifecycle_kind",
+        ),
+        (
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ) in foreign_keys
+
+    assert (
+        (
+            "raw_event_id",
+            "lifecycle_kind",
+        ),
+        (
+            "raw_provider_lifecycle_events.raw_event_id",
+            "raw_provider_lifecycle_events.lifecycle_kind",
+        ),
+        (
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ) in foreign_keys
+
+    assert (
+        (
+            "lifecycle_batch_id",
+            "raw_event_id",
+            "first_occurrence_ordinal",
+        ),
+        (
+            "provider_lifecycle_batch_events.lifecycle_batch_id",
+            "provider_lifecycle_batch_events.raw_event_id",
+            "provider_lifecycle_batch_events.input_ordinal",
+        ),
+        (
+            "NO ACTION",
+            "NO ACTION",
+            "NO ACTION",
+        ),
+    ) in foreign_keys
+
+    self_constraint = next(
+        constraint
+        for constraint in table.foreign_key_constraints
+        if tuple(constraint.column_keys) == (
+            "lifecycle_batch_id",
+            "raw_event_id",
+            "first_occurrence_ordinal",
+        )
+    )
+
+    assert self_constraint.deferrable is True
+    assert self_constraint.initially == "DEFERRED"
+
+    check_names = {
+        constraint.name
+        for constraint in table.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert check_names == {
+        "ck_lifecycle_batch_events_batch_sha256",
+        "ck_lifecycle_batch_events_raw_sha256",
+        "ck_lifecycle_batch_events_kind",
+        "ck_lifecycle_batch_events_input_ordinal",
+        "ck_lifecycle_batch_events_first_ordinal",
+        "ck_lifecycle_batch_events_duplicate_shape",
+    }
+
+    assert _index_shapes(table) == {
+        "ix_lifecycle_batch_events_raw": (
+            "raw_event_id",
+            "lifecycle_batch_id",
+            "input_ordinal",
+        ),
+        "ix_lifecycle_batch_events_first_occurrence": (
+            "lifecycle_batch_id",
+            "raw_event_id",
+            "first_occurrence_ordinal",
+        ),
+    }

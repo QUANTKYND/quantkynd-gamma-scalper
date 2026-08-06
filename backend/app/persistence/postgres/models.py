@@ -1817,6 +1817,134 @@ RAW_PROVIDER_LIFECYCLE_EVENTS_TABLE = Table(
 )
 
 
+PROVIDER_LIFECYCLE_BATCH_EVENTS_TABLE = Table(
+    "provider_lifecycle_batch_events",
+    Base.metadata,
+    Column(
+        "lifecycle_batch_id",
+        String(ID_LENGTH),
+        nullable=False,
+    ),
+    Column(
+        "lifecycle_kind",
+        String(32),
+        nullable=False,
+    ),
+    Column(
+        "input_ordinal",
+        Integer,
+        nullable=False,
+    ),
+    Column(
+        "raw_event_id",
+        String(ID_LENGTH),
+        nullable=False,
+    ),
+    Column(
+        "is_exact_duplicate",
+        Boolean,
+        nullable=False,
+    ),
+    Column(
+        "first_occurrence_ordinal",
+        Integer,
+        nullable=False,
+    ),
+    PrimaryKeyConstraint(
+        "lifecycle_batch_id",
+        "input_ordinal",
+        name="pk_provider_lifecycle_batch_events",
+    ),
+    UniqueConstraint(
+        "lifecycle_batch_id",
+        "raw_event_id",
+        "input_ordinal",
+        name="uq_lifecycle_batch_events_membership",
+    ),
+    ForeignKeyConstraint(
+        [
+            "lifecycle_batch_id",
+            "lifecycle_kind",
+        ],
+        [
+            "provider_lifecycle_batches.lifecycle_batch_id",
+            "provider_lifecycle_batches.lifecycle_kind",
+        ],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_lifecycle_batch_events_batch",
+    ),
+    ForeignKeyConstraint(
+        [
+            "raw_event_id",
+            "lifecycle_kind",
+        ],
+        [
+            "raw_provider_lifecycle_events.raw_event_id",
+            "raw_provider_lifecycle_events.lifecycle_kind",
+        ],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_lifecycle_batch_events_raw_event",
+    ),
+    ForeignKeyConstraint(
+        [
+            "lifecycle_batch_id",
+            "raw_event_id",
+            "first_occurrence_ordinal",
+        ],
+        [
+            "provider_lifecycle_batch_events.lifecycle_batch_id",
+            "provider_lifecycle_batch_events.raw_event_id",
+            "provider_lifecycle_batch_events.input_ordinal",
+        ],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        deferrable=True,
+        initially="DEFERRED",
+        name="fk_lifecycle_batch_events_first_occurrence",
+    ),
+    CheckConstraint(
+        "lifecycle_batch_id ~ '^sha256:[0-9a-f]{64}$'",
+        name="lifecycle_batch_events_batch_sha256",
+    ),
+    CheckConstraint(
+        "raw_event_id ~ '^sha256:[0-9a-f]{64}$'",
+        name="lifecycle_batch_events_raw_sha256",
+    ),
+    CheckConstraint(
+        "lifecycle_kind IN ('connection', 'subscription')",
+        name="lifecycle_batch_events_kind",
+    ),
+    CheckConstraint(
+        "input_ordinal BETWEEN 0 AND 9999",
+        name="lifecycle_batch_events_input_ordinal",
+    ),
+    CheckConstraint(
+        "first_occurrence_ordinal BETWEEN 0 AND 9999 "
+        "AND first_occurrence_ordinal <= input_ordinal",
+        name="lifecycle_batch_events_first_ordinal",
+    ),
+    CheckConstraint(
+        "is_exact_duplicate = "
+        "(first_occurrence_ordinal < input_ordinal)",
+        name="lifecycle_batch_events_duplicate_shape",
+    ),
+    Index(
+        "ix_lifecycle_batch_events_raw",
+        "raw_event_id",
+        "lifecycle_batch_id",
+        "input_ordinal",
+    ),
+    Index(
+        "ix_lifecycle_batch_events_first_occurrence",
+        "lifecycle_batch_id",
+        "raw_event_id",
+        "first_occurrence_ordinal",
+    ),
+)
+
+
 DATA14_PLACEHOLDER_TABLE_COLUMNS = {
     "provider_lifecycle_observations": (
         Column(
@@ -1833,7 +1961,6 @@ DATA14_PLACEHOLDER_TABLE_COLUMNS = {
 }
 
 DATA14_REMAINING_PLACEHOLDER_TABLES = (
-    "provider_lifecycle_batch_events",
     "provider_lifecycle_observations",
     "provider_connection_lifecycle_observations",
     "provider_subscription_lifecycle_observations",

@@ -2333,18 +2333,366 @@ def _create_raw_provider_lifecycle_events() -> None:
     )
 
 
+def _create_provider_lifecycle_batch_events() -> None:
+    op.create_table(
+        "provider_lifecycle_batch_events",
+        sa.Column(
+            "lifecycle_batch_id",
+            sa.String(ID),
+            nullable=False,
+        ),
+        sa.Column(
+            "lifecycle_kind",
+            sa.String(32),
+            nullable=False,
+        ),
+        sa.Column(
+            "input_ordinal",
+            sa.Integer(),
+            nullable=False,
+        ),
+        sa.Column(
+            "raw_event_id",
+            sa.String(ID),
+            nullable=False,
+        ),
+        sa.Column(
+            "is_exact_duplicate",
+            sa.Boolean(),
+            nullable=False,
+        ),
+        sa.Column(
+            "first_occurrence_ordinal",
+            sa.Integer(),
+            nullable=False,
+        ),
+        sa.PrimaryKeyConstraint(
+            "lifecycle_batch_id",
+            "input_ordinal",
+            name="pk_provider_lifecycle_batch_events",
+        ),
+        sa.UniqueConstraint(
+            "lifecycle_batch_id",
+            "raw_event_id",
+            "input_ordinal",
+            name="uq_lifecycle_batch_events_membership",
+        ),
+        sa.ForeignKeyConstraint(
+            [
+                "lifecycle_batch_id",
+                "lifecycle_kind",
+            ],
+            [
+                "provider_lifecycle_batches.lifecycle_batch_id",
+                "provider_lifecycle_batches.lifecycle_kind",
+            ],
+            ondelete="NO ACTION",
+            onupdate="NO ACTION",
+            name="fk_lifecycle_batch_events_batch",
+        ),
+        sa.ForeignKeyConstraint(
+            [
+                "raw_event_id",
+                "lifecycle_kind",
+            ],
+            [
+                "raw_provider_lifecycle_events.raw_event_id",
+                "raw_provider_lifecycle_events.lifecycle_kind",
+            ],
+            ondelete="NO ACTION",
+            onupdate="NO ACTION",
+            name="fk_lifecycle_batch_events_raw_event",
+        ),
+        sa.ForeignKeyConstraint(
+            [
+                "lifecycle_batch_id",
+                "raw_event_id",
+                "first_occurrence_ordinal",
+            ],
+            [
+                "provider_lifecycle_batch_events.lifecycle_batch_id",
+                "provider_lifecycle_batch_events.raw_event_id",
+                "provider_lifecycle_batch_events.input_ordinal",
+            ],
+            ondelete="NO ACTION",
+            onupdate="NO ACTION",
+            deferrable=True,
+            initially="DEFERRED",
+            name="fk_lifecycle_batch_events_first_occurrence",
+        ),
+        sa.CheckConstraint(
+            "lifecycle_batch_id ~ '^sha256:[0-9a-f]{64}$'",
+            name="lifecycle_batch_events_batch_sha256",
+        ),
+        sa.CheckConstraint(
+            "raw_event_id ~ '^sha256:[0-9a-f]{64}$'",
+            name="lifecycle_batch_events_raw_sha256",
+        ),
+        sa.CheckConstraint(
+            "lifecycle_kind IN ('connection', 'subscription')",
+            name="lifecycle_batch_events_kind",
+        ),
+        sa.CheckConstraint(
+            "input_ordinal BETWEEN 0 AND 9999",
+            name="lifecycle_batch_events_input_ordinal",
+        ),
+        sa.CheckConstraint(
+            "first_occurrence_ordinal BETWEEN 0 AND 9999 "
+            "AND first_occurrence_ordinal <= input_ordinal",
+            name="lifecycle_batch_events_first_ordinal",
+        ),
+        sa.CheckConstraint(
+            "is_exact_duplicate = "
+            "(first_occurrence_ordinal < input_ordinal)",
+            name="lifecycle_batch_events_duplicate_shape",
+        ),
+    )
+
+    op.create_index(
+        "ix_lifecycle_batch_events_raw",
+        "provider_lifecycle_batch_events",
+        (
+            "raw_event_id",
+            "lifecycle_batch_id",
+            "input_ordinal",
+        ),
+    )
+
+    op.create_index(
+        "ix_lifecycle_batch_events_first_occurrence",
+        "provider_lifecycle_batch_events",
+        (
+            "lifecycle_batch_id",
+            "raw_event_id",
+            "first_occurrence_ordinal",
+        ),
+    )
+
+    # Prevent an ordinal from exceeding its owning batch's declared
+    # input count. Missing or cross-kind parents remain owned by the
+    # composite foreign key rather than being masked by this trigger.
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION
+        data14_validate_lifecycle_batch_event_ordinal()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        DECLARE
+            declared_input_count integer;
+        BEGIN
+            SELECT input_count
+            INTO declared_input_count
+            FROM provider_lifecycle_batches
+            WHERE lifecycle_batch_id =
+                NEW.lifecycle_batch_id
+              AND lifecycle_kind =
+                NEW.lifecycle_kind;
+
+            IF declared_input_count IS NULL THEN
+                RETURN NEW;
+            END IF;
+
+            IF NEW.input_ordinal >= declared_input_count THEN
+                RAISE EXCEPTION
+                    'lifecycle batch input ordinal % exceeds '
+                    'declared input count % for %',
+                    NEW.input_ordinal,
+                    declared_input_count,
+                    NEW.lifecycle_batch_id;
+            END IF;
+
+            IF NEW.first_occurrence_ordinal
+               >= declared_input_count THEN
+                RAISE EXCEPTION
+                    'lifecycle batch first occurrence ordinal % '
+                    'exceeds declared input count % for %',
+                    NEW.first_occurrence_ordinal,
+                    declared_input_count,
+                    NEW.lifecycle_batch_id;
+            END IF;
+
+            RETURN NEW;
+        END;
+        $$
+        """
+    )
+
+    op.execute(
+        """
+        CREATE TRIGGER
+        data14_lifecycle_batch_event_ordinal
+        BEFORE INSERT
+        ON provider_lifecycle_batch_events
+        FOR EACH ROW
+        EXECUTE FUNCTION
+        data14_validate_lifecycle_batch_event_ordinal()
+        """
+    )
+
+    # One deferred aggregate check runs from the batch root. The root
+    # is inserted before its memberships and therefore sees the
+    # complete input sequence at transaction commit.
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION
+        data14_validate_lifecycle_batch_events()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        DECLARE
+            declared_input_count integer;
+            declared_unique_count integer;
+            declared_duplicate_count integer;
+            actual_count bigint;
+            minimum_ordinal integer;
+            maximum_ordinal integer;
+            classified_unique_count bigint;
+            classified_duplicate_count bigint;
+            distinct_raw_count bigint;
+            invalid_first_occurrence boolean;
+        BEGIN
+            SELECT
+                input_count,
+                unique_count,
+                duplicate_count
+            INTO
+                declared_input_count,
+                declared_unique_count,
+                declared_duplicate_count
+            FROM provider_lifecycle_batches
+            WHERE lifecycle_batch_id =
+                NEW.lifecycle_batch_id;
+
+            SELECT
+                count(*),
+                min(input_ordinal),
+                max(input_ordinal),
+                count(*) FILTER (
+                    WHERE NOT is_exact_duplicate
+                ),
+                count(*) FILTER (
+                    WHERE is_exact_duplicate
+                ),
+                count(DISTINCT raw_event_id)
+            INTO
+                actual_count,
+                minimum_ordinal,
+                maximum_ordinal,
+                classified_unique_count,
+                classified_duplicate_count,
+                distinct_raw_count
+            FROM provider_lifecycle_batch_events
+            WHERE lifecycle_batch_id =
+                NEW.lifecycle_batch_id;
+
+            IF actual_count <> declared_input_count THEN
+                RAISE EXCEPTION
+                    'lifecycle batch event count mismatch '
+                    'for %: declared %, stored %',
+                    NEW.lifecycle_batch_id,
+                    declared_input_count,
+                    actual_count;
+            END IF;
+
+            IF declared_input_count > 0
+               AND (
+                   minimum_ordinal <> 0
+                   OR maximum_ordinal
+                      <> declared_input_count - 1
+               ) THEN
+                RAISE EXCEPTION
+                    'lifecycle batch input ordinals are not '
+                    'contiguous for %',
+                    NEW.lifecycle_batch_id;
+            END IF;
+
+            IF classified_unique_count
+               <> declared_unique_count THEN
+                RAISE EXCEPTION
+                    'lifecycle batch unique classification '
+                    'mismatch for %',
+                    NEW.lifecycle_batch_id;
+            END IF;
+
+            IF classified_duplicate_count
+               <> declared_duplicate_count THEN
+                RAISE EXCEPTION
+                    'lifecycle batch duplicate classification '
+                    'mismatch for %',
+                    NEW.lifecycle_batch_id;
+            END IF;
+
+            IF distinct_raw_count
+               <> declared_unique_count THEN
+                RAISE EXCEPTION
+                    'lifecycle batch distinct raw count '
+                    'mismatch for %',
+                    NEW.lifecycle_batch_id;
+            END IF;
+
+            SELECT EXISTS (
+                SELECT 1
+                FROM provider_lifecycle_batch_events current_row
+                LEFT JOIN provider_lifecycle_batch_events first_row
+                    ON first_row.lifecycle_batch_id =
+                        current_row.lifecycle_batch_id
+                    AND first_row.raw_event_id =
+                        current_row.raw_event_id
+                    AND first_row.input_ordinal =
+                        current_row.first_occurrence_ordinal
+                WHERE current_row.lifecycle_batch_id =
+                    NEW.lifecycle_batch_id
+                AND first_row.input_ordinal IS NOT NULL
+                AND (
+                    first_row.is_exact_duplicate
+                    OR first_row.first_occurrence_ordinal
+                        <> first_row.input_ordinal
+                )
+            )
+            INTO invalid_first_occurrence;
+
+            IF invalid_first_occurrence THEN
+                RAISE EXCEPTION
+                    'lifecycle batch first occurrence '
+                    'classification mismatch for %',
+                    NEW.lifecycle_batch_id;
+            END IF;
+
+            RETURN NULL;
+        END;
+        $$
+        """
+    )
+
+    op.execute(
+        """
+        CREATE CONSTRAINT TRIGGER
+        data14_lifecycle_batch_events_integrity
+        AFTER INSERT
+        ON provider_lifecycle_batches
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW
+        EXECUTE FUNCTION
+        data14_validate_lifecycle_batch_events()
+        """
+    )
+
+
 def upgrade() -> None:
     _create_temporal_provenance_targets()
     _create_provider_subscription_instrument_sets()
     _create_provider_lifecycle_batches()
     _create_raw_provider_lifecycle_events()
+    _create_provider_lifecycle_batch_events()
 
     for name in TABLES:
         if name in {
             "provider_subscription_instrument_sets",
             "provider_subscription_instrument_set_keys",
             "provider_lifecycle_batches",
-            "raw_provider_lifecycle_events"
+            "raw_provider_lifecycle_events",
+            "provider_lifecycle_batch_events",
         }:
             continue
 

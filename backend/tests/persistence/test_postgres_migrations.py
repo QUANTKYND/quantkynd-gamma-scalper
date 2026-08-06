@@ -160,6 +160,28 @@ RAW_PROVIDER_LIFECYCLE_EVENT_INDEXES = {
     ),
 }
 
+PROVIDER_LIFECYCLE_BATCH_EVENT_COLUMNS = {
+    "lifecycle_batch_id",
+    "lifecycle_kind",
+    "input_ordinal",
+    "raw_event_id",
+    "is_exact_duplicate",
+    "first_occurrence_ordinal",
+}
+
+PROVIDER_LIFECYCLE_BATCH_EVENT_INDEXES = {
+    "ix_lifecycle_batch_events_raw": (
+        "raw_event_id",
+        "lifecycle_batch_id",
+        "input_ordinal",
+    ),
+    "ix_lifecycle_batch_events_first_occurrence": (
+        "lifecycle_batch_id",
+        "raw_event_id",
+        "first_occurrence_ordinal",
+    ),
+}
+
 RAW_MARKET_FRAME_COLUMNS = {
     "raw_event_id",
     "provider",
@@ -1546,6 +1568,96 @@ async def _assert_head_schema(engine) -> None:
             raw_lifecycle["indexes"][index_name]["columns"]
             == expected_columns
         )
+
+    batch_events = details[
+        "provider_lifecycle_batch_events"
+    ]
+
+    assert (
+        set(batch_events["columns"])
+        == PROVIDER_LIFECYCLE_BATCH_EVENT_COLUMNS
+    )
+    assert batch_events["primary_key"] == (
+        "lifecycle_batch_id",
+        "input_ordinal",
+    )
+
+    assert isinstance(
+        batch_events["columns"][
+            "input_ordinal"
+        ]["type"],
+        Integer,
+    )
+    assert isinstance(
+        batch_events["columns"][
+            "first_occurrence_ordinal"
+        ]["type"],
+        Integer,
+    )
+    assert isinstance(
+        batch_events["columns"][
+            "is_exact_duplicate"
+        ]["type"],
+        Boolean,
+    )
+
+    assert (
+        "lifecycle_batch_id",
+        "raw_event_id",
+        "input_ordinal",
+    ) in batch_events["unique_constraints"]
+
+    _assert_foreign_key(
+        batch_events,
+        (
+            "lifecycle_batch_id",
+            "lifecycle_kind",
+        ),
+        "provider_lifecycle_batches",
+        (
+            "lifecycle_batch_id",
+            "lifecycle_kind",
+        ),
+    )
+
+    _assert_foreign_key(
+        batch_events,
+        (
+            "raw_event_id",
+            "lifecycle_kind",
+        ),
+        "raw_provider_lifecycle_events",
+        (
+            "raw_event_id",
+            "lifecycle_kind",
+        ),
+    )
+
+    _assert_foreign_key(
+        batch_events,
+        (
+            "lifecycle_batch_id",
+            "raw_event_id",
+            "first_occurrence_ordinal",
+        ),
+        "provider_lifecycle_batch_events",
+        (
+            "lifecycle_batch_id",
+            "raw_event_id",
+            "input_ordinal",
+        ),
+    )
+
+    for index_name, expected_columns in (
+        PROVIDER_LIFECYCLE_BATCH_EVENT_INDEXES.items()
+    ):
+        assert (
+            batch_events["indexes"][
+                index_name
+            ]["columns"]
+            == expected_columns
+        )
+
     _assert_foreign_key(
         instrument_set_keys,
         ("instrument_keys_digest",),
@@ -1761,6 +1873,10 @@ def _schema_details(connection) -> dict[str, object]:
         "raw_provider_lifecycle_events": _table_details(
             schema,
             "raw_provider_lifecycle_events",
+        ),
+        "provider_lifecycle_batch_events": _table_details(
+            schema,
+            "provider_lifecycle_batch_events",
         ),
     }
 
@@ -2710,6 +2826,322 @@ async def test_raw_provider_lifecycle_event_checks_and_set_binding(
                                 instrument_key_count=1,
                             )
                         )
+                    )
+    finally:
+        await dispose_database_engine(engine)
+
+
+@pytest.mark.anyio
+async def test_lifecycle_batch_event_order_and_duplicate_integrity(
+    postgres_url: str,
+    postgres_settings: DatabaseSettings,
+) -> None:
+    engine = create_database_engine(postgres_settings)
+    config = alembic_config(postgres_url)
+
+    batch_table = Base.metadata.tables[
+        "provider_lifecycle_batches"
+    ]
+    raw_table = Base.metadata.tables[
+        "raw_provider_lifecycle_events"
+    ]
+    membership_table = Base.metadata.tables[
+        "provider_lifecycle_batch_events"
+    ]
+
+    async def insert_batch(
+        connection,
+        *,
+        marker: str,
+        memberships: list[dict[str, object]],
+        **batch_overrides,
+    ) -> None:
+        batch = _lifecycle_batch_values(
+            marker=marker,
+            **batch_overrides,
+        )
+
+        await connection.execute(
+            batch_table.insert().values(**batch)
+        )
+
+        if memberships:
+            await connection.execute(
+                membership_table.insert(),
+                [
+                    {
+                        "lifecycle_batch_id": (
+                            batch["lifecycle_batch_id"]
+                        ),
+                        "lifecycle_kind": (
+                            batch["lifecycle_kind"]
+                        ),
+                        **membership,
+                    }
+                    for membership in memberships
+                ],
+            )
+
+        await connection.execute(
+            text("SET CONSTRAINTS ALL IMMEDIATE")
+        )
+
+    try:
+        async with destructive_database_lease(
+            engine,
+            postgres_url,
+            postgres_settings,
+            DestructiveDatabasePurpose.INTEGRATION,
+        ) as lease:
+            await lease.drop_and_recreate_public()
+
+            await asyncio.to_thread(
+                command.upgrade,
+                config,
+                "head",
+            )
+
+            raw_one = _raw_connection_lifecycle_values(
+                marker="1",
+                connection_session_id="batch-session-1",
+                source_order_scope_id="batch-scope-1",
+                source_order=0,
+            )
+            raw_two = _raw_connection_lifecycle_values(
+                marker="2",
+                connection_session_id="batch-session-2",
+                source_order_scope_id="batch-scope-2",
+                source_order=0,
+            )
+
+            async with engine.begin() as connection:
+                await connection.execute(
+                    raw_table.insert(),
+                    [raw_one, raw_two],
+                )
+
+            # Insert in reversed physical order. Logical replay remains
+            # input_ordinal 0, 1, 2.
+            valid_memberships = [
+                {
+                    "input_ordinal": 2,
+                    "raw_event_id": raw_one["raw_event_id"],
+                    "is_exact_duplicate": True,
+                    "first_occurrence_ordinal": 0,
+                },
+                {
+                    "input_ordinal": 1,
+                    "raw_event_id": raw_two["raw_event_id"],
+                    "is_exact_duplicate": False,
+                    "first_occurrence_ordinal": 1,
+                },
+                {
+                    "input_ordinal": 0,
+                    "raw_event_id": raw_one["raw_event_id"],
+                    "is_exact_duplicate": False,
+                    "first_occurrence_ordinal": 0,
+                },
+            ]
+
+            async with engine.begin() as connection:
+                await insert_batch(
+                    connection,
+                    marker="3",
+                    memberships=valid_memberships,
+                )
+
+            async with engine.connect() as connection:
+                rows = (
+                    await connection.execute(
+                        text(
+                            "SELECT "
+                            "input_ordinal, "
+                            "raw_event_id, "
+                            "is_exact_duplicate, "
+                            "first_occurrence_ordinal "
+                            "FROM provider_lifecycle_batch_events "
+                            "WHERE lifecycle_batch_id = :batch_id "
+                            "ORDER BY input_ordinal"
+                        ),
+                        {
+                            "batch_id": (
+                                "sha256:" + "3" * 64
+                            )
+                        },
+                    )
+                ).mappings().all()
+
+            assert [
+                row["input_ordinal"]
+                for row in rows
+            ] == [0, 1, 2]
+
+            assert [
+                row["is_exact_duplicate"]
+                for row in rows
+            ] == [False, False, True]
+
+            # Immediate duplicate-shape rejection.
+            with pytest.raises(IntegrityError):
+                async with engine.begin() as connection:
+                    await insert_batch(
+                        connection,
+                        marker="4",
+                        memberships=[
+                            {
+                                "input_ordinal": 0,
+                                "raw_event_id": (
+                                    raw_one["raw_event_id"]
+                                ),
+                                "is_exact_duplicate": False,
+                                "first_occurrence_ordinal": 0,
+                            },
+                            {
+                                "input_ordinal": 1,
+                                "raw_event_id": (
+                                    raw_two["raw_event_id"]
+                                ),
+                                "is_exact_duplicate": False,
+                                "first_occurrence_ordinal": 0,
+                            },
+                            {
+                                "input_ordinal": 2,
+                                "raw_event_id": (
+                                    raw_one["raw_event_id"]
+                                ),
+                                "is_exact_duplicate": True,
+                                "first_occurrence_ordinal": 0,
+                            },
+                        ],
+                    )
+
+            # Deferred count and contiguous-order rejection.
+            with pytest.raises(
+                DBAPIError,
+                match="count mismatch|not contiguous",
+            ):
+                async with engine.begin() as connection:
+                    await insert_batch(
+                        connection,
+                        marker="5",
+                        memberships=[
+                            {
+                                "input_ordinal": 0,
+                                "raw_event_id": (
+                                    raw_one["raw_event_id"]
+                                ),
+                                "is_exact_duplicate": False,
+                                "first_occurrence_ordinal": 0,
+                            },
+                            {
+                                "input_ordinal": 2,
+                                "raw_event_id": (
+                                    raw_two["raw_event_id"]
+                                ),
+                                "is_exact_duplicate": False,
+                                "first_occurrence_ordinal": 2,
+                            },
+                        ],
+                    )
+
+            # A duplicate must reference the first occurrence of the
+            # same raw event.
+            with pytest.raises(IntegrityError):
+                async with engine.begin() as connection:
+                    await insert_batch(
+                        connection,
+                        marker="6",
+                        memberships=[
+                            {
+                                "input_ordinal": 0,
+                                "raw_event_id": (
+                                    raw_one["raw_event_id"]
+                                ),
+                                "is_exact_duplicate": False,
+                                "first_occurrence_ordinal": 0,
+                            },
+                            {
+                                "input_ordinal": 1,
+                                "raw_event_id": (
+                                    raw_two["raw_event_id"]
+                                ),
+                                "is_exact_duplicate": False,
+                                "first_occurrence_ordinal": 1,
+                            },
+                            {
+                                "input_ordinal": 2,
+                                "raw_event_id": (
+                                    raw_one["raw_event_id"]
+                                ),
+                                "is_exact_duplicate": True,
+                                "first_occurrence_ordinal": 1,
+                            },
+                        ],
+                    )
+
+            # Duplicate chains are forbidden: every duplicate points
+            # directly to the unique first occurrence.
+            with pytest.raises(
+                DBAPIError,
+                match="first occurrence",
+            ):
+                async with engine.begin() as connection:
+                    await insert_batch(
+                        connection,
+                        marker="7",
+                        input_count=3,
+                        unique_count=1,
+                        normalized_count=1,
+                        duplicate_count=2,
+                        memberships=[
+                            {
+                                "input_ordinal": 0,
+                                "raw_event_id": (
+                                    raw_one["raw_event_id"]
+                                ),
+                                "is_exact_duplicate": False,
+                                "first_occurrence_ordinal": 0,
+                            },
+                            {
+                                "input_ordinal": 1,
+                                "raw_event_id": (
+                                    raw_one["raw_event_id"]
+                                ),
+                                "is_exact_duplicate": True,
+                                "first_occurrence_ordinal": 0,
+                            },
+                            {
+                                "input_ordinal": 2,
+                                "raw_event_id": (
+                                    raw_one["raw_event_id"]
+                                ),
+                                "is_exact_duplicate": True,
+                                "first_occurrence_ordinal": 1,
+                            },
+                        ],
+                    )
+
+            # Composite batch/raw kind boundaries cannot be crossed.
+            with pytest.raises(IntegrityError):
+                async with engine.begin() as connection:
+                    await insert_batch(
+                        connection,
+                        marker="8",
+                        input_count=1,
+                        unique_count=1,
+                        normalized_count=1,
+                        duplicate_count=0,
+                        memberships=[
+                            {
+                                "lifecycle_kind": "subscription",
+                                "input_ordinal": 0,
+                                "raw_event_id": (
+                                    raw_one["raw_event_id"]
+                                ),
+                                "is_exact_duplicate": False,
+                                "first_occurrence_ordinal": 0,
+                            },
+                        ],
                     )
     finally:
         await dispose_database_engine(engine)
