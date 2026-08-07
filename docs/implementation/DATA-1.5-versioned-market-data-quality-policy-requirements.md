@@ -61,7 +61,7 @@ The repository inspection established the following baseline:
 
 | Item | Verified state |
 |---|---|
-| `master` | `eaa243172a759f545c09bdff19fdacfbaad77e37` |
+| `master` | `b461d507d08546d72d952f80016b2617e216d711` |
 | DATA-1.4 implementation | `725e708d1ea2a89514d90bbf3008bd9e234ccd5f` |
 | DATA-1.4 evidence | `137db9416bc93d7f008464a134e7430a83e9d5ea` |
 | DATA-1.4 migration | `20260804_04` |
