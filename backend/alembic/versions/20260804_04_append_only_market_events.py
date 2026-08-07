@@ -35,6 +35,18 @@ TABLES = (
     "provider_lifecycle_batch_observations",
 )
 
+DATA14_LIFECYCLE_VALIDATION_FUNCTIONS = (
+    "data14_validate_subscription_instrument_key_ordinal",
+    "data14_validate_subscription_instrument_set",
+    "data14_validate_raw_lifecycle_instrument_count",
+    "data14_validate_lifecycle_batch_event_ordinal",
+    "data14_validate_lifecycle_batch_events",
+    "data14_validate_provider_lifecycle_observation_subtype",
+    "data14_validate_subscription_lifecycle_observation_count",
+    "data14_validate_lifecycle_batch_observation_ordinal",
+    "data14_validate_lifecycle_batch_observations",
+)
+
 
 def _non_empty_data14_tables() -> tuple[str, ...]:
     connection = op.get_bind()
@@ -3841,6 +3853,14 @@ def downgrade() -> None:
 
     for name in reversed(TABLES):
         op.drop_table(name)
+
+    for function_name in (
+        DATA14_LIFECYCLE_VALIDATION_FUNCTIONS
+    ):
+        op.execute(
+            f"DROP FUNCTION IF EXISTS "
+            f"{function_name}()"
+        )
 
     op.drop_constraint(
         "uq_catalogue_version_records_record_semantic",

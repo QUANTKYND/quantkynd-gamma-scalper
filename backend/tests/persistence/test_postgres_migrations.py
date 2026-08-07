@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from alembic import command
+from alembic.script import ScriptDirectory
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -57,6 +58,7 @@ from app.persistence.postgres.migrations import alembic_config
 EXPECTED_TABLES = set(Base.metadata.tables)
 INITIAL_REVISION = "20260804_01"
 DATA_1_1_REVISION = "20260804_02"
+DATA_1_3_REVISION = "20260804_03"
 EXPECTED_REVISION = "20260804_04"
 RECORDED_AT = datetime(2026, 8, 4, 3, 30, tzinfo=UTC)
 
@@ -4491,5 +4493,104 @@ async def test_lifecycle_batch_observation_order_and_membership_integrity(
                             },
                         ],
                     )
+    finally:
+        await dispose_database_engine(engine)
+
+
+@pytest.mark.anyio
+async def test_data14_downgrade_removes_owned_lifecycle_functions(
+    postgres_url: str,
+    postgres_settings: DatabaseSettings,
+) -> None:
+    engine = create_database_engine(postgres_settings)
+    config = alembic_config(postgres_url)
+
+    script = ScriptDirectory.from_config(config)
+    revision = script.get_revision(EXPECTED_REVISION)
+    assert revision is not None
+
+    owned_function_names = tuple(
+        revision.module.DATA14_LIFECYCLE_VALIDATION_FUNCTIONS
+    )
+
+    assert set(owned_function_names) == {
+        "data14_validate_subscription_instrument_key_ordinal",
+        "data14_validate_subscription_instrument_set",
+        "data14_validate_raw_lifecycle_instrument_count",
+        "data14_validate_lifecycle_batch_event_ordinal",
+        "data14_validate_lifecycle_batch_events",
+        "data14_validate_provider_lifecycle_observation_subtype",
+        "data14_validate_subscription_lifecycle_observation_count",
+        "data14_validate_lifecycle_batch_observation_ordinal",
+        "data14_validate_lifecycle_batch_observations",
+    }
+
+    async def public_owned_functions() -> set[str]:
+        async with engine.connect() as connection:
+            return set(
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT function.proname "
+                            "FROM pg_proc AS function "
+                            "JOIN pg_namespace AS namespace "
+                            "ON namespace.oid = "
+                            "function.pronamespace "
+                            "WHERE namespace.nspname = 'public' "
+                            "AND function.proname = ANY("
+                            "CAST(:names AS text[]))"
+                        ),
+                        {
+                            "names": list(
+                                owned_function_names
+                            )
+                        },
+                    )
+                ).scalars()
+            )
+
+    try:
+        async with destructive_database_lease(
+            engine,
+            postgres_url,
+            postgres_settings,
+            DestructiveDatabasePurpose.INTEGRATION,
+        ) as lease:
+            await lease.drop_and_recreate_public()
+
+            await asyncio.to_thread(
+                command.upgrade,
+                config,
+                EXPECTED_REVISION,
+            )
+
+            assert await public_owned_functions() == set(
+                owned_function_names
+            )
+
+            await asyncio.to_thread(
+                command.downgrade,
+                config,
+                DATA_1_3_REVISION,
+            )
+
+            assert await public_owned_functions() == set()
+            assert await _revision(engine) == DATA_1_3_REVISION
+
+            await asyncio.to_thread(
+                command.upgrade,
+                config,
+                EXPECTED_REVISION,
+            )
+
+            assert await public_owned_functions() == set(
+                owned_function_names
+            )
+            assert await _revision(engine) == EXPECTED_REVISION
+
+            await asyncio.to_thread(
+                command.check,
+                config,
+            )
     finally:
         await dispose_database_engine(engine)
