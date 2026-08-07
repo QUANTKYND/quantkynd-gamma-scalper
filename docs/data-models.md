@@ -834,3 +834,50 @@ Subscription instrument sets reuse the provider-contract-key contract: each key 
 Selected Upstox feed-map identities are exact provider values and are never trimmed, rewritten, case-normalized, hashed into substitutes, or invented. Provider contract keys must be non-empty without leading/trailing whitespace or ASCII control characters and occupy at most 512 UTF-8 bytes. Market segments follow the same contract with a 128-byte bound. Invalid selected identities produce `invalid_provider_contract_key` or `invalid_market_segment` frame failures with zero decoded entries; ignored secondary-payload identities are not adopted or validated. Subject-resolution failure reasons are exactly `unknown_provider_key`, `stale_provider_mapping`, `ambiguous_provider_mapping`, and `ambiguous_contract_version`.
 
 `FrameCaptureProvenanceV1.provider_schema_sha256` uses `sha256:` plus 64 lowercase hexadecimal characters. Live-received and recorded-original-receipt provenance requires receipt and equal receipt/availability; historical-import provenance forbids receipt. Availability never precedes receipt, recording never precedes availability, and source file/record IDs are all-or-none. A fully decoded frame with only entry failures has `status=failed` and no frame failure; the offline CLI treats it as a valid reconciled result and returns exit `0`, including when expected hashes match. A frame failure always returns exit `1`.
+
+<!-- DATA-1.4-EVIDENCE:DATA-MODELS:START -->
+## DATA-1.4 durable market-event persistence
+
+Revision `20260804_04` turns the accepted DATA-1.3 normalization contracts into append-only PostgreSQL records. Raw capture identity, normalized semantic identity, ordered batch membership, and persistence time remain separate dimensions.
+
+Durable frame-normalization tables:
+
+```text
+raw_market_frames
+market_normalization_results
+market_observations
+underlying_quote_observations
+futures_quote_observations
+option_quote_observations
+market_segment_status_observations
+market_normalization_result_events
+market_normalization_failures
+market_normalization_result_failures
+```
+
+Durable lifecycle tables:
+
+```text
+provider_subscription_instrument_sets
+provider_subscription_instrument_set_keys
+provider_lifecycle_batches
+raw_provider_lifecycle_events
+provider_lifecycle_batch_events
+provider_lifecycle_observations
+provider_connection_lifecycle_observations
+provider_subscription_lifecycle_observations
+provider_lifecycle_batch_observations
+```
+
+`raw_market_frames` owns exact captured bytes, raw capture identity, provider/schema provenance, source-order scope, capture clocks, content hash, and persistence time. `market_normalization_results` owns one deterministic result per raw frame and normalization schema. Result-event and result-failure tables preserve declared order without changing event or failure identity.
+
+`market_observations` is the normalized event registry. Quote and provider-status subtype tables carry event-type-specific fields and reference the registry through non-cascading composite foreign keys. Exact immutable retries are idempotent; conflicting content under an existing semantic identity is rejected rather than overwritten.
+
+Subscription instrument sets own their sorted digest, declared count, canonical payload hash, and zero-based ordered key membership. Lifecycle batches own declared input, unique, normalized, and duplicate counts plus deterministic batch hashes. Raw batch memberships preserve every captured input ordinal and bind an exact duplicate to its existing first-occurrence ordinal. Normalized batch memberships preserve first-capture normalized order.
+
+`provider_lifecycle_observations` is the normalized lifecycle registry. Every root must have exactly one matching typed connection or subscription subtype by commit. Subscription subtypes bind to an immutable instrument set and matching count. Deferred aggregate checks reconcile complete batches, contiguous ordinals, duplicate ownership, subtype ownership, and normalized membership against raw first-capture order.
+
+All DATA-1.4 tables reject update, delete, and truncate operations. Foreign keys do not cascade deletion. Source-order, strict-integer, UTF-8 byte, request-mode, instrument-set, and lifecycle-batch bounds are inherited from the accepted DATA-1.3 durability boundary.
+
+Downgrade is permitted only when every DATA-1.4 table is empty. It removes tables in reverse dependency order and explicitly removes the nine owned lifecycle validation functions. This persistence slice does not define quality eligibility, latest-state or option-chain reconstruction, retention, Redis state, trades, analytics, or execution.
+<!-- DATA-1.4-EVIDENCE:DATA-MODELS:END -->
