@@ -527,6 +527,85 @@ STATUS_SUBTYPE_COLUMNS = {
 }
 
 
+async def _public_trigger_exists(
+    engine,
+    *,
+    table_name: str,
+    trigger_name: str,
+) -> bool:
+    async with engine.connect() as connection:
+        return bool(
+            await connection.scalar(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_trigger AS trigger
+                        JOIN pg_class AS relation
+                          ON relation.oid = trigger.tgrelid
+                        JOIN pg_namespace AS namespace
+                          ON namespace.oid = relation.relnamespace
+                        WHERE namespace.nspname = 'public'
+                          AND relation.relname = :table_name
+                          AND trigger.tgname = :trigger_name
+                          AND NOT trigger.tgisinternal
+                    )
+                    """
+                ),
+                {
+                    "table_name": table_name,
+                    "trigger_name": trigger_name,
+                },
+            )
+        )
+
+
+async def _public_function_exists(
+    engine,
+    function_name: str,
+) -> bool:
+    async with engine.connect() as connection:
+        return bool(
+            await connection.scalar(
+                text(
+                    """
+                    SELECT to_regprocedure(:signature)
+                           IS NOT NULL
+                    """
+                ),
+                {
+                    "signature": (
+                        f"public.{function_name}()"
+                    )
+                },
+            )
+        )
+
+
+async def _public_table_names(
+    engine,
+    table_names: tuple[str, ...],
+) -> set[str]:
+    existing: set[str] = set()
+
+    async with engine.connect() as connection:
+        for table_name in table_names:
+            relation = await connection.scalar(
+                text(
+                    "SELECT to_regclass(:relation_name)"
+                ),
+                {
+                    "relation_name": (
+                        f"public.{table_name}"
+                    )
+                },
+            )
+            if relation is not None:
+                existing.add(table_name)
+
+    return existing
+
+
 @pytest.mark.anyio
 async def test_upgrade_downgrade_reupgrade_and_metadata_drift(
     postgres_url: str,
@@ -2567,6 +2646,277 @@ async def test_data14_downgrade_refuses_non_empty_history_before_ddl(
                 "uq_instrument_version_records_record_semantic",
                 "uq_provider_mapping_records_record_semantic",
             }
+    finally:
+        await dispose_database_engine(engine)
+
+
+@pytest.mark.anyio
+async def test_data14_downgrade_fails_when_owned_lifecycle_function_is_missing(
+    postgres_url: str,
+    postgres_settings: DatabaseSettings,
+) -> None:
+    engine = create_database_engine(postgres_settings)
+    config = alembic_config(postgres_url)
+
+    script = ScriptDirectory.from_config(config)
+    revision = script.get_revision(EXPECTED_REVISION)
+    assert revision is not None
+
+    data14_tables = tuple(revision.module.TABLES)
+
+    damaged_trigger = (
+        "data14_provider_lifecycle_"
+        "observation_subtype_integrity"
+    )
+    damaged_function = (
+        "data14_validate_provider_"
+        "lifecycle_observation_subtype"
+    )
+
+    restored_function = (
+        "data14_validate_subscription_"
+        "instrument_key_ordinal"
+    )
+
+    try:
+        async with destructive_database_lease(
+            engine,
+            postgres_url,
+            postgres_settings,
+            DestructiveDatabasePurpose.INTEGRATION,
+        ) as lease:
+            await lease.drop_and_recreate_public()
+
+            await asyncio.to_thread(
+                command.upgrade,
+                config,
+                EXPECTED_REVISION,
+            )
+
+            assert (
+                await _revision(engine)
+                == EXPECTED_REVISION
+            )
+
+            # The validation function has a dependent
+            # constraint trigger, so remove both as committed
+            # deliberate schema damage.
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        f"DROP TRIGGER {damaged_trigger} "
+                        "ON provider_lifecycle_observations"
+                    )
+                )
+                await connection.execute(
+                    text(
+                        f"DROP FUNCTION {damaged_function}()"
+                    )
+                )
+
+            assert not await _public_trigger_exists(
+                engine,
+                table_name=(
+                    "provider_lifecycle_observations"
+                ),
+                trigger_name=damaged_trigger,
+            )
+            assert not await _public_function_exists(
+                engine,
+                damaged_function,
+            )
+
+            with pytest.raises(DBAPIError):
+                await asyncio.to_thread(
+                    command.downgrade,
+                    config,
+                    DATA_1_3_REVISION,
+                )
+
+            assert (
+                await _revision(engine)
+                == EXPECTED_REVISION
+            )
+
+            # The failed downgrade had already removed generic
+            # triggers, the generic mutation function, all
+            # tables and earlier lifecycle functions. All of
+            # those operations must have rolled back.
+            assert (
+                await _public_table_names(
+                    engine,
+                    data14_tables,
+                )
+                == set(data14_tables)
+            )
+
+            assert await _public_trigger_exists(
+                engine,
+                table_name="raw_market_frames",
+                trigger_name=(
+                    "data14_raw_market_frames_immutable"
+                ),
+            )
+
+            assert await _public_function_exists(
+                engine,
+                "data14_reject_mutation",
+            )
+
+            assert await _public_function_exists(
+                engine,
+                restored_function,
+            )
+
+            # The deliberately damaged function remains absent;
+            # the downgrade transaction must not manufacture it.
+            assert not await _public_function_exists(
+                engine,
+                damaged_function,
+            )
+
+            await lease.drop_and_recreate_public()
+
+            await asyncio.to_thread(
+                command.upgrade,
+                config,
+                EXPECTED_REVISION,
+            )
+
+            assert (
+                await _revision(engine)
+                == EXPECTED_REVISION
+            )
+
+            assert await _public_function_exists(
+                engine,
+                damaged_function,
+            )
+
+            await asyncio.to_thread(
+                command.check,
+                config,
+            )
+    finally:
+        await dispose_database_engine(engine)
+
+
+@pytest.mark.anyio
+async def test_data14_downgrade_fails_when_owned_trigger_is_missing(
+    postgres_url: str,
+    postgres_settings: DatabaseSettings,
+) -> None:
+    engine = create_database_engine(postgres_settings)
+    config = alembic_config(postgres_url)
+
+    script = ScriptDirectory.from_config(config)
+    revision = script.get_revision(EXPECTED_REVISION)
+    assert revision is not None
+
+    data14_tables = tuple(revision.module.TABLES)
+
+    damaged_table = (
+        "provider_lifecycle_batch_observations"
+    )
+    damaged_trigger = (
+        "data14_provider_lifecycle_batch_"
+        "observations_no_truncate"
+    )
+
+    try:
+        async with destructive_database_lease(
+            engine,
+            postgres_url,
+            postgres_settings,
+            DestructiveDatabasePurpose.INTEGRATION,
+        ) as lease:
+            await lease.drop_and_recreate_public()
+
+            await asyncio.to_thread(
+                command.upgrade,
+                config,
+                EXPECTED_REVISION,
+            )
+
+            assert (
+                await _revision(engine)
+                == EXPECTED_REVISION
+            )
+
+            # Commit deliberate schema damage before attempting
+            # the downgrade.
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        f"DROP TRIGGER {damaged_trigger} "
+                        f"ON {damaged_table}"
+                    )
+                )
+
+            assert not await _public_trigger_exists(
+                engine,
+                table_name=damaged_table,
+                trigger_name=damaged_trigger,
+            )
+
+            # Exact DROP TRIGGER must expose the damaged
+            # revision instead of silently continuing.
+            with pytest.raises(DBAPIError):
+                await asyncio.to_thread(
+                    command.downgrade,
+                    config,
+                    DATA_1_3_REVISION,
+                )
+
+            # Alembic must not claim that downgrade completed.
+            assert (
+                await _revision(engine)
+                == EXPECTED_REVISION
+            )
+
+            # Earlier trigger removals performed inside the
+            # failed downgrade transaction must be rolled back.
+            assert await _public_trigger_exists(
+                engine,
+                table_name="raw_market_frames",
+                trigger_name=(
+                    "data14_raw_market_frames_immutable"
+                ),
+            )
+            assert await _public_trigger_exists(
+                engine,
+                table_name="raw_market_frames",
+                trigger_name=(
+                    "data14_raw_market_frames_no_truncate"
+                ),
+            )
+
+            assert await _public_function_exists(
+                engine,
+                "data14_reject_mutation",
+            )
+
+            assert (
+                await _public_table_names(
+                    engine,
+                    data14_tables,
+                )
+                == set(data14_tables)
+            )
+
+            # Restore a healthy database for following tests.
+            await lease.drop_and_recreate_public()
+
+            await asyncio.to_thread(
+                command.upgrade,
+                config,
+                EXPECTED_REVISION,
+            )
+
+            assert (
+                await _revision(engine)
+                == EXPECTED_REVISION
+            )
     finally:
         await dispose_database_engine(engine)
 

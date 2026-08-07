@@ -3839,16 +3839,16 @@ def downgrade() -> None:
 
     for name in TABLES:
         op.execute(
-            f"DROP TRIGGER IF EXISTS "
+            f"DROP TRIGGER "
             f"data14_{name}_immutable ON {name}"
         )
         op.execute(
-            f"DROP TRIGGER IF EXISTS "
+            f"DROP TRIGGER "
             f"data14_{name}_no_truncate ON {name}"
         )
 
     op.execute(
-        "DROP FUNCTION IF EXISTS data14_reject_mutation()"
+        "DROP FUNCTION data14_reject_mutation()"
     )
 
     for name in reversed(TABLES):
@@ -3858,7 +3858,7 @@ def downgrade() -> None:
         DATA14_LIFECYCLE_VALIDATION_FUNCTIONS
     ):
         op.execute(
-            f"DROP FUNCTION IF EXISTS "
+            f"DROP FUNCTION "
             f"{function_name}()"
         )
 
