@@ -1,7 +1,8 @@
 # DATA-1.5 — Independent Adversarial Requirements Review
 
 **Milestone:** Versioned market-data quality policy  
-**Review status:** **NOT APPROVED — requirements amendments required before design**  
+**Review status:** **COMPLETED — 23 findings recorded**  
+**Resolution status:** **ADR-001 through ADR-023 and RR-001 through RR-004 have accepted corrections in the canonical requirements; final post-commit consistency verification is pending**
 **Implementation status:** **Not authorized**  
 **Reviewed branch:** `feature/data15-versioned-market-data-quality-policy`  
 **Verified baseline:** `b461d507d08546d72d952f80016b2617e216d711`  
@@ -397,3 +398,87 @@ implementation                               NOT AUTHORIZED
 The review does not reject DATA-1.5. It prevents ambiguous requirements from becoming durable identities and irreversible schema decisions.
 
 **Final decision:** **NOT APPROVED FOR DESIGN OR IMPLEMENTATION until all blocker/high findings are amended and independently re-reviewed.**
+---
+
+## 8. Resolution addendum
+
+The requirements owner accepted every finding `ADR-001` through `ADR-023`. Normative resolutions are incorporated into:
+
+```text
+docs/implementation/DATA-1.5-versioned-market-data-quality-policy-requirements.md
+```
+
+The amended document now freezes:
+
+- target knowledge visibility separately from market-time eligibility;
+- strict future-target ineligibility with dependency cutoff `min(provider_timestamp, evaluation_market_as_of)`;
+- append-only source artifacts separate from semantic policy versions;
+- assessment/run many-to-many membership;
+- non-persisting, non-disclosing `target_not_visible`;
+- the exact existing repository canonical JSON/SHA-256 contract and test vectors;
+- complete dependency ambiguity/effectiveness reasons;
+- exact owning-result persistence visibility, atomic target membership, and dependency temporal axes;
+- existing authoritative persistence clocks plus typed DATA-1.5 receipt facts and conservative legacy bootstrap;
+- non-circular Asia/Kolkata session-date derivation;
+- staged subscription scope/state/set/mode evaluation;
+- quote tuple/orphan semantics;
+- tick applicability for bid, ask, and last price;
+- `(reason_code, subject_key)` reason occurrence identity;
+- one aggregate dual-axis spread reason;
+- quote versus segment-status applicability;
+- equal-time conflict handling that never chooses by ID;
+- counterfactual policy-registration audit evidence;
+- per-policy-version evaluator compatibility;
+- the exact Nifty index-derivatives v1 subject allowlist;
+- a bounded canonical typed reason-evidence union;
+- corrected baseline history.
+
+No finding was deferred to implementation-time interpretation.
+
+This addendum records remediation, not independent approval. The next gate remains an independent re-review of the amended requirements. Design and implementation remain unauthorized until that re-review passes.
+---
+
+## 9. Follow-up requirements re-review
+
+The amended requirements were re-reviewed after remediation of `ADR-001` through `ADR-023`. Four follow-up findings were identified.
+
+### RR-001 — Competing canonical documents
+
+- **Severity:** Blocker
+- **Finding:** Both canonical and `-amended` file names existed, while repository gates referenced only the non-suffixed paths.
+- **Resolution:** The non-suffixed files are the sole canonical requirements and review documents. The `-amended` copies must be removed from the branch.
+- **Status:** Accepted and incorporated into the replacement file set.
+
+### RR-002 — Future-timestamp tolerance admitted post-cutoff dependencies
+
+- **Severity:** Blocker
+- **Finding:** A target slightly after `evaluation_market_as_of` could use status, session, mapping, or lifecycle state occurring after the requested market cutoff.
+- **Resolution:** DATA-1.5 v1 has no future-timestamp tolerance. Any future target is ineligible. Every dependency selector uses `dependency_market_as_of = min(provider_timestamp, evaluation_market_as_of)` while preserving the original target timestamp for identity and audit evidence.
+- **Status:** Accepted and incorporated into canonical §§8, 9, 12, 16, 28, and 29.
+
+### RR-003 — Target persistence clock was contradictory
+
+- **Severity:** Blocker
+- **Finding:** Target visibility alternated between event semantic `recorded_at` and result `persistence_recorded_at`.
+- **Resolution:** Target durability visibility requires event `available_at`, exact committed result membership, and owning normalization result `persistence_recorded_at <= K`. Event semantic `recorded_at` is provenance only. No event-level persistence column is assumed.
+- **Status:** Accepted and incorporated into canonical §§8.3, 9.1, 28, and 29.
+
+### RR-004 — Legacy dependency receipt bootstrap was undefined
+
+- **Severity:** High
+- **Finding:** Temporal rows predating migration `20260804_05` lacked a frozen repository-owned receipt boundary.
+- **Resolution:** Existing accepted repository persistence clocks remain authoritative. Other dependency rows receive typed receipt facts. Legacy rows use the migration bootstrap transaction timestamp and are not selectable for knowledge cutoffs before that timestamp. Post-migration receipt facts are repository-owned and atomic with insertion.
+- **Status:** Accepted and incorporated into canonical §§9.1, 17, 18, 28, and 29.
+
+### Re-review gate result
+
+```text
+original ADR findings addressed        23 / 23
+follow-up RR findings addressed         4 / 4
+canonical document cleanup              REQUIRED ON COMMIT
+final post-commit consistency check     PENDING
+pre-implementation design response      NOT AUTHORIZED YET
+implementation                           NOT AUTHORIZED
+```
+
+This review file records the accepted corrections. It does not authorize design or implementation until the canonical files are committed, the suffixed duplicates are removed, and the final consistency check passes.
