@@ -4,9 +4,20 @@
 
 **Status:** Design work may begin only after adversarial requirements review. Implementation is not authorized.
 
-**Verified baseline SHA:** `eaa243172a759f545c09bdff19fdacfbaad77e37`
+**Verified baseline branch:** `master`
+
+**Verified baseline SHA:** `b461d507d08546d72d952f80016b2617e216d711`
+
+**Initial DATA-1.5 documentation commit:** `bc17d77b9ff5e34a85bfd19bbbb8ba1834f3c89b`
+
+**Feature branch:** `feature/data15-versioned-market-data-quality-policy`
 
 **Requirements input:** `docs/implementation/DATA-1.5-versioned-market-data-quality-policy-requirements.md`
+
+**Baseline note:** `b461d507d08546d72d952f80016b2617e216d711`
+was the `master` HEAD from which DATA-1.5 design work began. It includes
+independently completed and merged DATA-1.4 downgrade hardening. DATA-1.5
+neither implements nor claims that work.
 
 ---
 

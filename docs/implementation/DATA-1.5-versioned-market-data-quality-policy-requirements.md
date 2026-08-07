@@ -8,13 +8,20 @@
 
 **Verified starting branch:** `master`
 
-**Verified starting SHA:** `eaa243172a759f545c09bdff19fdacfbaad77e37`
+**Verified starting SHA:** `b461d507d08546d72d952f80016b2617e216d711`
+
+**Initial requirements/design documentation commit:** `bc17d77b9ff5e34a85bfd19bbbb8ba1834f3c89b`
 
 **Current Alembic head:** `20260804_04`
 
-**Proposed feature branch:** `feature/data-1-5-versioned-market-data-quality-policy`
+**Feature branch:** `feature/data15-versioned-market-data-quality-policy`
 
 **Proposed next Alembic revision:** `20260804_05`
+
+**Baseline note:** `b461d507d08546d72d952f80016b2617e216d711`
+was the `master` HEAD from which DATA-1.5 design work began. It includes
+independently completed and merged DATA-1.4 downgrade hardening. DATA-1.5
+neither implements nor claims that work.
 
 ---
 
