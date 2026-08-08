@@ -59,7 +59,8 @@ EXPECTED_TABLES = set(Base.metadata.tables)
 INITIAL_REVISION = "20260804_01"
 DATA_1_1_REVISION = "20260804_02"
 DATA_1_3_REVISION = "20260804_03"
-EXPECTED_REVISION = "20260804_04"
+DATA_1_4_REVISION = "20260804_04"
+EXPECTED_REVISION = "20260804_05"
 RECORDED_AT = datetime(2026, 8, 4, 3, 30, tzinfo=UTC)
 
 DATA_1_2_TABLES = {
@@ -640,6 +641,26 @@ async def test_upgrade_downgrade_reupgrade_and_metadata_drift(
             await asyncio.to_thread(command.check, config)
             await _assert_head_schema(engine)
 
+            with pytest.raises(
+                RuntimeError,
+                match=(
+                    "DATA-1.5 downgrade refused.*"
+                    "market_data_quality_.*_receipts"
+                ),
+            ):
+                await asyncio.to_thread(
+                    command.downgrade,
+                    config,
+                    INITIAL_REVISION,
+                )
+            assert await _revision(engine) == EXPECTED_REVISION
+
+            # DATA-1.5 receipts are durable history. Exercise the
+            # empty downgrade path only after a guarded destructive reset.
+            await lease.drop_and_recreate_public()
+            await asyncio.to_thread(command.upgrade, config, "head")
+            assert await _revision(engine) == EXPECTED_REVISION
+
             await asyncio.to_thread(
                 command.downgrade,
                 config,
@@ -935,6 +956,28 @@ async def test_temporal_provenance_foreign_keys_reject_cross_links(
         await dispose_database_engine(engine)
 
 
+def _data15_temporal_receipt_values(
+    *,
+    target_kind: str,
+    record_id: str,
+    receipt_at: datetime,
+) -> dict[str, object]:
+    payload = {
+        "target_kind": target_kind,
+        "record_id": record_id,
+        "receipt_at": receipt_at,
+        "receipt_basis": "repository_insert",
+        "bootstrap_revision": None,
+    }
+    return {
+        "record_id": record_id,
+        "receipt_at": receipt_at,
+        "receipt_basis": "repository_insert",
+        "bootstrap_revision": None,
+        "canonical_payload_hash": stable_hash(payload),
+    }
+
+
 async def _insert_head_provenance_fixture(
     connection,
     fixture: DataFoundationFixture,
@@ -954,6 +997,18 @@ async def _insert_head_provenance_fixture(
             **temporal_record_values(
                 catalogue_record,
                 "catalogue_version_id",
+            )
+        )
+    )
+    receipt_at = RECORDED_AT + timedelta(microseconds=1)
+    await connection.execute(
+        tables[
+            "market_data_quality_catalogue_version_receipts"
+        ].insert().values(
+            **_data15_temporal_receipt_values(
+                target_kind="catalogue_version_record",
+                record_id=catalogue_record.record_id,
+                receipt_at=receipt_at,
             )
         )
     )
@@ -997,6 +1052,17 @@ async def _insert_head_provenance_fixture(
                 )
             )
         )
+        await connection.execute(
+            tables[
+                "market_data_quality_instrument_version_receipts"
+            ].insert().values(
+                **_data15_temporal_receipt_values(
+                    target_kind="instrument_version_record",
+                    record_id=record.record_id,
+                    receipt_at=receipt_at,
+                )
+            )
+        )
         version_records[label] = record.record_id
 
     await connection.execute(
@@ -1014,6 +1080,17 @@ async def _insert_head_provenance_fixture(
             **temporal_record_values(
                 mapping_record,
                 "mapping_id",
+            )
+        )
+    )
+    await connection.execute(
+        tables[
+            "market_data_quality_provider_mapping_receipts"
+        ].insert().values(
+            **_data15_temporal_receipt_values(
+                target_kind="provider_mapping_record",
+                record_id=mapping_record.record_id,
+                receipt_at=receipt_at,
             )
         )
     )
@@ -2659,7 +2736,7 @@ async def test_data14_downgrade_fails_when_owned_lifecycle_function_is_missing(
     config = alembic_config(postgres_url)
 
     script = ScriptDirectory.from_config(config)
-    revision = script.get_revision(EXPECTED_REVISION)
+    revision = script.get_revision(DATA_1_4_REVISION)
     assert revision is not None
 
     data14_tables = tuple(revision.module.TABLES)
@@ -2810,7 +2887,7 @@ async def test_data14_downgrade_fails_when_owned_trigger_is_missing(
     config = alembic_config(postgres_url)
 
     script = ScriptDirectory.from_config(config)
-    revision = script.get_revision(EXPECTED_REVISION)
+    revision = script.get_revision(DATA_1_4_REVISION)
     assert revision is not None
 
     data14_tables = tuple(revision.module.TABLES)
@@ -4856,7 +4933,7 @@ async def test_data14_downgrade_removes_owned_lifecycle_functions(
     config = alembic_config(postgres_url)
 
     script = ScriptDirectory.from_config(config)
-    revision = script.get_revision(EXPECTED_REVISION)
+    revision = script.get_revision(DATA_1_4_REVISION)
     assert revision is not None
 
     owned_function_names = tuple(

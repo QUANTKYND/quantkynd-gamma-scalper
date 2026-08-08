@@ -3298,9 +3298,16 @@ class ProviderMappingRecordRow(Base):
 
 class TradingSessionVersionRecordRow(Base):
     __tablename__ = "trading_session_version_records"
-    __table_args__ = _temporal_record_constraints(
-        "trading_session_version_records",
-        "session_version_id",
+    __table_args__ = (
+        *_temporal_record_constraints(
+            "trading_session_version_records",
+            "session_version_id",
+        ),
+        UniqueConstraint(
+            "record_id",
+            "session_version_id",
+            name="uq_trading_session_version_records_record_semantic",
+        ),
     )
 
     record_id: Mapped[str] = mapped_column(
@@ -3795,3 +3802,1150 @@ class CatalogueMembershipRow(Base):
         String(HASH_LENGTH),
         nullable=False,
     )
+
+# DATA-1.5 versioned market-data quality policy persistence.
+# This block is intentionally table-oriented because DATA-1.4 durable market
+# events in this module use the same Core-table style.
+
+
+def _data15_id_check(column_name: str, constraint_name: str) -> CheckConstraint:
+    return CheckConstraint(
+        f"{column_name} ~ '^sha256:[0-9a-f]{{64}}$'",
+        name=constraint_name,
+    )
+
+
+def _data15_finite_check(column_name: str, constraint_name: str) -> CheckConstraint:
+    return CheckConstraint(
+        f"{column_name} <> 'infinity'::timestamptz "
+        f"AND {column_name} <> '-infinity'::timestamptz",
+        name=constraint_name,
+    )
+
+
+def _data15_json_object(column_name: str, constraint_name: str) -> CheckConstraint:
+    return CheckConstraint(
+        f"jsonb_typeof({column_name}) = 'object'",
+        name=constraint_name,
+    )
+
+
+MARKET_DATA_QUALITY_POLICIES_TABLE = Table(
+    "market_data_quality_policies",
+    Base.metadata,
+    Column("policy_id", String(ID_LENGTH), primary_key=True),
+    Column("policy_name", String(NAME_LENGTH), nullable=False),
+    Column("provider", String(NAME_LENGTH), nullable=False),
+    Column("observation_domain", String(NAME_LENGTH), nullable=False),
+    Column("canonical_payload", JSONB, nullable=False),
+    Column("canonical_payload_hash", String(ID_LENGTH), nullable=False),
+    Column("registered_at", DateTime(timezone=True), nullable=False),
+    _data15_id_check("policy_id", "data15_policies_id_sha256"),
+    _data15_id_check(
+        "canonical_payload_hash",
+        "data15_policies_payload_hash_sha256",
+    ),
+    _data15_json_object("canonical_payload", "data15_policies_payload_object"),
+    _data15_finite_check("registered_at", "data15_policies_registered_finite"),
+    CheckConstraint("provider = 'upstox'", name="data15_policies_provider"),
+    UniqueConstraint(
+        "policy_name",
+        "provider",
+        "observation_domain",
+        name="uq_data15_policy_semantic_identity",
+    ),
+    UniqueConstraint(
+        "policy_id",
+        "provider",
+        name="uq_data15_policy_id_provider",
+    ),
+    Index(
+        "ix_data15_policies_provider_name",
+        "provider",
+        "policy_name",
+        "policy_id",
+    ),
+)
+
+
+MARKET_DATA_QUALITY_POLICY_VERSIONS_TABLE = Table(
+    "market_data_quality_policy_versions",
+    Base.metadata,
+    Column("policy_version_id", String(ID_LENGTH), primary_key=True),
+    Column("policy_id", String(ID_LENGTH), nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("policy_definition", JSONB, nullable=False),
+    Column("policy_definition_hash", String(ID_LENGTH), nullable=False),
+    Column("quality_policy_schema_version", Integer, nullable=False),
+    Column("quality_evaluator_implementation_version", String(NAME_LENGTH), nullable=False),
+    Column("normalization_schema_version", Integer, nullable=False),
+    Column("normalizer_implementation_version", String(NAME_LENGTH), nullable=False),
+    Column("reason_definition_count", Integer, nullable=False),
+    Column("registered_at", DateTime(timezone=True), nullable=False),
+    ForeignKeyConstraint(
+        ["policy_id"],
+        ["market_data_quality_policies.policy_id"],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_policy_versions_policy",
+    ),
+    _data15_id_check("policy_version_id", "data15_policy_versions_id_sha256"),
+    _data15_id_check("policy_id", "data15_policy_versions_policy_sha256"),
+    _data15_id_check(
+        "policy_definition_hash",
+        "data15_policy_versions_definition_hash_sha256",
+    ),
+    _data15_json_object(
+        "policy_definition",
+        "data15_policy_versions_definition_object",
+    ),
+    _data15_finite_check(
+        "registered_at",
+        "data15_policy_versions_registered_finite",
+    ),
+    CheckConstraint("version > 0", name="data15_policy_versions_positive"),
+    CheckConstraint(
+        "quality_policy_schema_version = 1",
+        name="data15_policy_versions_schema_v1",
+    ),
+    CheckConstraint(
+        "quality_evaluator_implementation_version = "
+        "'market-data-quality-evaluator-1'",
+        name="data15_policy_versions_evaluator_v1",
+    ),
+    CheckConstraint(
+        "normalization_schema_version = 1 "
+        "AND normalizer_implementation_version = 'upstox-v3-normalizer-1'",
+        name="data15_policy_versions_normalizer_v1",
+    ),
+    CheckConstraint(
+        "reason_definition_count = 69",
+        name="data15_policy_versions_reason_count",
+    ),
+    UniqueConstraint(
+        "policy_id",
+        "version",
+        name="uq_data15_policy_versions_policy_version",
+    ),
+    UniqueConstraint(
+        "policy_version_id",
+        "policy_id",
+        name="uq_data15_policy_versions_id_policy",
+    ),
+    Index(
+        "ix_data15_policy_versions_definition_hash",
+        "policy_definition_hash",
+        "policy_version_id",
+    ),
+)
+
+
+MARKET_DATA_QUALITY_POLICY_SOURCE_ARTIFACTS_TABLE = Table(
+    "market_data_quality_policy_source_artifacts",
+    Base.metadata,
+    Column("source_artifact_id", String(ID_LENGTH), primary_key=True),
+    Column("policy_version_id", String(ID_LENGTH), nullable=False),
+    Column("source_sha256", String(ID_LENGTH), nullable=False),
+    Column("source_byte_count", Integer, nullable=False),
+    Column("media_type", String(NAME_LENGTH), nullable=False),
+    Column("parser_label", String(NAME_LENGTH), nullable=False),
+    Column("source_bytes", LargeBinary, nullable=False),
+    Column("registered_at", DateTime(timezone=True), nullable=False),
+    ForeignKeyConstraint(
+        ["policy_version_id"],
+        ["market_data_quality_policy_versions.policy_version_id"],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_policy_source_version",
+    ),
+    _data15_id_check("source_artifact_id", "data15_policy_source_id_sha256"),
+    _data15_id_check("policy_version_id", "data15_policy_source_version_sha256"),
+    _data15_id_check("source_sha256", "data15_policy_source_sha256"),
+    _data15_finite_check("registered_at", "data15_policy_source_registered_finite"),
+    CheckConstraint(
+        "source_byte_count BETWEEN 1 AND 262144 "
+        "AND octet_length(source_bytes) = source_byte_count",
+        name="data15_policy_source_byte_count",
+    ),
+    CheckConstraint(
+        "media_type = 'application/yaml' "
+        "AND parser_label = 'data15-strict-yaml-1'",
+        name="data15_policy_source_labels",
+    ),
+    UniqueConstraint(
+        "policy_version_id",
+        "source_sha256",
+        "source_byte_count",
+        "media_type",
+        "parser_label",
+        name="uq_data15_policy_source_artifact",
+    ),
+    Index(
+        "ix_data15_policy_source_version",
+        "policy_version_id",
+        "source_artifact_id",
+    ),
+    Index(
+        "ix_data15_policy_source_sha",
+        "source_sha256",
+        "source_artifact_id",
+    ),
+)
+
+
+MARKET_DATA_QUALITY_POLICY_REASON_DEFINITIONS_TABLE = Table(
+    "market_data_quality_policy_reason_definitions",
+    Base.metadata,
+    Column("reason_definition_id", String(ID_LENGTH), primary_key=True),
+    Column("policy_version_id", String(ID_LENGTH), nullable=False),
+    Column("reason_code", String(NAME_LENGTH), nullable=False),
+    Column("registry_ordinal", Integer, nullable=False),
+    Column("severity", String(16), nullable=False),
+    Column("applicable_target_kinds", JSONB, nullable=False),
+    Column("subject_keys", JSONB, nullable=False),
+    Column("evidence_profile", String(NAME_LENGTH), nullable=False),
+    Column("canonical_payload", JSONB, nullable=False),
+    Column("canonical_payload_hash", String(ID_LENGTH), nullable=False),
+    ForeignKeyConstraint(
+        ["policy_version_id"],
+        ["market_data_quality_policy_versions.policy_version_id"],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_reason_definition_version",
+    ),
+    _data15_id_check("reason_definition_id", "data15_reason_definition_id_sha256"),
+    _data15_id_check("policy_version_id", "data15_reason_definition_version_sha256"),
+    _data15_id_check(
+        "canonical_payload_hash",
+        "data15_reason_definition_payload_hash_sha256",
+    ),
+    _data15_json_object(
+        "canonical_payload",
+        "data15_reason_definition_payload_object",
+    ),
+    CheckConstraint(
+        "registry_ordinal BETWEEN 1 AND 69",
+        name="data15_reason_definition_ordinal",
+    ),
+    CheckConstraint(
+        "severity IN ('warning', 'error')",
+        name="data15_reason_definition_severity",
+    ),
+    CheckConstraint(
+        "jsonb_typeof(applicable_target_kinds) = 'array' "
+        "AND jsonb_array_length(applicable_target_kinds) > 0",
+        name="data15_reason_definition_target_kinds",
+    ),
+    CheckConstraint(
+        "jsonb_typeof(subject_keys) = 'array' "
+        "AND jsonb_array_length(subject_keys) > 0",
+        name="data15_reason_definition_subject_keys",
+    ),
+    UniqueConstraint(
+        "policy_version_id",
+        "reason_code",
+        name="uq_data15_reason_definition_code",
+    ),
+    UniqueConstraint(
+        "policy_version_id",
+        "registry_ordinal",
+        name="uq_data15_reason_definition_ordinal",
+    ),
+    UniqueConstraint(
+        "reason_definition_id",
+        "policy_version_id",
+        "reason_code",
+        "registry_ordinal",
+        "severity",
+        name="uq_data15_reason_definition_exact",
+    ),
+    Index(
+        "ix_data15_reason_definition_version_ordinal",
+        "policy_version_id",
+        "registry_ordinal",
+    ),
+    Index(
+        "ix_data15_reason_definition_code",
+        "reason_code",
+        "policy_version_id",
+    ),
+)
+
+
+MARKET_DATA_QUALITY_ASSESSMENT_RUNS_TABLE = Table(
+    "market_data_quality_assessment_runs",
+    Base.metadata,
+    Column("assessment_run_id", String(ID_LENGTH), primary_key=True),
+    Column("assessment_run_schema_version", Integer, nullable=False),
+    Column("policy_version_id", String(ID_LENGTH), nullable=False),
+    Column("evaluation_market_as_of", DateTime(timezone=True), nullable=False),
+    Column("evaluation_known_as_of", DateTime(timezone=True), nullable=False),
+    Column("quality_evaluator_implementation_version", String(NAME_LENGTH), nullable=False),
+    Column("target_count", Integer, nullable=False),
+    Column("ordered_target_event_ids", JSONB, nullable=False),
+    Column("canonical_payload", JSONB, nullable=False),
+    Column("canonical_payload_hash", String(ID_LENGTH), nullable=False),
+    Column("persistence_recorded_at", DateTime(timezone=True), nullable=False),
+    ForeignKeyConstraint(
+        ["policy_version_id"],
+        ["market_data_quality_policy_versions.policy_version_id"],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_assessment_runs_policy_version",
+    ),
+    _data15_id_check("assessment_run_id", "data15_assessment_runs_id_sha256"),
+    _data15_id_check("policy_version_id", "data15_assessment_runs_policy_sha256"),
+    _data15_id_check(
+        "canonical_payload_hash",
+        "data15_assessment_runs_payload_hash_sha256",
+    ),
+    _data15_finite_check(
+        "evaluation_market_as_of",
+        "data15_assessment_runs_market_finite",
+    ),
+    _data15_finite_check(
+        "evaluation_known_as_of",
+        "data15_assessment_runs_known_finite",
+    ),
+    _data15_finite_check(
+        "persistence_recorded_at",
+        "data15_assessment_runs_persistence_finite",
+    ),
+    _data15_json_object(
+        "canonical_payload",
+        "data15_assessment_runs_payload_object",
+    ),
+    CheckConstraint(
+        "assessment_run_schema_version = 1",
+        name="data15_assessment_runs_schema_v1",
+    ),
+    CheckConstraint(
+        "quality_evaluator_implementation_version = "
+        "'market-data-quality-evaluator-1'",
+        name="data15_assessment_runs_evaluator_v1",
+    ),
+    CheckConstraint(
+        "evaluation_known_as_of >= evaluation_market_as_of",
+        name="data15_assessment_runs_cutoff_order",
+    ),
+    CheckConstraint(
+        "target_count BETWEEN 1 AND 5000 "
+        "AND jsonb_typeof(ordered_target_event_ids) = 'array' "
+        "AND jsonb_array_length(ordered_target_event_ids) = target_count",
+        name="data15_assessment_runs_target_shape",
+    ),
+    UniqueConstraint(
+        "assessment_run_id",
+        "policy_version_id",
+        "evaluation_market_as_of",
+        "evaluation_known_as_of",
+        name="uq_data15_assessment_runs_exact",
+    ),
+    Index(
+        "ix_data15_assessment_runs_exact",
+        "policy_version_id",
+        "evaluation_market_as_of",
+        "evaluation_known_as_of",
+        "assessment_run_id",
+    ),
+    Index(
+        "ix_data15_assessment_runs_persistence",
+        "persistence_recorded_at",
+        "assessment_run_id",
+    ),
+)
+
+
+MARKET_DATA_QUALITY_ASSESSMENTS_TABLE = Table(
+    "market_data_quality_assessments",
+    Base.metadata,
+    Column("assessment_id", String(ID_LENGTH), primary_key=True),
+    Column("event_id", String(ID_LENGTH), nullable=False),
+    Column("raw_event_id", String(ID_LENGTH), nullable=False),
+    Column("result_id", String(ID_LENGTH), nullable=False),
+    Column("policy_id", String(ID_LENGTH), nullable=False),
+    Column("policy_version_id", String(ID_LENGTH), nullable=False),
+    Column("evaluation_market_as_of", DateTime(timezone=True), nullable=False),
+    Column("evaluation_known_as_of", DateTime(timezone=True), nullable=False),
+    Column("dependency_market_as_of", DateTime(timezone=True), nullable=False),
+    Column("market_time_basis", String(NAME_LENGTH), nullable=False),
+    Column("target_kind", String(32), nullable=False),
+    Column("disposition", String(16), nullable=False),
+    Column("reason_count", Integer, nullable=False),
+    Column("dependency_count", Integer, nullable=False),
+    Column("reason_set_hash", String(ID_LENGTH), nullable=False),
+    Column("dependency_closure_hash", String(ID_LENGTH), nullable=False),
+    Column("canonical_payload", JSONB, nullable=False),
+    Column("canonical_payload_hash", String(ID_LENGTH), nullable=False),
+    Column("policy_registered_after_known_as_of", Boolean, nullable=False),
+    Column("persistence_recorded_at", DateTime(timezone=True), nullable=False),
+    ForeignKeyConstraint(
+        ["event_id", "raw_event_id"],
+        ["market_observations.event_id", "market_observations.raw_event_id"],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_assessments_event_raw",
+    ),
+    ForeignKeyConstraint(
+        ["result_id", "raw_event_id"],
+        ["market_normalization_results.result_id", "market_normalization_results.raw_event_id"],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_assessments_result_raw",
+    ),
+    ForeignKeyConstraint(
+        ["result_id", "event_id"],
+        ["market_normalization_result_events.result_id", "market_normalization_result_events.event_id"],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_assessments_result_event",
+    ),
+    ForeignKeyConstraint(
+        ["policy_version_id", "policy_id"],
+        [
+            "market_data_quality_policy_versions.policy_version_id",
+            "market_data_quality_policy_versions.policy_id",
+        ],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_assessments_policy_version",
+    ),
+    _data15_id_check("assessment_id", "data15_assessments_id_sha256"),
+    _data15_id_check("event_id", "data15_assessments_event_sha256"),
+    _data15_id_check("raw_event_id", "data15_assessments_raw_sha256"),
+    _data15_id_check("result_id", "data15_assessments_result_sha256"),
+    _data15_id_check("policy_id", "data15_assessments_policy_sha256"),
+    _data15_id_check("policy_version_id", "data15_assessments_version_sha256"),
+    _data15_id_check("reason_set_hash", "data15_assessments_reason_hash_sha256"),
+    _data15_id_check(
+        "dependency_closure_hash",
+        "data15_assessments_dependency_hash_sha256",
+    ),
+    _data15_id_check(
+        "canonical_payload_hash",
+        "data15_assessments_payload_hash_sha256",
+    ),
+    _data15_finite_check(
+        "evaluation_market_as_of",
+        "data15_assessments_market_finite",
+    ),
+    _data15_finite_check(
+        "evaluation_known_as_of",
+        "data15_assessments_known_finite",
+    ),
+    _data15_finite_check(
+        "dependency_market_as_of",
+        "data15_assessments_dependency_market_finite",
+    ),
+    _data15_finite_check(
+        "persistence_recorded_at",
+        "data15_assessments_persistence_finite",
+    ),
+    _data15_json_object("canonical_payload", "data15_assessments_payload_object"),
+    CheckConstraint(
+        "evaluation_known_as_of >= evaluation_market_as_of "
+        "AND dependency_market_as_of <= evaluation_market_as_of",
+        name="data15_assessments_cutoff_order",
+    ),
+    CheckConstraint(
+        "market_time_basis = 'provider_timestamp_v1'",
+        name="data15_assessments_market_time_basis",
+    ),
+    CheckConstraint(
+        "target_kind IN ('underlying_quote', 'futures_quote', 'option_quote', "
+        "'market_segment_status')",
+        name="data15_assessments_target_kind",
+    ),
+    CheckConstraint(
+        "disposition IN ('eligible', 'warning', 'ineligible')",
+        name="data15_assessments_disposition",
+    ),
+    CheckConstraint(
+        "reason_count BETWEEN 0 AND 127 "
+        "AND dependency_count BETWEEN 1 AND 16",
+        name="data15_assessments_count_bounds",
+    ),
+    UniqueConstraint(
+        "event_id",
+        "policy_version_id",
+        "evaluation_market_as_of",
+        "evaluation_known_as_of",
+        name="uq_data15_assessments_exact_lookup",
+    ),
+    UniqueConstraint(
+        "assessment_id",
+        "event_id",
+        name="uq_data15_assessments_id_event",
+    ),
+    Index(
+        "ix_data15_assessments_exact_lookup",
+        "event_id",
+        "policy_version_id",
+        "evaluation_market_as_of",
+        "evaluation_known_as_of",
+    ),
+    Index(
+        "ix_data15_assessments_policy_context",
+        "policy_version_id",
+        "evaluation_market_as_of",
+        "evaluation_known_as_of",
+        "assessment_id",
+    ),
+    Index(
+        "ix_data15_assessments_persistence",
+        "persistence_recorded_at",
+        "assessment_id",
+    ),
+)
+
+
+MARKET_DATA_QUALITY_ASSESSMENT_REASONS_TABLE = Table(
+    "market_data_quality_assessment_reasons",
+    Base.metadata,
+    Column("reason_occurrence_id", String(ID_LENGTH), primary_key=True),
+    Column("assessment_id", String(ID_LENGTH), nullable=False),
+    Column("policy_version_id", String(ID_LENGTH), nullable=False),
+    Column("reason_definition_id", String(ID_LENGTH), nullable=False),
+    Column("reason_code", String(NAME_LENGTH), nullable=False),
+    Column("registry_ordinal", Integer, nullable=False),
+    Column("severity", String(16), nullable=False),
+    Column("subject_key", String(NAME_LENGTH), nullable=False),
+    Column("reason_ordinal", Integer, nullable=False),
+    Column("evidence", JSONB, nullable=False),
+    Column("evidence_hash", String(ID_LENGTH), nullable=False),
+    ForeignKeyConstraint(
+        ["assessment_id"],
+        ["market_data_quality_assessments.assessment_id"],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_assessment_reasons_assessment",
+    ),
+    ForeignKeyConstraint(
+        [
+            "reason_definition_id",
+            "policy_version_id",
+            "reason_code",
+            "registry_ordinal",
+            "severity",
+        ],
+        [
+            "market_data_quality_policy_reason_definitions.reason_definition_id",
+            "market_data_quality_policy_reason_definitions.policy_version_id",
+            "market_data_quality_policy_reason_definitions.reason_code",
+            "market_data_quality_policy_reason_definitions.registry_ordinal",
+            "market_data_quality_policy_reason_definitions.severity",
+        ],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_assessment_reasons_definition",
+    ),
+    _data15_id_check(
+        "reason_occurrence_id",
+        "data15_assessment_reasons_id_sha256",
+    ),
+    _data15_id_check("assessment_id", "data15_assessment_reasons_assessment_sha256"),
+    _data15_id_check(
+        "policy_version_id",
+        "data15_assessment_reasons_version_sha256",
+    ),
+    _data15_id_check(
+        "reason_definition_id",
+        "data15_assessment_reasons_definition_sha256",
+    ),
+    _data15_id_check("evidence_hash", "data15_assessment_reasons_evidence_sha256"),
+    _data15_json_object("evidence", "data15_assessment_reasons_evidence_object"),
+    CheckConstraint(
+        "reason_ordinal BETWEEN 0 AND 127",
+        name="data15_assessment_reasons_ordinal",
+    ),
+    CheckConstraint(
+        "severity IN ('warning', 'error')",
+        name="data15_assessment_reasons_severity",
+    ),
+    UniqueConstraint(
+        "assessment_id",
+        "reason_code",
+        "subject_key",
+        name="uq_data15_assessment_reason_occurrence",
+    ),
+    UniqueConstraint(
+        "assessment_id",
+        "reason_ordinal",
+        name="uq_data15_assessment_reason_ordinal",
+    ),
+    Index(
+        "ix_data15_assessment_reasons_order",
+        "assessment_id",
+        "reason_ordinal",
+    ),
+    Index(
+        "ix_data15_assessment_reasons_code",
+        "reason_code",
+        "assessment_id",
+    ),
+)
+
+
+MARKET_DATA_QUALITY_ASSESSMENT_DEPENDENCIES_TABLE = Table(
+    "market_data_quality_assessment_dependencies",
+    Base.metadata,
+    Column("assessment_dependency_id", String(ID_LENGTH), primary_key=True),
+    Column("assessment_id", String(ID_LENGTH), nullable=False),
+    Column("dependency_ordinal", Integer, nullable=False),
+    Column("dependency_kind", String(NAME_LENGTH), nullable=False),
+    Column("subject_key", String(NAME_LENGTH), nullable=False),
+    Column("outcome", String(16), nullable=False),
+    Column("market_cutoff", DateTime(timezone=True), nullable=False),
+    Column("knowledge_cutoff", DateTime(timezone=True), nullable=False),
+    Column("selection_rule_version", String(NAME_LENGTH), nullable=False),
+    Column("candidate_count", Integer, nullable=False),
+    Column("selected_candidate_ordinal", Integer, nullable=True),
+    Column("search_scope_payload", JSONB, nullable=False),
+    Column("search_scope_hash", String(ID_LENGTH), nullable=False),
+    Column("canonical_payload", JSONB, nullable=False),
+    Column("canonical_payload_hash", String(ID_LENGTH), nullable=False),
+    ForeignKeyConstraint(
+        ["assessment_id"],
+        ["market_data_quality_assessments.assessment_id"],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_dependencies_assessment",
+    ),
+    _data15_id_check("assessment_dependency_id", "data15_dependencies_id_sha256"),
+    _data15_id_check("assessment_id", "data15_dependencies_assessment_sha256"),
+    _data15_id_check("search_scope_hash", "data15_dependencies_scope_hash_sha256"),
+    _data15_id_check(
+        "canonical_payload_hash",
+        "data15_dependencies_payload_hash_sha256",
+    ),
+    _data15_finite_check("market_cutoff", "data15_dependencies_market_finite"),
+    _data15_finite_check("knowledge_cutoff", "data15_dependencies_known_finite"),
+    _data15_json_object(
+        "search_scope_payload",
+        "data15_dependencies_scope_object",
+    ),
+    _data15_json_object("canonical_payload", "data15_dependencies_payload_object"),
+    CheckConstraint(
+        "dependency_ordinal BETWEEN 0 AND 15",
+        name="data15_dependencies_ordinal",
+    ),
+    CheckConstraint(
+        "dependency_kind IN ("
+        "'provider_mapping', 'instrument_version', 'catalogue_version', "
+        "'catalogue_membership', 'trading_session', 'market_segment_status', "
+        "'connection_session', 'subscription_scope')",
+        name="data15_dependencies_kind",
+    ),
+    CheckConstraint(
+        "knowledge_cutoff >= market_cutoff",
+        name="data15_dependencies_cutoff_order",
+    ),
+    CheckConstraint(
+        "(outcome = 'selected' AND candidate_count = 1 "
+        "AND selected_candidate_ordinal = 0) OR "
+        "(outcome = 'absent' AND candidate_count = 0 "
+        "AND selected_candidate_ordinal IS NULL) OR "
+        "(outcome = 'ambiguous' AND candidate_count BETWEEN 2 AND 5000 "
+        "AND selected_candidate_ordinal IS NULL)",
+        name="data15_dependencies_outcome_shape",
+    ),
+    UniqueConstraint(
+        "assessment_id",
+        "dependency_kind",
+        "subject_key",
+        name="uq_data15_dependency_semantic",
+    ),
+    UniqueConstraint(
+        "assessment_id",
+        "dependency_ordinal",
+        name="uq_data15_dependency_ordinal",
+    ),
+    UniqueConstraint(
+        "assessment_dependency_id",
+        "dependency_kind",
+        name="uq_data15_dependency_id_kind",
+    ),
+    Index(
+        "ix_data15_dependencies_assessment_order",
+        "assessment_id",
+        "dependency_ordinal",
+    ),
+    Index(
+        "ix_data15_dependencies_kind_outcome",
+        "dependency_kind",
+        "outcome",
+        "assessment_dependency_id",
+    ),
+)
+
+
+MARKET_DATA_QUALITY_DEPENDENCY_CANDIDATES_TABLE = Table(
+    "market_data_quality_dependency_candidates",
+    Base.metadata,
+    Column("assessment_dependency_id", String(ID_LENGTH), nullable=False),
+    Column("candidate_ordinal", Integer, nullable=False),
+    Column("dependency_kind", String(NAME_LENGTH), nullable=False),
+    Column("candidate_content_hash", String(ID_LENGTH), nullable=False),
+    Column("candidate_payload", JSONB, nullable=False),
+    Column("market_event_id", String(ID_LENGTH), nullable=True),
+    Column("market_result_id", String(ID_LENGTH), nullable=True),
+    Column("market_raw_event_id", String(ID_LENGTH), nullable=True),
+    Column("provider_mapping_record_id", String(ID_LENGTH), nullable=True),
+    Column("provider_mapping_id", String(ID_LENGTH), nullable=True),
+    Column("instrument_version_record_id", String(ID_LENGTH), nullable=True),
+    Column("instrument_version_id", String(ID_LENGTH), nullable=True),
+    Column("catalogue_record_id", String(ID_LENGTH), nullable=True),
+    Column("catalogue_version_id", String(ID_LENGTH), nullable=True),
+    Column("catalogue_ingestion_run_id", String(ID_LENGTH), nullable=True),
+    Column("catalogue_membership_id", String(ID_LENGTH), nullable=True),
+    Column("membership_ingestion_run_id", String(ID_LENGTH), nullable=True),
+    Column("trading_session_record_id", String(ID_LENGTH), nullable=True),
+    Column("trading_session_version_id", String(ID_LENGTH), nullable=True),
+    Column("lifecycle_event_id", String(ID_LENGTH), nullable=True),
+    Column("lifecycle_kind", String(32), nullable=True),
+    Column("lifecycle_batch_id", String(ID_LENGTH), nullable=True),
+    Column("instrument_keys_digest", String(ID_LENGTH), nullable=True),
+    PrimaryKeyConstraint(
+        "assessment_dependency_id",
+        "candidate_ordinal",
+        name="pk_data15_dependency_candidates",
+    ),
+    ForeignKeyConstraint(
+        ["assessment_dependency_id", "dependency_kind"],
+        [
+            "market_data_quality_assessment_dependencies.assessment_dependency_id",
+            "market_data_quality_assessment_dependencies.dependency_kind",
+        ],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_candidates_dependency",
+    ),
+    ForeignKeyConstraint(
+        ["market_event_id", "market_raw_event_id"],
+        ["market_observations.event_id", "market_observations.raw_event_id"],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_candidates_market_event_raw",
+    ),
+    ForeignKeyConstraint(
+        ["market_result_id", "market_event_id"],
+        [
+            "market_normalization_result_events.result_id",
+            "market_normalization_result_events.event_id",
+        ],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_candidates_result_event",
+    ),
+    ForeignKeyConstraint(
+        ["market_result_id", "market_raw_event_id"],
+        [
+            "market_normalization_results.result_id",
+            "market_normalization_results.raw_event_id",
+        ],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_candidates_result_raw",
+    ),
+    ForeignKeyConstraint(
+        ["provider_mapping_record_id", "provider_mapping_id"],
+        ["provider_mapping_records.record_id", "provider_mapping_records.mapping_id"],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_candidates_provider_mapping",
+    ),
+    ForeignKeyConstraint(
+        ["instrument_version_record_id", "instrument_version_id"],
+        ["instrument_version_records.record_id", "instrument_version_records.version_id"],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_candidates_instrument_version",
+    ),
+    ForeignKeyConstraint(
+        ["catalogue_record_id", "catalogue_version_id"],
+        ["catalogue_version_records.record_id", "catalogue_version_records.catalogue_version_id"],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_candidates_catalogue_version",
+    ),
+    ForeignKeyConstraint(
+        ["catalogue_ingestion_run_id"],
+        ["catalogue_ingestion_runs.ingestion_run_id"],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_candidates_catalogue_run",
+    ),
+    ForeignKeyConstraint(
+        ["catalogue_membership_id"],
+        ["catalogue_memberships.membership_id"],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_candidates_membership",
+    ),
+    ForeignKeyConstraint(
+        ["membership_ingestion_run_id"],
+        ["catalogue_ingestion_runs.ingestion_run_id"],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_candidates_membership_run",
+    ),
+    ForeignKeyConstraint(
+        ["catalogue_membership_id", "membership_ingestion_run_id"],
+        [
+            "market_data_quality_catalogue_membership_receipts.membership_id",
+            "market_data_quality_catalogue_membership_receipts.ingestion_run_id",
+        ],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_candidates_membership_receipt",
+    ),
+    ForeignKeyConstraint(
+        ["trading_session_record_id", "trading_session_version_id"],
+        [
+            "trading_session_version_records.record_id",
+            "trading_session_version_records.session_version_id",
+        ],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_candidates_trading_session",
+    ),
+    ForeignKeyConstraint(
+        ["lifecycle_event_id", "lifecycle_kind"],
+        [
+            "provider_lifecycle_observations.event_id",
+            "provider_lifecycle_observations.lifecycle_kind",
+        ],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_candidates_lifecycle_event",
+    ),
+    ForeignKeyConstraint(
+        ["lifecycle_batch_id", "lifecycle_kind"],
+        [
+            "provider_lifecycle_batches.lifecycle_batch_id",
+            "provider_lifecycle_batches.lifecycle_kind",
+        ],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_candidates_lifecycle_batch",
+    ),
+    ForeignKeyConstraint(
+        ["instrument_keys_digest"],
+        ["provider_subscription_instrument_sets.instrument_keys_digest"],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_candidates_instrument_set",
+    ),
+    _data15_id_check(
+        "assessment_dependency_id",
+        "data15_candidates_dependency_sha256",
+    ),
+    _data15_id_check(
+        "candidate_content_hash",
+        "data15_candidates_content_hash_sha256",
+    ),
+    _data15_json_object("candidate_payload", "data15_candidates_payload_object"),
+    CheckConstraint(
+        "candidate_ordinal BETWEEN 0 AND 4999",
+        name="data15_candidates_ordinal",
+    ),
+    CheckConstraint(
+        "(market_event_id IS NULL OR market_event_id ~ '^sha256:[0-9a-f]{64}$') "
+        "AND (market_result_id IS NULL OR market_result_id ~ '^sha256:[0-9a-f]{64}$') "
+        "AND (market_raw_event_id IS NULL OR market_raw_event_id ~ '^sha256:[0-9a-f]{64}$') "
+        "AND (provider_mapping_record_id IS NULL OR provider_mapping_record_id ~ '^sha256:[0-9a-f]{64}$') "
+        "AND (provider_mapping_id IS NULL OR provider_mapping_id ~ '^sha256:[0-9a-f]{64}$') "
+        "AND (instrument_version_record_id IS NULL OR instrument_version_record_id ~ '^sha256:[0-9a-f]{64}$') "
+        "AND (instrument_version_id IS NULL OR instrument_version_id ~ '^sha256:[0-9a-f]{64}$') "
+        "AND (catalogue_record_id IS NULL OR catalogue_record_id ~ '^sha256:[0-9a-f]{64}$') "
+        "AND (catalogue_version_id IS NULL OR catalogue_version_id ~ '^sha256:[0-9a-f]{64}$') "
+        "AND (catalogue_ingestion_run_id IS NULL OR catalogue_ingestion_run_id ~ '^sha256:[0-9a-f]{64}$') "
+        "AND (catalogue_membership_id IS NULL OR catalogue_membership_id ~ '^sha256:[0-9a-f]{64}$') "
+        "AND (membership_ingestion_run_id IS NULL OR membership_ingestion_run_id ~ '^sha256:[0-9a-f]{64}$') "
+        "AND (trading_session_record_id IS NULL OR trading_session_record_id ~ '^sha256:[0-9a-f]{64}$') "
+        "AND (trading_session_version_id IS NULL OR trading_session_version_id ~ '^sha256:[0-9a-f]{64}$') "
+        "AND (lifecycle_event_id IS NULL OR lifecycle_event_id ~ '^sha256:[0-9a-f]{64}$') "
+        "AND (lifecycle_batch_id IS NULL OR lifecycle_batch_id ~ '^sha256:[0-9a-f]{64}$') "
+        "AND (instrument_keys_digest IS NULL OR instrument_keys_digest ~ '^sha256:[0-9a-f]{64}$')",
+        name="data15_dependency_candidate_ids_sha256",
+    ),
+    CheckConstraint(
+        "(dependency_kind = 'market_segment_status' "
+        "AND market_event_id IS NOT NULL AND market_result_id IS NOT NULL "
+        "AND market_raw_event_id IS NOT NULL "
+        "AND provider_mapping_record_id IS NULL AND provider_mapping_id IS NULL "
+        "AND instrument_version_record_id IS NULL AND instrument_version_id IS NULL "
+        "AND catalogue_record_id IS NULL AND catalogue_version_id IS NULL "
+        "AND catalogue_ingestion_run_id IS NULL AND catalogue_membership_id IS NULL "
+        "AND membership_ingestion_run_id IS NULL "
+        "AND trading_session_record_id IS NULL AND trading_session_version_id IS NULL "
+        "AND lifecycle_event_id IS NULL AND lifecycle_kind IS NULL "
+        "AND lifecycle_batch_id IS NULL AND instrument_keys_digest IS NULL) OR "
+        "(dependency_kind = 'provider_mapping' "
+        "AND provider_mapping_record_id IS NOT NULL AND provider_mapping_id IS NOT NULL "
+        "AND market_event_id IS NULL AND market_result_id IS NULL AND market_raw_event_id IS NULL "
+        "AND instrument_version_record_id IS NULL AND instrument_version_id IS NULL "
+        "AND catalogue_record_id IS NULL AND catalogue_version_id IS NULL "
+        "AND catalogue_ingestion_run_id IS NULL AND catalogue_membership_id IS NULL "
+        "AND membership_ingestion_run_id IS NULL "
+        "AND trading_session_record_id IS NULL AND trading_session_version_id IS NULL "
+        "AND lifecycle_event_id IS NULL AND lifecycle_kind IS NULL "
+        "AND lifecycle_batch_id IS NULL AND instrument_keys_digest IS NULL) OR "
+        "(dependency_kind = 'instrument_version' "
+        "AND instrument_version_record_id IS NOT NULL AND instrument_version_id IS NOT NULL "
+        "AND market_event_id IS NULL AND market_result_id IS NULL AND market_raw_event_id IS NULL "
+        "AND provider_mapping_record_id IS NULL AND provider_mapping_id IS NULL "
+        "AND catalogue_record_id IS NULL AND catalogue_version_id IS NULL "
+        "AND catalogue_ingestion_run_id IS NULL AND catalogue_membership_id IS NULL "
+        "AND membership_ingestion_run_id IS NULL "
+        "AND trading_session_record_id IS NULL AND trading_session_version_id IS NULL "
+        "AND lifecycle_event_id IS NULL AND lifecycle_kind IS NULL "
+        "AND lifecycle_batch_id IS NULL AND instrument_keys_digest IS NULL) OR "
+        "(dependency_kind = 'catalogue_version' "
+        "AND catalogue_record_id IS NOT NULL AND catalogue_version_id IS NOT NULL "
+        "AND catalogue_ingestion_run_id IS NOT NULL "
+        "AND market_event_id IS NULL AND market_result_id IS NULL AND market_raw_event_id IS NULL "
+        "AND provider_mapping_record_id IS NULL AND provider_mapping_id IS NULL "
+        "AND instrument_version_record_id IS NULL AND instrument_version_id IS NULL "
+        "AND catalogue_membership_id IS NULL AND membership_ingestion_run_id IS NULL "
+        "AND trading_session_record_id IS NULL AND trading_session_version_id IS NULL "
+        "AND lifecycle_event_id IS NULL AND lifecycle_kind IS NULL "
+        "AND lifecycle_batch_id IS NULL AND instrument_keys_digest IS NULL) OR "
+        "(dependency_kind = 'catalogue_membership' "
+        "AND catalogue_membership_id IS NOT NULL AND membership_ingestion_run_id IS NOT NULL "
+        "AND market_event_id IS NULL AND market_result_id IS NULL AND market_raw_event_id IS NULL "
+        "AND provider_mapping_record_id IS NULL AND provider_mapping_id IS NULL "
+        "AND instrument_version_record_id IS NULL AND instrument_version_id IS NULL "
+        "AND catalogue_record_id IS NULL AND catalogue_version_id IS NULL "
+        "AND catalogue_ingestion_run_id IS NULL "
+        "AND trading_session_record_id IS NULL AND trading_session_version_id IS NULL "
+        "AND lifecycle_event_id IS NULL AND lifecycle_kind IS NULL "
+        "AND lifecycle_batch_id IS NULL AND instrument_keys_digest IS NULL) OR "
+        "(dependency_kind = 'trading_session' "
+        "AND trading_session_record_id IS NOT NULL AND trading_session_version_id IS NOT NULL "
+        "AND market_event_id IS NULL AND market_result_id IS NULL AND market_raw_event_id IS NULL "
+        "AND provider_mapping_record_id IS NULL AND provider_mapping_id IS NULL "
+        "AND instrument_version_record_id IS NULL AND instrument_version_id IS NULL "
+        "AND catalogue_record_id IS NULL AND catalogue_version_id IS NULL "
+        "AND catalogue_ingestion_run_id IS NULL AND catalogue_membership_id IS NULL "
+        "AND membership_ingestion_run_id IS NULL "
+        "AND lifecycle_event_id IS NULL AND lifecycle_kind IS NULL "
+        "AND lifecycle_batch_id IS NULL AND instrument_keys_digest IS NULL) OR "
+        "(dependency_kind = 'connection_session' "
+        "AND lifecycle_event_id IS NOT NULL AND lifecycle_kind = 'connection' "
+        "AND lifecycle_batch_id IS NOT NULL AND instrument_keys_digest IS NULL "
+        "AND market_event_id IS NULL AND market_result_id IS NULL AND market_raw_event_id IS NULL "
+        "AND provider_mapping_record_id IS NULL AND provider_mapping_id IS NULL "
+        "AND instrument_version_record_id IS NULL AND instrument_version_id IS NULL "
+        "AND catalogue_record_id IS NULL AND catalogue_version_id IS NULL "
+        "AND catalogue_ingestion_run_id IS NULL AND catalogue_membership_id IS NULL "
+        "AND membership_ingestion_run_id IS NULL "
+        "AND trading_session_record_id IS NULL AND trading_session_version_id IS NULL) OR "
+        "(dependency_kind = 'subscription_scope' "
+        "AND lifecycle_event_id IS NOT NULL AND lifecycle_kind = 'subscription' "
+        "AND lifecycle_batch_id IS NOT NULL AND instrument_keys_digest IS NOT NULL "
+        "AND market_event_id IS NULL AND market_result_id IS NULL AND market_raw_event_id IS NULL "
+        "AND provider_mapping_record_id IS NULL AND provider_mapping_id IS NULL "
+        "AND instrument_version_record_id IS NULL AND instrument_version_id IS NULL "
+        "AND catalogue_record_id IS NULL AND catalogue_version_id IS NULL "
+        "AND catalogue_ingestion_run_id IS NULL AND catalogue_membership_id IS NULL "
+        "AND membership_ingestion_run_id IS NULL "
+        "AND trading_session_record_id IS NULL AND trading_session_version_id IS NULL)",
+        name="data15_dependency_candidate_kind_shape",
+    ),
+    UniqueConstraint(
+        "assessment_dependency_id",
+        "candidate_content_hash",
+        name="uq_data15_candidate_content",
+    ),
+    Index(
+        "ix_data15_candidates_dependency_order",
+        "assessment_dependency_id",
+        "candidate_ordinal",
+    ),
+    Index("ix_data15_candidates_market_event", "market_event_id"),
+    Index("ix_data15_candidates_mapping", "provider_mapping_record_id"),
+    Index("ix_data15_candidates_instrument", "instrument_version_record_id"),
+    Index("ix_data15_candidates_catalogue", "catalogue_record_id"),
+    Index("ix_data15_candidates_membership", "catalogue_membership_id"),
+    Index("ix_data15_candidates_session", "trading_session_record_id"),
+    Index("ix_data15_candidates_lifecycle", "lifecycle_event_id"),
+)
+
+
+MARKET_DATA_QUALITY_RUN_ASSESSMENTS_TABLE = Table(
+    "market_data_quality_run_assessments",
+    Base.metadata,
+    Column("assessment_run_id", String(ID_LENGTH), nullable=False),
+    Column("target_ordinal", Integer, nullable=False),
+    Column("event_id", String(ID_LENGTH), nullable=False),
+    Column("assessment_id", String(ID_LENGTH), nullable=False),
+    PrimaryKeyConstraint(
+        "assessment_run_id",
+        "target_ordinal",
+        name="pk_data15_run_assessments",
+    ),
+    ForeignKeyConstraint(
+        ["assessment_run_id"],
+        ["market_data_quality_assessment_runs.assessment_run_id"],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_run_assessments_run",
+    ),
+    ForeignKeyConstraint(
+        ["assessment_id", "event_id"],
+        [
+            "market_data_quality_assessments.assessment_id",
+            "market_data_quality_assessments.event_id",
+        ],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_run_assessments_assessment",
+    ),
+    ForeignKeyConstraint(
+        ["event_id"],
+        ["market_observations.event_id"],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_run_assessments_event",
+    ),
+    _data15_id_check("assessment_run_id", "data15_run_assessments_run_sha256"),
+    _data15_id_check("event_id", "data15_run_assessments_event_sha256"),
+    _data15_id_check("assessment_id", "data15_run_assessments_assessment_sha256"),
+    CheckConstraint(
+        "target_ordinal BETWEEN 0 AND 4999",
+        name="data15_run_assessments_ordinal",
+    ),
+    UniqueConstraint(
+        "assessment_run_id",
+        "event_id",
+        name="uq_data15_run_assessments_event",
+    ),
+    UniqueConstraint(
+        "assessment_run_id",
+        "assessment_id",
+        name="uq_data15_run_assessments_assessment",
+    ),
+    Index(
+        "ix_data15_run_assessments_assessment",
+        "assessment_id",
+        "assessment_run_id",
+    ),
+    Index(
+        "ix_data15_run_assessments_event",
+        "event_id",
+        "assessment_run_id",
+    ),
+)
+
+
+def _data15_temporal_receipt_table(
+    table_name: str,
+    target_table_name: str,
+    target_constraint_name: str,
+) -> Table:
+    return Table(
+        table_name,
+        Base.metadata,
+        Column("record_id", String(ID_LENGTH), primary_key=True),
+        Column("receipt_at", DateTime(timezone=True), nullable=False),
+        Column("receipt_basis", String(32), nullable=False),
+        Column("bootstrap_revision", String(32), nullable=True),
+        Column("canonical_payload_hash", String(ID_LENGTH), nullable=False),
+        ForeignKeyConstraint(
+            ["record_id"],
+            [f"{target_table_name}.record_id"],
+            ondelete="NO ACTION",
+            onupdate="NO ACTION",
+            name=target_constraint_name,
+        ),
+        _data15_id_check("record_id", f"{table_name}_record_sha256"),
+        _data15_id_check(
+            "canonical_payload_hash",
+            f"{table_name}_payload_hash_sha256",
+        ),
+        _data15_finite_check("receipt_at", f"{table_name}_receipt_finite"),
+        CheckConstraint(
+            "(receipt_basis = 'legacy_bootstrap' "
+            "AND bootstrap_revision = '20260804_05') OR "
+            "(receipt_basis = 'repository_insert' "
+            "AND bootstrap_revision IS NULL)",
+            name=f"{table_name}_basis_shape",
+        ),
+        Index(f"ix_{table_name}_receipt", "receipt_at", "record_id"),
+    )
+
+
+MARKET_DATA_QUALITY_PROVIDER_MAPPING_RECEIPTS_TABLE = _data15_temporal_receipt_table(
+    "market_data_quality_provider_mapping_receipts",
+    "provider_mapping_records",
+    "fk_data15_mapping_receipts_record",
+)
+MARKET_DATA_QUALITY_INSTRUMENT_VERSION_RECEIPTS_TABLE = _data15_temporal_receipt_table(
+    "market_data_quality_instrument_version_receipts",
+    "instrument_version_records",
+    "fk_data15_instrument_receipts_record",
+)
+MARKET_DATA_QUALITY_CATALOGUE_VERSION_RECEIPTS_TABLE = _data15_temporal_receipt_table(
+    "market_data_quality_catalogue_version_receipts",
+    "catalogue_version_records",
+    "fk_data15_catalogue_receipts_record",
+)
+MARKET_DATA_QUALITY_TRADING_SESSION_RECEIPTS_TABLE = _data15_temporal_receipt_table(
+    "market_data_quality_trading_session_receipts",
+    "trading_session_version_records",
+    "fk_data15_session_receipts_record",
+)
+
+
+MARKET_DATA_QUALITY_CATALOGUE_MEMBERSHIP_RECEIPTS_TABLE = Table(
+    "market_data_quality_catalogue_membership_receipts",
+    Base.metadata,
+    Column("membership_id", String(ID_LENGTH), primary_key=True),
+    Column("ingestion_run_id", String(ID_LENGTH), nullable=False),
+    Column("receipt_at", DateTime(timezone=True), nullable=False),
+    Column("receipt_basis", String(32), nullable=False),
+    Column("bootstrap_revision", String(32), nullable=True),
+    Column("canonical_payload_hash", String(ID_LENGTH), nullable=False),
+    ForeignKeyConstraint(
+        ["membership_id"],
+        ["catalogue_memberships.membership_id"],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_membership_receipts_membership",
+    ),
+    ForeignKeyConstraint(
+        ["ingestion_run_id"],
+        ["catalogue_ingestion_runs.ingestion_run_id"],
+        ondelete="NO ACTION",
+        onupdate="NO ACTION",
+        name="fk_data15_membership_receipts_run",
+    ),
+    _data15_id_check("membership_id", "data15_membership_receipts_id_sha256"),
+    _data15_id_check("ingestion_run_id", "data15_membership_receipts_run_sha256"),
+    _data15_id_check(
+        "canonical_payload_hash",
+        "data15_membership_receipts_payload_hash_sha256",
+    ),
+    _data15_finite_check(
+        "receipt_at",
+        "data15_membership_receipts_receipt_finite",
+    ),
+    CheckConstraint(
+        "(receipt_basis = 'legacy_bootstrap' "
+        "AND bootstrap_revision = '20260804_05') OR "
+        "(receipt_basis = 'repository_insert' "
+        "AND bootstrap_revision IS NULL)",
+        name="data15_membership_receipts_basis_shape",
+    ),
+    UniqueConstraint(
+        "membership_id",
+        "ingestion_run_id",
+        name="uq_data15_membership_receipts_exact",
+    ),
+    Index(
+        "ix_data15_membership_receipts_receipt",
+        "receipt_at",
+        "membership_id",
+    ),
+)
