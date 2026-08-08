@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from types import MappingProxyType
 from typing import Mapping
 
@@ -43,7 +44,7 @@ class TemporalCandidate:
                 raise ValueError("a temporal record cannot supersede itself")
         if not isinstance(self.payload, Mapping):
             raise TypeError("payload must be a mapping")
-        object.__setattr__(self, "payload", MappingProxyType(dict(self.payload)))
+        object.__setattr__(self, "payload", _freeze_mapping(self.payload))
 
     def effective_at(self, market_as_of: datetime) -> bool:
         return self.valid_from <= market_as_of and (
@@ -98,7 +99,7 @@ class RankedCandidate:
             raise ValueError("source_order must be an unsigned signed-64-bit integer")
         if not isinstance(self.payload, Mapping):
             raise TypeError("payload must be a mapping")
-        object.__setattr__(self, "payload", MappingProxyType(dict(self.payload)))
+        object.__setattr__(self, "payload", _freeze_mapping(self.payload))
 
 
 @dataclass(frozen=True)
@@ -291,6 +292,27 @@ def _validate_temporal_graph(candidates: tuple[TemporalCandidate, ...]) -> _Temp
         MappingProxyType(predecessors),
         MappingProxyType(successors),
     )
+
+
+
+def _freeze_mapping(value: Mapping[str, object]) -> Mapping[str, object]:
+    if any(not isinstance(key, str) for key in value):
+        raise TypeError("candidate payload mappings require string keys")
+    return MappingProxyType(
+        {key: _freeze_value(item) for key, item in value.items()}
+    )
+
+
+def _freeze_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return _freeze_mapping(value)
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_value(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return tuple(sorted((_freeze_value(item) for item in value), key=repr))
+    if isinstance(value, (str, int, bool, Decimal, datetime, date)) or value is None:
+        return value
+    raise TypeError(f"unsupported candidate payload value: {type(value).__name__}")
 
 
 def _sha256(value: str, field_name: str) -> None:

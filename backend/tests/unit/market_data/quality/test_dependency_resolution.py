@@ -58,6 +58,27 @@ def ranked(seed: str, *, scope: str, order: int, content: str, minute: int = 0):
     )
 
 
+
+def test_candidate_payloads_are_deeply_immutable():
+    source = {"nested": {"values": ["a", "b"]}}
+    candidate = TemporalCandidate(
+        record_id=ident("immutable-record"),
+        semantic_id=ident("immutable-semantic"),
+        scope_id="scope",
+        recorded_at=BASE,
+        receipt_at=BASE,
+        valid_from=BASE,
+        valid_until=None,
+        supersedes_record_id=None,
+        content_hash=ident("immutable-content"),
+        payload=source,
+    )
+    source["nested"]["values"].append("mutated")
+    assert candidate.payload["nested"]["values"] == ("a", "b")
+    with pytest.raises(TypeError):
+        candidate.payload["nested"]["new"] = "value"
+
+
 def test_temporal_resolution_selects_one_effective_leaf():
     first = temporal("first")
     second = temporal("second", recorded_minutes=1, predecessor=first.record_id)
