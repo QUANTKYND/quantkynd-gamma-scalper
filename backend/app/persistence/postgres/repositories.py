@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
-from datetime import date, datetime
+from collections.abc import Callable, Mapping
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, TypeVar
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
@@ -2355,11 +2356,41 @@ from app.persistence.postgres.models import (
     UnderlyingInstrumentRow,
 )
 from app.core.hashing import stable_hash
-from app.market_data.quality.contracts import ReceiptBasis
+from app.market_data.quality.contracts import ReceiptBasis, TargetKind
+from app.market_data.quality.dependency_resolution import (
+    RankedCandidate,
+    TemporalCandidate,
+    resolve_ranked_candidates,
+    resolve_temporal_candidates,
+)
+from app.market_data.quality.errors import QualityDurableCorruptionError
+from app.market_data.quality.evaluator import QuoteTarget, StatusTarget
 from app.market_data.quality.ports import (
+    CatalogueCandidateReference,
+    CatalogueMembershipCandidateReference,
     CatalogueMembershipReceipt,
+    CatalogueScope,
+    ConnectionScope,
+    DependencyCandidates,
+    DependencyKind,
+    InstrumentScope,
+    InstrumentVersionCandidateReference,
+    LifecycleCandidateReference,
+    MappingScope,
+    MarketEventCandidateReference,
+    MembershipDependencyCandidate,
+    MembershipScope,
+    ProviderMappingCandidateReference,
+    RankedDependencyCandidate,
     ReceiptTargetKind,
+    SegmentScope,
+    SessionScope,
+    SubscriptionScope,
+    TargetBundle,
+    TemporalDependencyCandidate,
     TemporalRecordReceipt,
+    TradingSessionCandidateReference,
+    VisibleTargetQueryResult,
 )
 
 
@@ -3245,6 +3276,1107 @@ class PostgresCatalogueIngestionRepository:
             )
         ).one_or_none()
         return ingestion_run_from_row(row) if row is not None else None
+
+
+class PostgresMarketDataQualityRepository:
+    """Receipt-aware, cutoff-limited DATA-1.5 query boundary."""
+
+    def __init__(self, session: AsyncSession, require_active: Callable[[], None]) -> None:
+        self._session = session
+        self._require_active = require_active
+
+    async def load_visible_targets(
+        self,
+        event_ids: tuple[str, ...],
+        known_as_of: datetime,
+    ) -> VisibleTargetQueryResult:
+        self._require_active()
+        known = _data15_utc(known_as_of, "known_as_of")
+        requested = tuple(sorted(set(event_ids)))
+        if not requested:
+            return VisibleTargetQueryResult((), known, ())
+
+        rows = (
+            await self._session.execute(
+                text(
+                    """
+                    SELECT
+                        o.event_id,
+                        o.raw_event_id,
+                        o.event_type,
+                        o.subject_id,
+                        o.provider,
+                        o.provider_contract_key,
+                        o.economic_subject_id,
+                        o.provider_mapping_id,
+                        o.contract_version_id,
+                        o.catalogue_version_id,
+                        o.provider_mapping_record_id,
+                        o.contract_version_record_id,
+                        o.catalogue_version_record_id,
+                        o.resolution_market_as_of,
+                        o.resolution_known_as_of,
+                        o.provider_timestamp,
+                        o.available_at,
+                        o.recorded_at,
+                        o.availability_basis,
+                        o.source_order_scope_id,
+                        o.source_order,
+                        o.normalization_schema_version,
+                        o.normalizer_implementation_version,
+                        o.payload AS observation_payload,
+                        mre.result_id,
+                        mre.event_ordinal,
+                        r.persistence_recorded_at AS result_persistence_recorded_at,
+                        r.full_result_hash,
+                        f.frame_content_hash,
+                        f.connection_session_id,
+                        COALESCE(u.event_id, fq.event_id, oq.event_id) AS quote_event_id,
+                        COALESCE(u.feed_response_type, fq.feed_response_type, oq.feed_response_type)
+                            AS feed_response_type,
+                        COALESCE(u.request_mode, fq.request_mode, oq.request_mode)
+                            AS request_mode,
+                        COALESCE(u.feed_union, fq.feed_union, oq.feed_union)
+                            AS feed_union,
+                        COALESCE(u.is_snapshot, fq.is_snapshot, oq.is_snapshot)
+                            AS is_snapshot,
+                        COALESCE(u.presence_semantics, fq.presence_semantics, oq.presence_semantics)
+                            AS presence_semantics,
+                        COALESCE(u.numeric_basis, fq.numeric_basis, oq.numeric_basis)
+                            AS numeric_basis,
+                        COALESCE(u.quantity_basis, fq.quantity_basis, oq.quantity_basis)
+                            AS quantity_basis,
+                        COALESCE(u.bid_price, fq.bid_price, oq.bid_price) AS bid_price,
+                        COALESCE(u.bid_size, fq.bid_size, oq.bid_size) AS bid_size,
+                        COALESCE(u.ask_price, fq.ask_price, oq.ask_price) AS ask_price,
+                        COALESCE(u.ask_size, fq.ask_size, oq.ask_size) AS ask_size,
+                        COALESCE(u.last_price, fq.last_price, oq.last_price) AS last_price,
+                        COALESCE(u.last_size, fq.last_size, oq.last_size) AS last_size,
+                        COALESCE(u.last_trade_at, fq.last_trade_at, oq.last_trade_at)
+                            AS last_trade_at,
+                        COALESCE(
+                            u.previous_close_price,
+                            fq.previous_close_price,
+                            oq.previous_close_price
+                        ) AS previous_close_price,
+                        COALESCE(u.reported_volume, fq.reported_volume, oq.reported_volume)
+                            AS reported_volume,
+                        COALESCE(u.open_interest, fq.open_interest, oq.open_interest)
+                            AS open_interest,
+                        COALESCE(
+                            u.provider_depth_levels_present,
+                            fq.provider_depth_levels_present,
+                            oq.provider_depth_levels_present
+                        ) AS provider_depth_levels_present,
+                        COALESCE(
+                            u.normalized_depth_levels,
+                            fq.normalized_depth_levels,
+                            oq.normalized_depth_levels
+                        ) AS normalized_depth_levels,
+                        COALESCE(
+                            u.unadopted_depth_level_count,
+                            fq.unadopted_depth_level_count,
+                            oq.unadopted_depth_level_count
+                        ) AS unadopted_depth_level_count,
+                        COALESCE(
+                            u.unadopted_schema_paths,
+                            fq.unadopted_schema_paths,
+                            oq.unadopted_schema_paths
+                        ) AS unadopted_schema_paths,
+                        COALESCE(
+                            u.present_unadopted_message_paths,
+                            fq.present_unadopted_message_paths,
+                            oq.present_unadopted_message_paths
+                        ) AS present_unadopted_message_paths,
+                        COALESCE(
+                            u.secondary_payload_paths_present,
+                            fq.secondary_payload_paths_present,
+                            oq.secondary_payload_paths_present
+                        ) AS secondary_payload_paths_present,
+                        s.event_id AS status_event_id,
+                        s.segment,
+                        s.provider_status_name,
+                        s.provider_status_numeric,
+                        s.status_is_known
+                    FROM market_observations AS o
+                    JOIN market_normalization_result_events AS mre
+                      ON mre.event_id = o.event_id
+                     AND mre.raw_event_id = o.raw_event_id
+                    JOIN market_normalization_results AS r
+                      ON r.result_id = mre.result_id
+                     AND r.raw_event_id = mre.raw_event_id
+                    JOIN raw_market_frames AS f
+                      ON f.raw_event_id = o.raw_event_id
+                    LEFT JOIN underlying_quote_observations AS u
+                      ON u.event_id = o.event_id
+                    LEFT JOIN futures_quote_observations AS fq
+                      ON fq.event_id = o.event_id
+                    LEFT JOIN option_quote_observations AS oq
+                      ON oq.event_id = o.event_id
+                    LEFT JOIN market_segment_status_observations AS s
+                      ON s.event_id = o.event_id
+                    WHERE o.event_id = ANY(CAST(:event_ids AS text[]))
+                      AND o.available_at <= :known_as_of
+                      AND r.persistence_recorded_at <= :known_as_of
+                    ORDER BY o.event_id
+                    """
+                ),
+                {"event_ids": list(requested), "known_as_of": known},
+            )
+        ).mappings().all()
+
+        by_event: dict[str, Mapping[str, object]] = {}
+        for row in rows:
+            event_id = row["event_id"]
+            if event_id in by_event:
+                raise QualityDurableCorruptionError(
+                    "knowledge-visible target has multiple result memberships"
+                )
+            by_event[event_id] = row
+
+        targets: list[TargetBundle] = []
+        for event_id in requested:
+            row = by_event.get(event_id)
+            if row is None:
+                continue
+            try:
+                target = _data15_target_from_row(row)
+                subtype_payload = _data15_target_subtype_payload(row)
+                event_payload_hash = stable_hash(
+                    {
+                        "observation": _data15_observation_payload(row),
+                        "subtype": subtype_payload,
+                    }
+                )
+                targets.append(
+                    TargetBundle(
+                        event_id=row["event_id"],
+                        raw_event_id=row["raw_event_id"],
+                        result_id=row["result_id"],
+                        target=target,
+                        result_persistence_recorded_at=row[
+                            "result_persistence_recorded_at"
+                        ],
+                        event_payload_hash=event_payload_hash,
+                        result_payload_hash=row["full_result_hash"],
+                        raw_event_payload_hash=row["frame_content_hash"],
+                        connection_session_id=row["connection_session_id"],
+                        result_event_ordinal=row["event_ordinal"],
+                    )
+                )
+            except QualityDurableCorruptionError:
+                raise
+            except (KeyError, TypeError, ValueError) as error:
+                raise QualityDurableCorruptionError(
+                    "knowledge-visible target cannot be reconstructed"
+                ) from error
+        return VisibleTargetQueryResult(requested, known, tuple(targets))
+
+    async def list_provider_mapping_candidates(
+        self,
+        scope: MappingScope,
+        market_as_of: datetime,
+        known_as_of: datetime,
+    ) -> DependencyCandidates:
+        market, known = _data15_cutoffs(market_as_of, known_as_of)
+        rows = await self._temporal_rows(
+            """
+            SELECT
+                r.record_id, r.scope_id, r.recorded_at,
+                r.supersedes_record_id, r.source_provenance_id,
+                m.mapping_id AS semantic_id,
+                m.provider, m.provider_contract_key,
+                m.contract_version_id, m.provider_payload_hash,
+                m.source_row_identity,
+                m.effective_from AS valid_from,
+                m.effective_until AS valid_until,
+                q.receipt_at, q.receipt_basis, q.bootstrap_revision,
+                q.canonical_payload_hash AS receipt_payload_hash
+            FROM provider_mapping_records AS r
+            JOIN provider_contract_mappings AS m
+              ON m.mapping_id = r.mapping_id
+            JOIN market_data_quality_provider_mapping_receipts AS q
+              ON q.record_id = r.record_id
+            WHERE m.provider = :provider
+              AND m.provider_contract_key = :provider_contract_key
+              AND r.recorded_at <= :known_as_of
+              AND q.receipt_at <= :known_as_of
+            ORDER BY r.recorded_at, r.record_id
+            """,
+            {
+                "provider": scope.provider,
+                "provider_contract_key": scope.provider_contract_key,
+                "known_as_of": known,
+            },
+            DependencyKind.PROVIDER_MAPPING,
+            lambda row: ProviderMappingCandidateReference(
+                row["record_id"], row["semantic_id"]
+            ),
+        )
+        return _data15_temporal_candidates_result(
+            DependencyKind.PROVIDER_MAPPING,
+            "provider_mapping",
+            scope,
+            market,
+            known,
+            rows,
+        )
+
+    async def list_instrument_version_candidates(
+        self,
+        scope: InstrumentScope,
+        market_as_of: datetime,
+        known_as_of: datetime,
+    ) -> DependencyCandidates:
+        market, known = _data15_cutoffs(market_as_of, known_as_of)
+        rows = await self._temporal_rows(
+            """
+            SELECT
+                r.record_id, r.scope_id, r.recorded_at,
+                r.supersedes_record_id, r.source_provenance_id,
+                v.version_id AS semantic_id,
+                v.instrument_id, v.valid_from, v.valid_until,
+                v.lot_size, v.tick_size, v.display_symbol,
+                v.trading_status, v.catalogue_version_id,
+                q.receipt_at, q.receipt_basis, q.bootstrap_revision,
+                q.canonical_payload_hash AS receipt_payload_hash
+            FROM instrument_version_records AS r
+            JOIN instrument_versions AS v
+              ON v.version_id = r.version_id
+            JOIN market_data_quality_instrument_version_receipts AS q
+              ON q.record_id = r.record_id
+            WHERE r.scope_id = :instrument_id
+              AND r.recorded_at <= :known_as_of
+              AND q.receipt_at <= :known_as_of
+            ORDER BY r.recorded_at, r.record_id
+            """,
+            {"instrument_id": scope.instrument_id, "known_as_of": known},
+            DependencyKind.INSTRUMENT_VERSION,
+            lambda row: InstrumentVersionCandidateReference(
+                row["record_id"], row["semantic_id"]
+            ),
+        )
+        return _data15_temporal_candidates_result(
+            DependencyKind.INSTRUMENT_VERSION,
+            "instrument_version",
+            scope,
+            market,
+            known,
+            rows,
+        )
+
+    async def list_catalogue_candidates(
+        self,
+        scope: CatalogueScope,
+        market_as_of: datetime,
+        known_as_of: datetime,
+    ) -> DependencyCandidates:
+        market, known = _data15_cutoffs(market_as_of, known_as_of)
+        raw_rows = (
+            await self._session.execute(
+                text(
+                    """
+                    SELECT
+                        r.record_id, r.scope_id, r.recorded_at,
+                        r.supersedes_record_id, r.source_provenance_id,
+                        c.catalogue_version_id AS semantic_id,
+                        c.provider, c.source_content_hash,
+                        c.catalogue_schema_version,
+                        c.effective_from AS valid_from,
+                        c.effective_until AS valid_until,
+                        c.published_at, c.row_count,
+                        q.receipt_at, q.receipt_basis, q.bootstrap_revision,
+                        q.canonical_payload_hash AS receipt_payload_hash
+                    FROM catalogue_version_records AS r
+                    JOIN catalogue_versions AS c
+                      ON c.catalogue_version_id = r.catalogue_version_id
+                    JOIN market_data_quality_catalogue_version_receipts AS q
+                      ON q.record_id = r.record_id
+                    WHERE c.provider = :provider
+                      AND r.recorded_at <= :known_as_of
+                      AND q.receipt_at <= :known_as_of
+                    ORDER BY r.recorded_at, r.record_id
+                    """
+                ),
+                {"provider": scope.provider, "known_as_of": known},
+            )
+        ).mappings().all()
+        run_rows = ()
+        record_ids = tuple(row["record_id"] for row in raw_rows)
+        if record_ids:
+            run_rows = (
+                await self._session.execute(
+                    text(
+                        """
+                        SELECT catalogue_record_id, ingestion_run_id
+                        FROM catalogue_ingestion_runs
+                        WHERE catalogue_record_id = ANY(CAST(:record_ids AS text[]))
+                        ORDER BY catalogue_record_id, ingestion_run_id
+                        """
+                    ),
+                    {"record_ids": list(record_ids)},
+                )
+            ).mappings().all()
+        runs: dict[str, list[str]] = {}
+        for row in run_rows:
+            runs.setdefault(row["catalogue_record_id"], []).append(
+                row["ingestion_run_id"]
+            )
+
+        candidates: list[TemporalDependencyCandidate] = []
+        for row in raw_rows:
+            ingestion_runs = runs.get(row["record_id"], [])
+            if len(ingestion_runs) != 1:
+                raise QualityDurableCorruptionError(
+                    "catalogue temporal record does not resolve to one ingestion run"
+                )
+            payload = _data15_mapping_without(
+                row,
+                "receipt_at",
+                "valid_from",
+                "valid_until",
+            )
+            candidate = TemporalCandidate(
+                record_id=row["record_id"],
+                semantic_id=row["semantic_id"],
+                scope_id=row["scope_id"],
+                recorded_at=row["recorded_at"],
+                receipt_at=row["receipt_at"],
+                valid_from=row["valid_from"],
+                valid_until=row["valid_until"],
+                supersedes_record_id=row["supersedes_record_id"],
+                content_hash=stable_hash(payload),
+                payload=payload,
+            )
+            candidates.append(
+                TemporalDependencyCandidate(
+                    DependencyKind.CATALOGUE_VERSION,
+                    candidate,
+                    CatalogueCandidateReference(
+                        row["record_id"],
+                        row["semantic_id"],
+                        ingestion_runs[0],
+                    ),
+                )
+            )
+        result = _data15_temporal_candidates_result(
+            DependencyKind.CATALOGUE_VERSION,
+            "catalogue_version",
+            scope,
+            market,
+            known,
+            tuple(candidates),
+        )
+        return result
+
+    async def list_catalogue_membership_candidates(
+        self,
+        scope: MembershipScope,
+    ) -> DependencyCandidates:
+        self._require_active()
+        rows = (
+            await self._session.execute(
+                text(
+                    """
+                    SELECT
+                        cm.membership_id,
+                        cm.catalogue_version_id,
+                        cm.row_outcome_id,
+                        cm.source_row_occurrence_id,
+                        cm.source_row_semantic_id,
+                        cm.instrument_id,
+                        cm.version_id,
+                        cm.mapping_id,
+                        cm.provider_contract_key,
+                        cm.raw_row_hash,
+                        cm.normalized_row_hash,
+                        ro.ingestion_run_id,
+                        ir.profile_version,
+                        mr.receipt_at,
+                        mr.receipt_basis,
+                        mr.bootstrap_revision,
+                        mr.canonical_payload_hash AS receipt_payload_hash
+                    FROM catalogue_memberships AS cm
+                    JOIN catalogue_row_outcomes AS ro
+                      ON ro.row_outcome_id = cm.row_outcome_id
+                    JOIN catalogue_ingestion_runs AS ir
+                      ON ir.ingestion_run_id = ro.ingestion_run_id
+                    JOIN market_data_quality_catalogue_membership_receipts AS mr
+                      ON mr.membership_id = cm.membership_id
+                     AND mr.ingestion_run_id = ir.ingestion_run_id
+                    WHERE cm.catalogue_version_id = :catalogue_version_id
+                      AND cm.provider_contract_key = :provider_contract_key
+                      AND mr.receipt_at <= :known_as_of
+                    ORDER BY cm.membership_id
+                    """
+                ),
+                {
+                    "catalogue_version_id": scope.catalogue_version_id,
+                    "provider_contract_key": scope.provider_contract_key,
+                    "known_as_of": scope.knowledge_cutoff,
+                },
+            )
+        ).mappings().all()
+        matching = tuple(
+            row
+            for row in rows
+            if row["instrument_id"] == scope.economic_subject_id
+            and row["version_id"] == scope.contract_version_id
+            and row["profile_version"] == scope.ingestion_profile
+        )
+        if len(rows) > 1 or len(matching) > 1:
+            raise QualityDurableCorruptionError(
+                "catalogue membership scope resolves to multiple durable rows"
+            )
+        candidates: tuple[MembershipDependencyCandidate, ...] = ()
+        if matching:
+            row = matching[0]
+            payload = _data15_mapping_without(row, "receipt_at")
+            candidates = (
+                MembershipDependencyCandidate(
+                    DependencyKind.CATALOGUE_MEMBERSHIP,
+                    row["membership_id"],
+                    row["receipt_at"],
+                    stable_hash(payload),
+                    payload,
+                    CatalogueMembershipCandidateReference(
+                        row["membership_id"], row["ingestion_run_id"]
+                    ),
+                ),
+            )
+        return DependencyCandidates(
+            DependencyKind.CATALOGUE_MEMBERSHIP,
+            "catalogue_membership",
+            scope,
+            scope.market_cutoff,
+            scope.knowledge_cutoff,
+            "catalogue-membership-profile-v1",
+            candidates,
+        )
+
+    async def list_trading_session_candidates(
+        self,
+        scope: SessionScope,
+        known_as_of: datetime,
+    ) -> DependencyCandidates:
+        self._require_active()
+        known = _data15_utc(known_as_of, "known_as_of")
+        if known < scope.market_cutoff:
+            raise ValueError("known_as_of cannot precede session market cutoff")
+        rows = (
+            await self._session.execute(
+                text(
+                    """
+                    SELECT
+                        r.record_id, r.scope_id, r.recorded_at,
+                        r.supersedes_record_id, r.source_provenance_id,
+                        v.session_version_id AS semantic_id,
+                        s.session_id, s.exchange, s.session_date, s.session_kind,
+                        v.pre_open_at, v.open_at, v.close_at,
+                        v.post_close_at, v.timezone, v.status,
+                        q.receipt_at, q.receipt_basis, q.bootstrap_revision,
+                        q.canonical_payload_hash AS receipt_payload_hash
+                    FROM trading_sessions AS s
+                    JOIN trading_session_versions AS v
+                      ON v.session_id = s.session_id
+                    JOIN trading_session_version_records AS r
+                      ON r.session_version_id = v.session_version_id
+                    JOIN market_data_quality_trading_session_receipts AS q
+                      ON q.record_id = r.record_id
+                    WHERE s.exchange = :exchange
+                      AND s.session_date = :session_date
+                      AND s.session_kind = :session_kind
+                      AND r.recorded_at <= :known_as_of
+                      AND q.receipt_at <= :known_as_of
+                    ORDER BY r.recorded_at, r.record_id
+                    """
+                ),
+                {
+                    "exchange": scope.exchange,
+                    "session_date": scope.session_date,
+                    "session_kind": scope.session_kind,
+                    "known_as_of": known,
+                },
+            )
+        ).mappings().all()
+        day_start = datetime.combine(
+            scope.session_date,
+            time.min,
+            tzinfo=ZoneInfo("Asia/Kolkata"),
+        ).astimezone(UTC)
+        day_end = day_start + timedelta(days=1)
+        candidates: list[TemporalDependencyCandidate] = []
+        for row in rows:
+            payload = _data15_mapping_without(row, "receipt_at")
+            candidate = TemporalCandidate(
+                row["record_id"],
+                row["semantic_id"],
+                row["scope_id"],
+                row["recorded_at"],
+                row["receipt_at"],
+                day_start,
+                day_end,
+                row["supersedes_record_id"],
+                stable_hash(payload),
+                payload,
+            )
+            candidates.append(
+                TemporalDependencyCandidate(
+                    DependencyKind.TRADING_SESSION,
+                    candidate,
+                    TradingSessionCandidateReference(
+                        row["record_id"], row["semantic_id"]
+                    ),
+                )
+            )
+        return _data15_temporal_candidates_result(
+            DependencyKind.TRADING_SESSION,
+            "trading_session",
+            scope,
+            scope.market_cutoff,
+            known,
+            tuple(candidates),
+        )
+
+    async def list_segment_status_candidates(
+        self,
+        scope: SegmentScope,
+        market_as_of: datetime,
+        known_as_of: datetime,
+    ) -> DependencyCandidates:
+        market, known = _data15_cutoffs(market_as_of, known_as_of)
+        rows = (
+            await self._session.execute(
+                text(
+                    """
+                    SELECT
+                        o.event_id, o.raw_event_id, o.provider,
+                        o.provider_timestamp, o.available_at,
+                        o.source_order_scope_id, o.source_order,
+                        o.payload AS observation_payload,
+                        s.segment, s.provider_status_name,
+                        s.provider_status_numeric, s.status_is_known,
+                        mre.result_id, mre.event_ordinal,
+                        r.persistence_recorded_at
+                    FROM market_observations AS o
+                    JOIN market_segment_status_observations AS s
+                      ON s.event_id = o.event_id
+                    JOIN market_normalization_result_events AS mre
+                      ON mre.event_id = o.event_id
+                     AND mre.raw_event_id = o.raw_event_id
+                    JOIN market_normalization_results AS r
+                      ON r.result_id = mre.result_id
+                     AND r.raw_event_id = mre.raw_event_id
+                    WHERE o.provider = :provider
+                      AND s.segment = :segment
+                      AND o.provider_timestamp <= :market_as_of
+                      AND o.available_at <= :known_as_of
+                      AND r.persistence_recorded_at <= :known_as_of
+                    ORDER BY o.provider_timestamp, o.source_order,
+                             o.source_order_scope_id, o.event_id
+                    """
+                ),
+                {
+                    "provider": scope.provider,
+                    "segment": scope.segment,
+                    "market_as_of": market,
+                    "known_as_of": known,
+                },
+            )
+        ).mappings().all()
+        candidates = tuple(
+            _data15_status_candidate(row)
+            for row in _data15_unique_candidate_rows(rows)
+        )
+        _data15_validate_ranked(candidates, market)
+        return DependencyCandidates(
+            DependencyKind.MARKET_SEGMENT_STATUS,
+            "market_segment_status",
+            scope,
+            market,
+            known,
+            "ranked-market-status-v1",
+            candidates,
+        )
+
+    async def list_connection_candidates(
+        self,
+        scope: ConnectionScope,
+        market_as_of: datetime,
+        known_as_of: datetime,
+    ) -> DependencyCandidates:
+        market, known = _data15_cutoffs(market_as_of, known_as_of)
+        rows = await self._lifecycle_rows(
+            scope.provider,
+            scope.connection_session_id,
+            "connection",
+            market,
+            known,
+        )
+        candidates = tuple(
+            _data15_lifecycle_candidate(row, DependencyKind.CONNECTION_SESSION)
+            for row in _data15_unique_candidate_rows(rows)
+        )
+        _data15_validate_ranked(candidates, market)
+        return DependencyCandidates(
+            DependencyKind.CONNECTION_SESSION,
+            "connection_session",
+            scope,
+            market,
+            known,
+            "ranked-connection-lifecycle-v1",
+            candidates,
+        )
+
+    async def list_subscription_scope_candidates(
+        self,
+        scope: SubscriptionScope,
+        market_as_of: datetime,
+        known_as_of: datetime,
+    ) -> DependencyCandidates:
+        market, known = _data15_cutoffs(market_as_of, known_as_of)
+        rows = await self._lifecycle_rows(
+            scope.provider,
+            scope.connection_session_id,
+            "subscription",
+            market,
+            known,
+            provider_contract_key=scope.provider_contract_key,
+        )
+        candidates = tuple(
+            _data15_lifecycle_candidate(
+                row,
+                DependencyKind.SUBSCRIPTION_SCOPE,
+                expected_mode=scope.request_mode,
+                provider_contract_key=scope.provider_contract_key,
+            )
+            for row in _data15_unique_candidate_rows(rows)
+        )
+        _data15_validate_ranked(candidates, market)
+        return DependencyCandidates(
+            DependencyKind.SUBSCRIPTION_SCOPE,
+            "subscription_scope",
+            scope,
+            market,
+            known,
+            "staged-subscription-scope-v1",
+            candidates,
+        )
+
+    async def _temporal_rows(
+        self,
+        sql: str,
+        parameters: dict[str, object],
+        dependency_kind: DependencyKind,
+        reference_factory,
+    ) -> tuple[TemporalDependencyCandidate, ...]:
+        self._require_active()
+        rows = (await self._session.execute(text(sql), parameters)).mappings().all()
+        candidates: list[TemporalDependencyCandidate] = []
+        for row in rows:
+            payload = _data15_mapping_without(
+                row,
+                "receipt_at",
+                "valid_from",
+                "valid_until",
+            )
+            candidate = TemporalCandidate(
+                record_id=row["record_id"],
+                semantic_id=row["semantic_id"],
+                scope_id=row["scope_id"],
+                recorded_at=row["recorded_at"],
+                receipt_at=row["receipt_at"],
+                valid_from=row["valid_from"],
+                valid_until=row["valid_until"],
+                supersedes_record_id=row["supersedes_record_id"],
+                content_hash=stable_hash(payload),
+                payload=payload,
+            )
+            candidates.append(
+                TemporalDependencyCandidate(
+                    dependency_kind,
+                    candidate,
+                    reference_factory(row),
+                )
+            )
+        return tuple(candidates)
+
+    async def _lifecycle_rows(
+        self,
+        provider: str,
+        connection_session_id: str,
+        lifecycle_kind: str,
+        market_as_of: datetime,
+        known_as_of: datetime,
+        *,
+        provider_contract_key: str | None = None,
+    ) -> tuple[Mapping[str, object], ...]:
+        self._require_active()
+        subtype = (
+            "provider_connection_lifecycle_observations"
+            if lifecycle_kind == "connection"
+            else "provider_subscription_lifecycle_observations"
+        )
+        containment = (
+            "FALSE AS contains_target_key"
+            if lifecycle_kind == "connection"
+            else """
+                EXISTS (
+                    SELECT 1
+                    FROM provider_subscription_instrument_set_keys AS key
+                    WHERE key.instrument_keys_digest = subtype.instrument_keys_digest
+                      AND key.provider_contract_key = :provider_contract_key
+                ) AS contains_target_key
+            """
+        )
+        subscription_columns = (
+            "NULL::text AS subscription_scope_id, "
+            "NULL::text AS request_mode, "
+            "NULL::text AS instrument_keys_digest, "
+            "NULL::integer AS instrument_key_count"
+            if lifecycle_kind == "connection"
+            else "subtype.subscription_scope_id, subtype.request_mode, "
+            "subtype.instrument_keys_digest, subtype.instrument_key_count"
+        )
+        sql = f"""
+            SELECT
+                lo.event_id, lo.raw_event_id, lo.lifecycle_kind,
+                lo.provider, lo.connection_session_id,
+                lo.source_order_scope_id, lo.source_order,
+                lo.occurred_at, lo.available_at, lo.recorded_at,
+                lo.payload AS observation_payload,
+                subtype.previous_state, subtype.state,
+                subtype.redacted_reason_code,
+                {subscription_columns},
+                {containment},
+                bo.lifecycle_batch_id, bo.event_ordinal,
+                b.persistence_recorded_at
+            FROM provider_lifecycle_observations AS lo
+            JOIN provider_lifecycle_batch_observations AS bo
+              ON bo.event_id = lo.event_id
+             AND bo.lifecycle_kind = lo.lifecycle_kind
+            JOIN provider_lifecycle_batches AS b
+              ON b.lifecycle_batch_id = bo.lifecycle_batch_id
+             AND b.lifecycle_kind = bo.lifecycle_kind
+            JOIN {subtype} AS subtype
+              ON subtype.event_id = lo.event_id
+            WHERE lo.provider = :provider
+              AND lo.connection_session_id = :connection_session_id
+              AND lo.lifecycle_kind = :lifecycle_kind
+              AND lo.occurred_at <= :market_as_of
+              AND lo.available_at <= :known_as_of
+              AND b.persistence_recorded_at <= :known_as_of
+            ORDER BY lo.occurred_at, lo.source_order,
+                     lo.source_order_scope_id, lo.event_id
+        """
+        parameters: dict[str, object] = {
+            "provider": provider,
+            "connection_session_id": connection_session_id,
+            "lifecycle_kind": lifecycle_kind,
+            "market_as_of": market_as_of,
+            "known_as_of": known_as_of,
+        }
+        if lifecycle_kind == "subscription":
+            parameters["provider_contract_key"] = provider_contract_key
+        return tuple(
+            (await self._session.execute(text(sql), parameters)).mappings().all()
+        )
+
+
+def _data15_utc(value: datetime, name: str) -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{name} must be timezone-aware")
+    return value.astimezone(UTC)
+
+
+def _data15_cutoffs(
+    market_as_of: datetime,
+    known_as_of: datetime,
+) -> tuple[datetime, datetime]:
+    market = _data15_utc(market_as_of, "market_as_of")
+    known = _data15_utc(known_as_of, "known_as_of")
+    if known < market:
+        raise ValueError("known_as_of cannot precede market_as_of")
+    return market, known
+
+
+def _data15_mapping_without(
+    row: Mapping[str, object],
+    *excluded: str,
+) -> dict[str, object]:
+    omitted = set(excluded)
+    return {key: value for key, value in row.items() if key not in omitted}
+
+
+def _data15_temporal_candidates_result(
+    dependency_kind: DependencyKind,
+    subject_key: str,
+    scope,
+    market_as_of: datetime,
+    known_as_of: datetime,
+    candidates: tuple[TemporalDependencyCandidate, ...],
+) -> DependencyCandidates:
+    resolve_temporal_candidates(
+        tuple(item.candidate for item in candidates),
+        market_as_of,
+        known_as_of,
+    )
+    return DependencyCandidates(
+        dependency_kind,
+        subject_key,
+        scope,
+        market_as_of,
+        known_as_of,
+        "temporal-successor-graph-with-receipt-v1",
+        candidates,
+    )
+
+
+def _data15_unique_candidate_rows(
+    rows,
+) -> tuple[Mapping[str, object], ...]:
+    by_id: dict[str, Mapping[str, object]] = {}
+    for row in rows:
+        candidate_id = row["event_id"]
+        existing = by_id.get(candidate_id)
+        if existing is not None and dict(existing) != dict(row):
+            raise QualityDurableCorruptionError(
+                "one durable event resolves to multiple candidate memberships"
+            )
+        by_id[candidate_id] = row
+    return tuple(by_id[key] for key in sorted(by_id))
+
+
+def _data15_validate_ranked(
+    candidates: tuple[RankedDependencyCandidate, ...],
+    market_as_of: datetime,
+) -> None:
+    resolve_ranked_candidates(
+        tuple(item.candidate for item in candidates),
+        market_as_of,
+    )
+
+
+def _data15_status_candidate(
+    row: Mapping[str, object],
+) -> RankedDependencyCandidate:
+    state_payload = {
+        "segment": row["segment"],
+        "provider_status_name": row["provider_status_name"],
+        "provider_status_numeric": row["provider_status_numeric"],
+        "status_is_known": row["status_is_known"],
+    }
+    payload = {**_data15_mapping_without(row), "state_payload": state_payload}
+    candidate = RankedCandidate(
+        row["event_id"],
+        row["provider_timestamp"],
+        row["source_order_scope_id"],
+        row["source_order"],
+        stable_hash(state_payload),
+        payload,
+    )
+    return RankedDependencyCandidate(
+        DependencyKind.MARKET_SEGMENT_STATUS,
+        candidate,
+        row["available_at"],
+        row["persistence_recorded_at"],
+        MarketEventCandidateReference(
+            row["event_id"], row["result_id"], row["raw_event_id"]
+        ),
+    )
+
+
+def _data15_lifecycle_candidate(
+    row: Mapping[str, object],
+    dependency_kind: DependencyKind,
+    *,
+    expected_mode: str | None = None,
+    provider_contract_key: str | None = None,
+) -> RankedDependencyCandidate:
+    state_payload = {
+        "connection_session_id": row["connection_session_id"],
+        "previous_state": row["previous_state"],
+        "state": row["state"],
+    }
+    if dependency_kind is DependencyKind.SUBSCRIPTION_SCOPE:
+        state_payload.update(
+            {
+                "subscription_scope_id": row["subscription_scope_id"],
+                "request_mode": row["request_mode"],
+                "instrument_keys_digest": row["instrument_keys_digest"],
+                "instrument_key_count": row["instrument_key_count"],
+                "contains_target_key": row["contains_target_key"],
+            }
+        )
+    payload = {
+        **_data15_mapping_without(row),
+        "expected_mode": expected_mode,
+        "target_provider_contract_key": provider_contract_key,
+    }
+    candidate = RankedCandidate(
+        row["event_id"],
+        row["occurred_at"],
+        row["source_order_scope_id"],
+        row["source_order"],
+        stable_hash(state_payload),
+        payload,
+    )
+    reference = LifecycleCandidateReference(
+        row["event_id"],
+        row["lifecycle_kind"],
+        row["lifecycle_batch_id"],
+        row["instrument_keys_digest"],
+    )
+    return RankedDependencyCandidate(
+        dependency_kind,
+        candidate,
+        row["available_at"],
+        row["persistence_recorded_at"],
+        reference,
+    )
+
+
+def _data15_observation_payload(
+    row: Mapping[str, object],
+) -> dict[str, object]:
+    names = (
+        "event_id",
+        "raw_event_id",
+        "event_type",
+        "subject_id",
+        "provider",
+        "provider_contract_key",
+        "economic_subject_id",
+        "provider_mapping_id",
+        "contract_version_id",
+        "catalogue_version_id",
+        "provider_mapping_record_id",
+        "contract_version_record_id",
+        "catalogue_version_record_id",
+        "resolution_market_as_of",
+        "resolution_known_as_of",
+        "provider_timestamp",
+        "available_at",
+        "recorded_at",
+        "availability_basis",
+        "source_order_scope_id",
+        "source_order",
+        "normalization_schema_version",
+        "normalizer_implementation_version",
+        "observation_payload",
+    )
+    return {name: row[name] for name in names}
+
+
+def _data15_target_subtype_payload(
+    row: Mapping[str, object],
+) -> dict[str, object]:
+    event_type = row["event_type"]
+    if event_type == "market_segment_status_observation":
+        if row["status_event_id"] != row["event_id"] or row["quote_event_id"] is not None:
+            raise QualityDurableCorruptionError(
+                "status target has missing or conflicting typed subtype"
+            )
+        return {
+            "segment": row["segment"],
+            "provider_status_name": row["provider_status_name"],
+            "provider_status_numeric": row["provider_status_numeric"],
+            "status_is_known": row["status_is_known"],
+        }
+    if row["quote_event_id"] != row["event_id"] or row["status_event_id"] is not None:
+        raise QualityDurableCorruptionError(
+            "quote target has missing or conflicting typed subtype"
+        )
+    names = (
+        "feed_response_type",
+        "request_mode",
+        "feed_union",
+        "is_snapshot",
+        "presence_semantics",
+        "numeric_basis",
+        "quantity_basis",
+        "bid_price",
+        "bid_size",
+        "ask_price",
+        "ask_size",
+        "last_price",
+        "last_size",
+        "last_trade_at",
+        "previous_close_price",
+        "reported_volume",
+        "open_interest",
+        "provider_depth_levels_present",
+        "normalized_depth_levels",
+        "unadopted_depth_level_count",
+        "unadopted_schema_paths",
+        "present_unadopted_message_paths",
+        "secondary_payload_paths_present",
+    )
+    return {name: row[name] for name in names}
+
+
+def _data15_target_from_row(
+    row: Mapping[str, object],
+) -> QuoteTarget | StatusTarget:
+    event_type = row["event_type"]
+    _data15_target_subtype_payload(row)
+    if event_type == "market_segment_status_observation":
+        return StatusTarget(
+            event_id=row["event_id"],
+            provider=row["provider"],
+            segment=row["segment"],
+            normalization_schema_version=row["normalization_schema_version"],
+            normalizer_implementation_version=row[
+                "normalizer_implementation_version"
+            ],
+            provider_timestamp=row["provider_timestamp"],
+            available_at=row["available_at"],
+            availability_basis=row["availability_basis"],
+            status_is_known=row["status_is_known"],
+            status_name=row["provider_status_name"],
+        )
+    target_kind = {
+        "underlying_quote_observation": TargetKind.UNDERLYING_QUOTE,
+        "futures_quote_observation": TargetKind.FUTURES_QUOTE,
+        "option_quote_observation": TargetKind.OPTION_QUOTE,
+    }.get(event_type)
+    if target_kind is None:
+        raise QualityDurableCorruptionError("unsupported target event type")
+    return QuoteTarget(
+        event_id=row["event_id"],
+        target_kind=target_kind,
+        provider=row["provider"],
+        provider_contract_key=row["provider_contract_key"],
+        normalization_schema_version=row["normalization_schema_version"],
+        normalizer_implementation_version=row["normalizer_implementation_version"],
+        provider_timestamp=row["provider_timestamp"],
+        available_at=row["available_at"],
+        availability_basis=row["availability_basis"],
+        feed_response_type=row["feed_response_type"],
+        request_mode=row["request_mode"],
+        resolution_market_as_of=row["resolution_market_as_of"],
+        resolution_known_as_of=row["resolution_known_as_of"],
+        bid_price=row["bid_price"],
+        bid_size=row["bid_size"],
+        ask_price=row["ask_price"],
+        ask_size=row["ask_size"],
+        last_price=row["last_price"],
+        last_size=row["last_size"],
+        last_trade_at=row["last_trade_at"],
+        previous_close_price=row["previous_close_price"],
+        reported_volume=row["reported_volume"],
+        open_interest=row["open_interest"],
+        provider_depth_levels_present=row["provider_depth_levels_present"],
+        normalized_depth_levels=row["normalized_depth_levels"],
+        unadopted_depth_level_count=row["unadopted_depth_level_count"],
+        unadopted_schema_paths=tuple(row["unadopted_schema_paths"]),
+        present_unadopted_message_paths=tuple(
+            row["present_unadopted_message_paths"]
+        ),
+        secondary_payload_paths_present=tuple(
+            row["secondary_payload_paths_present"]
+        ),
+    )
 
 
 RowType = TypeVar("RowType")

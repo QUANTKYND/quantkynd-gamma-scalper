@@ -10,6 +10,7 @@ from app.persistence.postgres.repositories import (
     PostgresCatalogueIngestionRepository,
     PostgresCatalogueRepository,
     PostgresInstrumentRepository,
+    PostgresMarketDataQualityRepository,
     PostgresMarketEventRepository,
     PostgresTradingSessionRepository,
 )
@@ -32,6 +33,13 @@ class PostgresUnitOfWork:
         self._catalogue_ingestions: PostgresCatalogueIngestionRepository | None = None
         self._trading_sessions: PostgresTradingSessionRepository | None = None
         self._market_events: PostgresMarketEventRepository | None = None
+        self._market_data_quality: PostgresMarketDataQualityRepository | None = None
+
+    @property
+    def market_data_quality(self) -> PostgresMarketDataQualityRepository:
+        self._require_active()
+        assert self._market_data_quality is not None
+        return self._market_data_quality
 
     @property
     def market_events(self) -> PostgresMarketEventRepository:
@@ -100,6 +108,10 @@ class PostgresUnitOfWork:
             self._session,
             self._require_active,
         )
+        self._market_data_quality = PostgresMarketDataQualityRepository(
+            self._session,
+            self._require_active,
+        )
         return self
 
     async def __aexit__(
@@ -124,6 +136,7 @@ class PostgresUnitOfWork:
             self._catalogue_ingestions = None
             self._trading_sessions = None
             self._market_events = None
+            self._market_data_quality = None
 
     async def commit(self) -> None:
         session = self._require_active()
