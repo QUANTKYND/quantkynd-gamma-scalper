@@ -1,0 +1,819 @@
+schema_version: "1"
+policy:
+  name: upstox_nse_nifty_index_derivatives_quality
+  provider: upstox
+  observation_domain: normalized_market_observation
+version: "1"
+compatibility:
+  normalization_schema_version: "1"
+  normalizer_implementation_version: upstox-v3-normalizer-1
+  quality_policy_schema_version: "1"
+  quality_evaluator_implementation_version: market-data-quality-evaluator-1
+scope:
+  catalogue_profile: upstox-nse-nifty-index-derivatives-v1
+  quote_event_types:
+    - underlying_quote_observation
+    - futures_quote_observation
+    - option_quote_observation
+  status_segments:
+    - NSE_INDEX
+    - NSE_FO
+time:
+  exchange_timezone: Asia/Kolkata
+  session_kind: regular
+  market_time_basis: provider_timestamp_v1
+  future_target_behavior: ineligible
+availability:
+  accepted_basis: received
+  warning_basis: historical_import
+freshness:
+  underlying_live:
+    warning_ms: "3000"
+    error_ms: "10000"
+  future_live:
+    warning_ms: "2000"
+    error_ms: "5000"
+  option_live:
+    warning_ms: "2000"
+    error_ms: "5000"
+  any_initial:
+    warning_ms: "15000"
+    error_ms: "60000"
+  segment_status:
+    warning_ms: "60000"
+    error_ms: "300000"
+quote_components:
+  underlying:
+    last_price: required_positive
+    bid_ask_prices: optional_pair
+    side_sizes: optional_with_price
+    last_size: optional_with_last_price
+    last_trade_at: optional_with_last_price
+  future:
+    bid_price: required_positive
+    bid_size: required_positive_integer
+    ask_price: required_positive
+    ask_size: required_positive_integer
+    last_price: optional_positive
+    last_size: optional_with_last_price
+    last_trade_at: optional_with_last_price
+  option:
+    bid_price: required_positive
+    bid_size: required_positive_integer
+    ask_price: required_positive
+    ask_size: required_positive_integer
+    last_price: optional_positive
+    last_size: optional_with_last_price
+    last_trade_at: optional_with_last_price
+tick_alignment:
+  fields:
+    - bid_price
+    - ask_price
+    - last_price
+  arithmetic: exact_decimal_remainder_zero
+spread:
+  underlying:
+    warning_ticks: "5"
+    error_ticks: "20"
+    warning_bps: "15"
+    error_bps: "75"
+  future:
+    warning_ticks: "4"
+    error_ticks: "12"
+    warning_bps: "20"
+    error_bps: "75"
+  option:
+    warning_ticks: "5"
+    error_ticks: "20"
+    warning_bps: "1000"
+    error_bps: "5000"
+session:
+  exchange: NSE
+  required_status: scheduled
+  open_interval: half_open
+segment_status:
+  accepted_status: NORMAL_OPEN
+lifecycle:
+  required_connection_state: authorized
+  active_subscription_states:
+    - subscribed
+    - mode_changed
+  lease_ms: "43200000"
+normalization_completeness:
+  unadopted_schema_paths: warning
+  present_unadopted_message_paths: warning
+  secondary_payload_paths: warning
+  depth_truncation: warning
+reason_registry:
+  - code: historical_import_availability
+    ordinal: "1"
+    severity: warning
+    applicable_target_kinds:
+      - futures_quote
+      - market_segment_status
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - observation
+    evidence_profile: availability
+  - code: quote_age_warning
+    ordinal: "2"
+    severity: warning
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - observation
+    evidence_profile: age
+  - code: status_age_warning
+    ordinal: "3"
+    severity: warning
+    applicable_target_kinds:
+      - futures_quote
+      - market_segment_status
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - market_segment_status
+    evidence_profile: age
+  - code: market_locked
+    ordinal: "4"
+    severity: warning
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - bid_ask_spread
+    evidence_profile: quote_pair
+  - code: spread_warning
+    ordinal: "5"
+    severity: warning
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - bid_ask_spread
+    evidence_profile: spread
+  - code: unadopted_schema_paths_present
+    ordinal: "6"
+    severity: warning
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - observation
+    evidence_profile: path_set
+  - code: present_unadopted_message_paths
+    ordinal: "7"
+    severity: warning
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - observation
+    evidence_profile: path_set
+  - code: secondary_payload_paths_present
+    ordinal: "8"
+    severity: warning
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - observation
+    evidence_profile: path_set
+  - code: depth_truncated
+    ordinal: "9"
+    severity: warning
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - observation
+    evidence_profile: depth
+  - code: unsupported_provider
+    ordinal: "10"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - market_segment_status
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - observation
+    evidence_profile: identity
+  - code: unsupported_normalization_schema
+    ordinal: "11"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - market_segment_status
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - observation
+    evidence_profile: schema
+  - code: unsupported_subject_scope
+    ordinal: "12"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - market_segment_status
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - observation
+    evidence_profile: scope
+  - code: provider_timestamp_in_future
+    ordinal: "13"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - market_segment_status
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - observation
+    evidence_profile: future_offset
+  - code: quote_stale
+    ordinal: "14"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - observation
+    evidence_profile: age
+  - code: status_stale
+    ordinal: "15"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - market_segment_status
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - market_segment_status
+    evidence_profile: age
+  - code: availability_basis_invalid
+    ordinal: "16"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - market_segment_status
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - observation
+    evidence_profile: availability
+  - code: required_last_price_missing
+    ordinal: "17"
+    severity: error
+    applicable_target_kinds:
+      - underlying_quote
+    subject_keys:
+      - last_price
+    evidence_profile: field_presence
+  - code: bid_missing
+    ordinal: "18"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+    subject_keys:
+      - bid_price
+    evidence_profile: field_presence
+  - code: ask_missing
+    ordinal: "19"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+    subject_keys:
+      - ask_price
+    evidence_profile: field_presence
+  - code: bid_size_missing
+    ordinal: "20"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+    subject_keys:
+      - bid_size
+    evidence_profile: field_presence
+  - code: ask_size_missing
+    ordinal: "21"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+    subject_keys:
+      - ask_size
+    evidence_profile: field_presence
+  - code: one_sided_quote
+    ordinal: "22"
+    severity: error
+    applicable_target_kinds:
+      - underlying_quote
+    subject_keys:
+      - bid_ask_spread
+    evidence_profile: field_presence
+  - code: orphan_quote_component
+    ordinal: "23"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - ask_size
+      - bid_size
+      - last_size
+      - last_trade_at
+    evidence_profile: field_presence
+  - code: invalid_numeric_value
+    ordinal: "24"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - ask_price
+      - ask_size
+      - bid_price
+      - bid_size
+      - last_price
+      - last_size
+      - open_interest
+      - previous_close_price
+      - reported_volume
+    evidence_profile: numeric
+  - code: bid_zero
+    ordinal: "25"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+    subject_keys:
+      - bid_price
+    evidence_profile: numeric
+  - code: ask_zero
+    ordinal: "26"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+    subject_keys:
+      - ask_price
+    evidence_profile: numeric
+  - code: bid_size_zero
+    ordinal: "27"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+    subject_keys:
+      - bid_size
+    evidence_profile: numeric
+  - code: ask_size_zero
+    ordinal: "28"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+    subject_keys:
+      - ask_size
+    evidence_profile: numeric
+  - code: last_price_zero
+    ordinal: "29"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - last_price
+    evidence_profile: numeric
+  - code: market_crossed
+    ordinal: "30"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - bid_ask_spread
+    evidence_profile: quote_pair
+  - code: spread_limit_exceeded
+    ordinal: "31"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - bid_ask_spread
+    evidence_profile: spread
+  - code: tick_size_missing_or_invalid
+    ordinal: "32"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - instrument_version
+    evidence_profile: dependency
+  - code: price_not_tick_aligned
+    ordinal: "33"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - ask_price
+      - bid_price
+      - last_price
+    evidence_profile: tick
+  - code: resolution_cutoff_after_evaluation
+    ordinal: "34"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - observation
+    evidence_profile: cutoff
+  - code: instrument_version_missing
+    ordinal: "35"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - instrument_version
+    evidence_profile: dependency
+  - code: instrument_version_ambiguous
+    ordinal: "36"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - instrument_version
+    evidence_profile: dependency_ambiguity
+  - code: instrument_version_mismatch
+    ordinal: "37"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - instrument_version
+    evidence_profile: dependency_compare
+  - code: instrument_version_not_effective
+    ordinal: "38"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - instrument_version
+    evidence_profile: dependency
+  - code: instrument_trading_status_not_active
+    ordinal: "39"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - instrument_version
+    evidence_profile: state
+  - code: provider_mapping_missing
+    ordinal: "40"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - provider_mapping
+    evidence_profile: dependency
+  - code: provider_mapping_ambiguous
+    ordinal: "41"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - provider_mapping
+    evidence_profile: dependency_ambiguity
+  - code: provider_mapping_mismatch
+    ordinal: "42"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - provider_mapping
+    evidence_profile: dependency_compare
+  - code: provider_mapping_not_effective
+    ordinal: "43"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - provider_mapping
+    evidence_profile: dependency
+  - code: catalogue_provenance_missing
+    ordinal: "44"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - catalogue_version
+    evidence_profile: dependency
+  - code: catalogue_provenance_ambiguous
+    ordinal: "45"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - catalogue_version
+    evidence_profile: dependency_ambiguity
+  - code: catalogue_provenance_mismatch
+    ordinal: "46"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - catalogue_version
+    evidence_profile: dependency_compare
+  - code: catalogue_provenance_not_effective
+    ordinal: "47"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - catalogue_version
+    evidence_profile: dependency
+  - code: provider_segment_unresolvable
+    ordinal: "48"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - market_segment_status
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - provider_segment
+    evidence_profile: segment
+  - code: provider_segment_mismatch
+    ordinal: "49"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - market_segment_status
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - provider_segment
+    evidence_profile: segment
+  - code: trading_session_missing
+    ordinal: "50"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - market_segment_status
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - trading_session
+    evidence_profile: dependency
+  - code: trading_session_ambiguous
+    ordinal: "51"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - market_segment_status
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - trading_session
+    evidence_profile: dependency_ambiguity
+  - code: trading_session_timezone_mismatch
+    ordinal: "52"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - market_segment_status
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - trading_session
+    evidence_profile: session
+  - code: trading_session_not_scheduled
+    ordinal: "53"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - market_segment_status
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - trading_session
+    evidence_profile: session
+  - code: outside_regular_session
+    ordinal: "54"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - market_segment_status
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - trading_session
+    evidence_profile: session
+  - code: segment_status_missing
+    ordinal: "55"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - market_segment_status
+    evidence_profile: dependency
+  - code: segment_status_ambiguous
+    ordinal: "56"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - market_segment_status
+    evidence_profile: dependency_ambiguity
+  - code: segment_status_unknown
+    ordinal: "57"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - market_segment_status
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - market_segment_status
+    evidence_profile: state
+  - code: segment_not_normal_open
+    ordinal: "58"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - market_segment_status
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - market_segment_status
+    evidence_profile: state
+  - code: connection_state_missing
+    ordinal: "59"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - market_segment_status
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - connection_session
+    evidence_profile: dependency
+  - code: connection_state_ambiguous
+    ordinal: "60"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - market_segment_status
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - connection_session
+    evidence_profile: dependency_ambiguity
+  - code: connection_not_authorized
+    ordinal: "61"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - market_segment_status
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - connection_session
+    evidence_profile: lifecycle
+  - code: connection_state_stale
+    ordinal: "62"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - market_segment_status
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - connection_session
+    evidence_profile: lifecycle_age
+  - code: subscription_state_missing
+    ordinal: "63"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - subscription_scope
+    evidence_profile: dependency
+  - code: subscription_state_ambiguous
+    ordinal: "64"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - subscription_scope
+    evidence_profile: dependency_ambiguity
+  - code: subscription_not_active
+    ordinal: "65"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - subscription_scope
+    evidence_profile: lifecycle
+  - code: subscription_mode_mismatch
+    ordinal: "66"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - subscription_scope
+    evidence_profile: subscription
+  - code: subscription_instrument_missing
+    ordinal: "67"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - subscription_scope
+    evidence_profile: subscription
+  - code: subscription_state_stale
+    ordinal: "68"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - subscription_scope
+    evidence_profile: lifecycle_age
+  - code: ambiguous_active_subscription
+    ordinal: "69"
+    severity: error
+    applicable_target_kinds:
+      - futures_quote
+      - option_quote
+      - underlying_quote
+    subject_keys:
+      - subscription_scope
+    evidence_profile: dependency_ambiguity
