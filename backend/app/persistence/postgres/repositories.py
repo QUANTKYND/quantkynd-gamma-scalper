@@ -5,7 +5,7 @@ from collections.abc import Callable
 from datetime import date, datetime
 from typing import Any, TypeVar
 
-from sqlalchemy import and_, or_, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +24,7 @@ from app.instruments.ports import (
     PersistenceIntegrityError,
     ProviderMappingState,
     SemanticCollisionError,
+    TradingSessionVersionState,
 )
 from app.market_data.persistence.errors import (
     CatalogueProvenanceConflictError,
@@ -2340,6 +2341,11 @@ from app.persistence.postgres.models import (
     InstrumentVersionRecordRow,
     InstrumentVersionRow,
     MarketInstrumentRow,
+    MARKET_DATA_QUALITY_CATALOGUE_MEMBERSHIP_RECEIPTS_TABLE,
+    MARKET_DATA_QUALITY_CATALOGUE_VERSION_RECEIPTS_TABLE,
+    MARKET_DATA_QUALITY_INSTRUMENT_VERSION_RECEIPTS_TABLE,
+    MARKET_DATA_QUALITY_PROVIDER_MAPPING_RECEIPTS_TABLE,
+    MARKET_DATA_QUALITY_TRADING_SESSION_RECEIPTS_TABLE,
     OptionContractRow,
     ProviderContractMappingRow,
     ProviderMappingRecordRow,
@@ -2349,6 +2355,12 @@ from app.persistence.postgres.models import (
     UnderlyingInstrumentRow,
 )
 from app.core.hashing import stable_hash
+from app.market_data.quality.contracts import ReceiptBasis
+from app.market_data.quality.ports import (
+    CatalogueMembershipReceipt,
+    ReceiptTargetKind,
+    TemporalRecordReceipt,
+)
 
 
 class PostgresCatalogueRepository:
@@ -2376,6 +2388,8 @@ class PostgresCatalogueRepository:
             "catalogue_version_id",
             record,
             "catalogue version record",
+            MARKET_DATA_QUALITY_CATALOGUE_VERSION_RECEIPTS_TABLE,
+            ReceiptTargetKind.CATALOGUE_VERSION_RECORD,
         )
         return record.record_id
 
@@ -2555,6 +2569,8 @@ class PostgresInstrumentRepository:
             "version_id",
             record,
             "instrument version record",
+            MARKET_DATA_QUALITY_INSTRUMENT_VERSION_RECEIPTS_TABLE,
+            ReceiptTargetKind.INSTRUMENT_VERSION_RECORD,
         )
         return record.record_id
 
@@ -2578,6 +2594,8 @@ class PostgresInstrumentRepository:
             "mapping_id",
             record,
             "provider mapping record",
+            MARKET_DATA_QUALITY_PROVIDER_MAPPING_RECEIPTS_TABLE,
+            ReceiptTargetKind.PROVIDER_MAPPING_RECORD,
         )
         return record.record_id
 
@@ -3011,6 +3029,8 @@ class PostgresTradingSessionRepository:
             "session_version_id",
             record,
             "trading session version record",
+            MARKET_DATA_QUALITY_TRADING_SESSION_RECEIPTS_TABLE,
+            ReceiptTargetKind.TRADING_SESSION_RECORD,
         )
         return record.record_id
 
@@ -3021,6 +3041,21 @@ class PostgresTradingSessionRepository:
         session_kind: str,
         known_as_of: datetime | None,
     ) -> TradingSessionVersion | None:
+        resolved = await self.resolve_state(
+            exchange,
+            session_date,
+            session_kind,
+            known_as_of,
+        )
+        return resolved.value if resolved is not None else None
+
+    async def resolve_state(
+        self,
+        exchange: str,
+        session_date: date,
+        session_kind: str,
+        known_as_of: datetime | None,
+    ) -> TradingSessionVersionState | None:
         self._require_active()
         conditions = [
             TradingSessionRow.exchange == exchange,
@@ -3060,7 +3095,12 @@ class PostgresTradingSessionRepository:
             for row, record_row in rows
         )
         resolved = resolve_temporal_state(states, known_as_of, lambda value: True)
-        return resolved.value if resolved is not None else None
+        if resolved is None:
+            return None
+        return TradingSessionVersionState(
+            resolved.value,
+            resolved.record.record_id,
+        )
 
 
 class PostgresCatalogueIngestionRepository:
@@ -3136,13 +3176,32 @@ class PostgresCatalogueIngestionRepository:
                 raise PersistenceIntegrityError(
                     "catalogue membership conflicts with an existing provider key"
                 )
+        receipt_at = (
+            await _repository_receipt_at(self._session)
+            if memberships
+            else None
+        )
         for membership in memberships:
-            await _insert_immutable(
+            inserted = await _insert_immutable(
                 self._session,
                 CatalogueMembershipRow,
                 "membership_id",
                 membership_values(membership),
                 "catalogue membership",
+            )
+            outcome = await self._session.get(
+                CatalogueRowOutcomeRow,
+                membership.row_outcome_id,
+            )
+            if outcome is None:
+                raise PersistenceIntegrityError(
+                    "catalogue membership row outcome is missing"
+                )
+            await _ensure_catalogue_membership_receipt(
+                self._session,
+                membership.membership_id,
+                outcome.ingestion_run_id,
+                receipt_at if inserted else None,
             )
 
     async def list_memberships_for_catalogue(
@@ -3191,17 +3250,190 @@ class PostgresCatalogueIngestionRepository:
 RowType = TypeVar("RowType")
 
 
+async def _repository_receipt_at(session: AsyncSession) -> datetime:
+    receipt_at = await session.scalar(select(func.transaction_timestamp()))
+    if (
+        not isinstance(receipt_at, datetime)
+        or receipt_at.tzinfo is None
+        or receipt_at.utcoffset() is None
+    ):
+        raise PersistenceIntegrityError(
+            "database transaction timestamp is unavailable or naive"
+        )
+    return receipt_at
+
+
+async def _ensure_temporal_receipt(
+    session: AsyncSession,
+    receipt_table,
+    target_kind: ReceiptTargetKind,
+    record_id: str,
+    receipt_at: datetime | None,
+) -> None:
+    expected = (
+        TemporalRecordReceipt(
+            target_kind,
+            record_id,
+            receipt_at,
+            ReceiptBasis.REPOSITORY_INSERT,
+        )
+        if receipt_at is not None
+        else None
+    )
+    if expected is not None:
+        statement = (
+            insert(receipt_table)
+            .values(
+                record_id=record_id,
+                receipt_at=expected.receipt_at,
+                receipt_basis=expected.receipt_basis.value,
+                bootstrap_revision=expected.bootstrap_revision,
+                canonical_payload_hash=expected.canonical_payload_hash,
+            )
+            .on_conflict_do_nothing(
+                index_elements=[receipt_table.c.record_id]
+            )
+            .returning(receipt_table.c.record_id)
+        )
+        try:
+            inserted = (await session.execute(statement)).scalar_one_or_none()
+        except IntegrityError:
+            raise PersistenceIntegrityError(
+                "persistence integrity constraint rejected temporal receipt"
+            ) from None
+        if inserted is not None:
+            return
+
+    row = (
+        await session.execute(
+            select(receipt_table).where(
+                receipt_table.c.record_id == record_id
+            )
+        )
+    ).mappings().one_or_none()
+    if row is None:
+        raise PersistenceIntegrityError(
+            "durable temporal record is missing its repository receipt"
+        )
+    try:
+        actual = TemporalRecordReceipt(
+            target_kind,
+            row["record_id"],
+            row["receipt_at"],
+            ReceiptBasis(row["receipt_basis"]),
+            row["bootstrap_revision"],
+        )
+    except (TypeError, ValueError) as error:
+        raise PersistenceIntegrityError(
+            "durable temporal receipt has invalid content"
+        ) from error
+    if row["canonical_payload_hash"] != actual.canonical_payload_hash:
+        raise PersistenceIntegrityError(
+            "durable temporal receipt hash does not match its content"
+        )
+    if expected is not None and actual != expected:
+        raise SemanticCollisionError(
+            "temporal receipt identity collision with different immutable content"
+        )
+
+
+async def _ensure_catalogue_membership_receipt(
+    session: AsyncSession,
+    membership_id: str,
+    ingestion_run_id: str,
+    receipt_at: datetime | None,
+) -> None:
+    table = MARKET_DATA_QUALITY_CATALOGUE_MEMBERSHIP_RECEIPTS_TABLE
+    expected = (
+        CatalogueMembershipReceipt(
+            membership_id,
+            ingestion_run_id,
+            receipt_at,
+            ReceiptBasis.REPOSITORY_INSERT,
+        )
+        if receipt_at is not None
+        else None
+    )
+    if expected is not None:
+        statement = (
+            insert(table)
+            .values(
+                membership_id=membership_id,
+                ingestion_run_id=ingestion_run_id,
+                receipt_at=expected.receipt_at,
+                receipt_basis=expected.receipt_basis.value,
+                bootstrap_revision=expected.bootstrap_revision,
+                canonical_payload_hash=expected.canonical_payload_hash,
+            )
+            .on_conflict_do_nothing(
+                index_elements=[table.c.membership_id]
+            )
+            .returning(table.c.membership_id)
+        )
+        try:
+            inserted = (await session.execute(statement)).scalar_one_or_none()
+        except IntegrityError:
+            raise PersistenceIntegrityError(
+                "persistence integrity constraint rejected membership receipt"
+            ) from None
+        if inserted is not None:
+            return
+
+    row = (
+        await session.execute(
+            select(table).where(table.c.membership_id == membership_id)
+        )
+    ).mappings().one_or_none()
+    if row is None:
+        raise PersistenceIntegrityError(
+            "durable catalogue membership is missing its repository receipt"
+        )
+    try:
+        actual = CatalogueMembershipReceipt(
+            row["membership_id"],
+            row["ingestion_run_id"],
+            row["receipt_at"],
+            ReceiptBasis(row["receipt_basis"]),
+            row["bootstrap_revision"],
+        )
+    except (TypeError, ValueError) as error:
+        raise PersistenceIntegrityError(
+            "durable membership receipt has invalid content"
+        ) from error
+    if actual.ingestion_run_id != ingestion_run_id:
+        raise PersistenceIntegrityError(
+            "catalogue membership receipt resolves to another ingestion run"
+        )
+    if row["canonical_payload_hash"] != actual.canonical_payload_hash:
+        raise PersistenceIntegrityError(
+            "durable membership receipt hash does not match its content"
+        )
+    if expected is not None and actual != expected:
+        raise SemanticCollisionError(
+            "membership receipt identity collision with different immutable content"
+        )
+
+
 async def _insert_temporal_record(
     session: AsyncSession,
     model: type[RowType],
     semantic_column: str,
     record: TemporalRecord,
     label: str,
+    receipt_table,
+    receipt_target_kind: ReceiptTargetKind,
 ) -> None:
     values = temporal_record_values(record, semantic_column)
     existing = await session.get(model, record.record_id)
     if existing is not None:
         _require_equal_record(existing, values, label)
+        await _ensure_temporal_receipt(
+            session,
+            receipt_table,
+            receipt_target_kind,
+            record.record_id,
+            None,
+        )
         return
     if record.supersedes_record_id is not None:
         predecessor = (
@@ -3233,12 +3465,19 @@ async def _insert_temporal_record(
         if successor is not None:
             if successor.record_id == record.record_id:
                 _require_equal_record(successor, values, label)
+                await _ensure_temporal_receipt(
+                    session,
+                    receipt_table,
+                    receipt_target_kind,
+                    record.record_id,
+                    None,
+                )
                 return
             raise TemporalSupersessionConflictError(
                 f"{label} supersession target already has a successor"
             )
     try:
-        await _insert_immutable(
+        inserted = await _insert_immutable(
             session,
             model,
             "record_id",
@@ -3251,6 +3490,13 @@ async def _insert_temporal_record(
                 f"{label} conflicts with a concurrent successor"
             ) from None
         raise
+    await _ensure_temporal_receipt(
+        session,
+        receipt_table,
+        receipt_target_kind,
+        record.record_id,
+        await _repository_receipt_at(session) if inserted else None,
+    )
 
 
 async def _insert_immutable(
@@ -3259,7 +3505,7 @@ async def _insert_immutable(
     primary_key_name: str,
     values: dict[str, Any],
     label: str,
-) -> None:
+) -> bool:
     primary_key = getattr(model, primary_key_name)
     statement = (
         insert(model)
@@ -3270,7 +3516,7 @@ async def _insert_immutable(
     try:
         inserted = (await session.execute(statement)).scalar_one_or_none()
         if inserted is not None:
-            return
+            return True
         existing = await session.get(model, values[primary_key_name])
     except IntegrityError:
         raise PersistenceIntegrityError(
@@ -3287,6 +3533,7 @@ async def _insert_immutable(
         raise SemanticCollisionError(
             f"{label} identity collision with different immutable content"
         )
+    return False
 
 
 def _require_equal_record(existing: Any, values: dict[str, Any], label: str) -> None:

@@ -53,6 +53,12 @@ class ProviderMappingState:
     instrument_id: str
 
 
+@dataclass(frozen=True)
+class TradingSessionVersionState:
+    value: TradingSessionVersion
+    record_id: str
+
+
 class CatalogueRepository(Protocol):
     async def add(
         self,
@@ -184,6 +190,14 @@ class TradingSessionRepository(Protocol):
         session_kind: str,
         known_as_of: datetime | None,
     ) -> TradingSessionVersion | None: ...
+
+    async def resolve_state(
+        self,
+        exchange: str,
+        session_date: date,
+        session_kind: str,
+        known_as_of: datetime | None,
+    ) -> TradingSessionVersionState | None: ...
 
 
 class CatalogueIngestionRepository(Protocol):
