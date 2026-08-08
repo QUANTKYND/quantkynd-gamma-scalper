@@ -27,10 +27,20 @@ from app.market_data.quality.contracts import (
 )
 from app.market_data.quality.dependency_resolution import RankedCandidate, TemporalCandidate
 from app.market_data.quality.evaluator import (
+    ConnectionFact,
+    MarketStatusFact,
+    ProvenanceDependencyFact,
+    QualityEvaluationInput,
     QualityEvaluationResult,
     QualityReasonOccurrence,
     QuoteTarget,
+    SessionFact,
     StatusTarget,
+    SubjectScopeFact,
+    SubscriptionFact,
+    SubscriptionResolutionState,
+    TargetDependencies,
+    evaluate_quality,
 )
 from app.market_data.quality.policy_schema import ParsedQualityPolicy
 
@@ -604,7 +614,7 @@ class TemporalDependencyCandidate:
             "supersedes_record_id": self.candidate.supersedes_record_id,
             "semantic_id": self.candidate.semantic_id,
             "scope_id": self.candidate.scope_id,
-            "candidate_payload": dict(self.candidate.payload),
+            "candidate_payload": _thaw(self.candidate.payload),
             "reference": self.reference.canonical_payload,
         }
 
@@ -671,7 +681,7 @@ class RankedDependencyCandidate:
             "source_order": self.candidate.source_order,
             "available_at": self.available_at,
             "persistence_recorded_at": self.persistence_recorded_at,
-            "candidate_payload": dict(self.candidate.payload),
+            "candidate_payload": _thaw(self.candidate.payload),
             "reference": self.reference.canonical_payload,
         }
 
@@ -727,7 +737,7 @@ DependencyCandidate: TypeAlias = (
 class DependencyCandidates:
     dependency_kind: DependencyKind
     subject_key: str
-    search_scope_payload: Mapping[str, object]
+    scope: QueryScope
     market_cutoff: datetime
     knowledge_cutoff: datetime
     selection_rule_version: str
@@ -736,13 +746,7 @@ class DependencyCandidates:
     def __post_init__(self) -> None:
         object.__setattr__(self, "dependency_kind", DependencyKind(self.dependency_kind))
         _snake_case(self.subject_key, "subject_key")
-        object.__setattr__(
-            self,
-            "search_scope_payload",
-            _freeze_mapping(self.search_scope_payload),
-        )
-        if self.search_scope_payload.get("dependency_kind") != self.dependency_kind.value:
-            raise ValueError("search scope dependency kind mismatch")
+        _validate_scope_kind(self.dependency_kind, self.scope)
         object.__setattr__(self, "market_cutoff", _utc(self.market_cutoff, "market_cutoff"))
         object.__setattr__(
             self,
@@ -776,9 +780,19 @@ class DependencyCandidates:
             raise ValueError("subject_key does not match dependency kind")
         if self.knowledge_cutoff < self.market_cutoff:
             raise ValueError("knowledge_cutoff cannot precede market_cutoff")
+        if isinstance(self.scope, MembershipScope):
+            if (
+                self.scope.market_cutoff != self.market_cutoff
+                or self.scope.knowledge_cutoff != self.knowledge_cutoff
+            ):
+                raise ValueError("membership scope cutoffs do not match candidate cutoffs")
+        if isinstance(self.scope, SessionScope) and self.scope.market_cutoff != self.market_cutoff:
+            raise ValueError("session scope market cutoff does not match candidate cutoff")
         ordered = tuple(sorted(self.candidates, key=lambda item: item.candidate_id))
         if len(ordered) > 5000:
             raise ValueError("dependency candidates are limited to 5000")
+        if self.dependency_kind is DependencyKind.CATALOGUE_MEMBERSHIP and len(ordered) > 1:
+            raise ValueError("catalogue membership dependency permits at most one candidate")
         if len({item.candidate_id for item in ordered}) != len(ordered):
             raise ValueError("dependency candidate IDs must be unique")
         for item in ordered:
@@ -801,8 +815,12 @@ class DependencyCandidates:
         object.__setattr__(self, "candidates", ordered)
 
     @property
+    def search_scope_payload(self) -> Mapping[str, object]:
+        return _freeze_mapping(self.scope.canonical_payload)
+
+    @property
     def search_scope_hash(self) -> str:
-        return stable_hash(_thaw(self.search_scope_payload))
+        return self.scope.search_scope_hash
 
     @property
     def candidate_set_hash(self) -> str:
@@ -953,6 +971,43 @@ class TargetBundle:
 
 
 @dataclass(frozen=True)
+class VisibleTargetQueryResult:
+    requested_event_ids: tuple[str, ...]
+    known_as_of: datetime
+    targets: tuple[TargetBundle, ...]
+
+    def __post_init__(self) -> None:
+        requested = _sorted_unique_ids(self.requested_event_ids, "event_id")
+        if len(requested) > 5000:
+            raise ValueError("visible-target query is limited to 5000 event IDs")
+        object.__setattr__(self, "requested_event_ids", requested)
+        object.__setattr__(self, "known_as_of", _utc(self.known_as_of, "known_as_of"))
+        ordered = tuple(sorted(self.targets, key=lambda item: item.event_id))
+        if any(not isinstance(item, TargetBundle) for item in ordered):
+            raise TypeError("targets must contain TargetBundle values")
+        returned_ids = tuple(item.event_id for item in ordered)
+        if len(set(returned_ids)) != len(returned_ids):
+            raise ValueError("visible-target results must not contain duplicate events")
+        if not set(returned_ids) <= set(requested):
+            raise ValueError("visible-target results contain an unrequested event")
+        for item in ordered:
+            if item.target.available_at > self.known_as_of:
+                raise ValueError("visible target is after the knowledge cutoff")
+            if item.result_persistence_recorded_at > self.known_as_of:
+                raise ValueError("visible target result is after the knowledge cutoff")
+        object.__setattr__(self, "targets", ordered)
+
+    @property
+    def hidden_event_ids(self) -> tuple[str, ...]:
+        returned = {item.event_id for item in self.targets}
+        return tuple(item for item in self.requested_event_ids if item not in returned)
+
+    @property
+    def is_complete(self) -> bool:
+        return not self.hidden_event_ids
+
+
+@dataclass(frozen=True)
 class AssessmentReasonPlan:
     assessment_id: str
     policy_version_id: str
@@ -1088,6 +1143,8 @@ class AssessmentDependencyPlan:
 class AssessmentPlan:
     assessment_id: str
     target: TargetBundle
+    policy_bundle: QualityPolicyBundle
+    evaluation_dependencies: TargetDependencies
     policy_id: str
     policy_version_id: str
     context: EvaluationContext
@@ -1102,10 +1159,32 @@ class AssessmentPlan:
         _sha256(self.policy_version_id, "policy_version_id")
         if not isinstance(self.target, TargetBundle):
             raise TypeError("target must be TargetBundle")
+        if not isinstance(self.policy_bundle, QualityPolicyBundle):
+            raise TypeError("policy_bundle must be QualityPolicyBundle")
+        if not isinstance(self.evaluation_dependencies, TargetDependencies):
+            raise TypeError("evaluation_dependencies must be TargetDependencies")
         if not isinstance(self.context, EvaluationContext):
             raise TypeError("context must be EvaluationContext")
         if not isinstance(self.evaluation, QualityEvaluationResult):
             raise TypeError("evaluation must be QualityEvaluationResult")
+        if self.policy_id != self.policy_bundle.policy.policy_id:
+            raise ValueError("assessment policy identity mismatch")
+        if self.policy_version_id != self.policy_bundle.policy.policy_version_id:
+            raise ValueError("assessment policy-version identity mismatch")
+        if self.target.target.available_at > self.context.evaluation_known_as_of:
+            raise ValueError("assessment target is after the knowledge cutoff")
+        if self.target.result_persistence_recorded_at > self.context.evaluation_known_as_of:
+            raise ValueError("assessment target result is after the knowledge cutoff")
+        expected_evaluation = evaluate_quality(
+            QualityEvaluationInput(
+                self.policy_bundle.policy,
+                self.context,
+                self.target.target,
+                self.evaluation_dependencies,
+            )
+        )
+        if self.evaluation != expected_evaluation:
+            raise ValueError("assessment evaluation does not match its exact inputs")
         expected_id = AssessmentIdentity(
             self.target.event_id,
             self.policy_version_id,
@@ -1192,8 +1271,19 @@ class AssessmentPlan:
             for item in self.dependencies
         ):
             raise ValueError("dependency cutoffs must match the assessment context")
+        _validate_evaluation_dependency_bindings(
+            self.assessment_id,
+            self.target.target_kind,
+            self.evaluation_dependencies,
+            self.dependencies,
+        )
         if not isinstance(self.policy_registered_after_known_as_of, bool):
             raise TypeError("policy_registered_after_known_as_of must be bool")
+        expected_registration_flag = (
+            self.policy_bundle.registered_at > self.context.evaluation_known_as_of
+        )
+        if self.policy_registered_after_known_as_of is not expected_registration_flag:
+            raise ValueError("policy registration cutoff flag mismatch")
 
     @classmethod
     def build(
@@ -1202,6 +1292,7 @@ class AssessmentPlan:
         policy: QualityPolicyBundle,
         context: EvaluationContext,
         target: TargetBundle,
+        evaluation_dependencies: TargetDependencies,
         evaluation: QualityEvaluationResult,
         dependency_candidates: tuple[
             tuple[DependencyCandidates, DependencyOutcome, str | None], ...
@@ -1245,6 +1336,8 @@ class AssessmentPlan:
         return cls(
             assessment_id,
             target,
+            policy,
+            evaluation_dependencies,
             policy.policy.policy_id,
             policy.policy.policy_version_id,
             context,
@@ -1612,7 +1705,7 @@ class MarketDataQualityRepository(Protocol):
         self,
         event_ids: tuple[str, ...],
         known_as_of: datetime,
-    ) -> tuple[TargetBundle, ...]: ...
+    ) -> VisibleTargetQueryResult: ...
 
     async def list_provider_mapping_candidates(
         self,
@@ -1755,6 +1848,167 @@ def _validate_reference_kind(
         raise TypeError("unsupported candidate reference")
     if dependency_kind not in reference.candidate_kind:
         raise ValueError("candidate reference does not match dependency kind")
+
+
+def _validate_scope_kind(
+    dependency_kind: DependencyKind,
+    scope: QueryScope,
+) -> None:
+    expected_type = {
+        DependencyKind.PROVIDER_MAPPING: MappingScope,
+        DependencyKind.INSTRUMENT_VERSION: InstrumentScope,
+        DependencyKind.CATALOGUE_VERSION: CatalogueScope,
+        DependencyKind.CATALOGUE_MEMBERSHIP: MembershipScope,
+        DependencyKind.TRADING_SESSION: SessionScope,
+        DependencyKind.MARKET_SEGMENT_STATUS: SegmentScope,
+        DependencyKind.CONNECTION_SESSION: ConnectionScope,
+        DependencyKind.SUBSCRIPTION_SCOPE: SubscriptionScope,
+    }[dependency_kind]
+    if not isinstance(scope, expected_type):
+        raise ValueError("query scope type does not match dependency kind")
+    if scope.canonical_payload.get("dependency_kind") != dependency_kind.value:
+        raise ValueError("query scope payload does not match dependency kind")
+
+
+def _validate_evaluation_dependency_bindings(
+    assessment_id: str,
+    target_kind: TargetKind,
+    facts: TargetDependencies,
+    plans: tuple[AssessmentDependencyPlan, ...],
+) -> None:
+    by_kind = {item.dependency_kind: item for item in plans}
+
+    def common(fact: object, kind: DependencyKind, outcome: DependencyOutcome) -> AssessmentDependencyPlan:
+        plan = by_kind[kind]
+        if getattr(fact, "dependency_id") != plan.assessment_dependency_id:
+            raise ValueError(f"{kind.value} evaluator dependency identity mismatch")
+        if getattr(fact, "search_scope_hash") != plan.candidates.search_scope_hash:
+            raise ValueError(f"{kind.value} evaluator search-scope mismatch")
+        if getattr(fact, "candidate_count") != len(plan.candidates.candidates):
+            raise ValueError(f"{kind.value} evaluator candidate-count mismatch")
+        if plan.outcome is not outcome:
+            raise ValueError(f"{kind.value} evaluator outcome mismatch")
+        candidate_set_hash = getattr(fact, "candidate_set_hash", None)
+        if outcome is DependencyOutcome.AMBIGUOUS:
+            if candidate_set_hash != plan.candidates.candidate_set_hash:
+                raise ValueError(f"{kind.value} evaluator candidate-set hash mismatch")
+        return plan
+
+    def selected_candidate(plan: AssessmentDependencyPlan) -> DependencyCandidate:
+        if plan.selected_candidate_ordinal is None:
+            raise ValueError("selected dependency is missing selected candidate ordinal")
+        return plan.candidates.candidates[plan.selected_candidate_ordinal]
+
+    if target_kind.is_quote:
+        subject = facts.subject_scope
+        mapping = facts.provider_mapping
+        instrument = facts.instrument_version
+        catalogue = facts.catalogue_version
+        status = facts.market_segment_status
+        subscription = facts.subscription
+        if any(
+            item is None
+            for item in (subject, mapping, instrument, catalogue, status, subscription)
+        ):
+            raise ValueError("quote evaluator dependencies are incomplete")
+
+        assert subject is not None
+        subject_outcome = (
+            DependencyOutcome.SELECTED if subject.in_scope else DependencyOutcome.ABSENT
+        )
+        subject_plan = common(
+            subject,
+            DependencyKind.CATALOGUE_MEMBERSHIP,
+            subject_outcome,
+        )
+        if subject_outcome is DependencyOutcome.SELECTED:
+            candidate = selected_candidate(subject_plan)
+            if not isinstance(candidate, MembershipDependencyCandidate):
+                raise ValueError("catalogue membership selected candidate type mismatch")
+            if candidate.membership_id != subject.membership_id:
+                raise ValueError("catalogue membership evaluator selection mismatch")
+
+        for fact, kind, semantic_name in (
+            (mapping, DependencyKind.PROVIDER_MAPPING, "mapping_id"),
+            (instrument, DependencyKind.INSTRUMENT_VERSION, "version_id"),
+            (catalogue, DependencyKind.CATALOGUE_VERSION, "catalogue_version_id"),
+        ):
+            assert isinstance(fact, ProvenanceDependencyFact)
+            plan = common(fact, kind, fact.outcome)
+            if fact.outcome is DependencyOutcome.SELECTED:
+                candidate = selected_candidate(plan)
+                if not isinstance(candidate, TemporalDependencyCandidate):
+                    raise ValueError(f"{kind.value} selected candidate type mismatch")
+                reference = candidate.reference
+                if getattr(reference, "record_id", None) != fact.selected_record_id:
+                    raise ValueError(f"{kind.value} evaluator selected record mismatch")
+                if getattr(reference, semantic_name, None) != fact.selected_semantic_id:
+                    raise ValueError(f"{kind.value} evaluator selected semantic mismatch")
+
+        assert isinstance(status, MarketStatusFact)
+        status_plan = common(status, DependencyKind.MARKET_SEGMENT_STATUS, status.outcome)
+        if status.outcome is DependencyOutcome.SELECTED:
+            candidate = selected_candidate(status_plan)
+            if not isinstance(candidate, RankedDependencyCandidate):
+                raise ValueError("market status selected candidate type mismatch")
+            if candidate.candidate_id != status.selected_event_id:
+                raise ValueError("market status evaluator selection mismatch")
+
+        assert isinstance(subscription, SubscriptionFact)
+        subscription_outcome = {
+            SubscriptionResolutionState.SELECTED: DependencyOutcome.SELECTED,
+            SubscriptionResolutionState.AMBIGUOUS: DependencyOutcome.AMBIGUOUS,
+            SubscriptionResolutionState.MULTIPLE_ACTIVE: DependencyOutcome.AMBIGUOUS,
+            SubscriptionResolutionState.MISSING: DependencyOutcome.ABSENT,
+            SubscriptionResolutionState.NOT_ACTIVE: DependencyOutcome.ABSENT,
+            SubscriptionResolutionState.INSTRUMENT_MISSING: DependencyOutcome.ABSENT,
+        }[subscription.state]
+        subscription_plan = common(
+            subscription,
+            DependencyKind.SUBSCRIPTION_SCOPE,
+            subscription_outcome,
+        )
+        if subscription_outcome is DependencyOutcome.SELECTED:
+            candidate = selected_candidate(subscription_plan)
+            if not isinstance(candidate, RankedDependencyCandidate):
+                raise ValueError("subscription selected candidate type mismatch")
+            if candidate.candidate_id != subscription.selected_event_id:
+                raise ValueError("subscription evaluator selection mismatch")
+            reference = candidate.reference
+            if not isinstance(reference, LifecycleCandidateReference):
+                raise ValueError("subscription selected reference type mismatch")
+            if reference.instrument_keys_digest != subscription.instrument_set_digest:
+                raise ValueError("subscription instrument-set evidence mismatch")
+
+    session = facts.trading_session
+    connection = facts.connection
+    if session is None or connection is None:
+        raise ValueError("session and connection evaluator dependencies are required")
+
+    session_plan = common(session, DependencyKind.TRADING_SESSION, session.outcome)
+    if session.outcome is DependencyOutcome.SELECTED:
+        candidate = selected_candidate(session_plan)
+        if not isinstance(candidate, TemporalDependencyCandidate):
+            raise ValueError("trading session selected candidate type mismatch")
+        reference = candidate.reference
+        if not isinstance(reference, TradingSessionCandidateReference):
+            raise ValueError("trading session selected reference type mismatch")
+        if reference.record_id != session.selected_record_id:
+            raise ValueError("trading session evaluator selected record mismatch")
+        if reference.session_version_id != session.selected_session_version_id:
+            raise ValueError("trading session evaluator selected version mismatch")
+
+    connection_plan = common(
+        connection,
+        DependencyKind.CONNECTION_SESSION,
+        connection.outcome,
+    )
+    if connection.outcome is DependencyOutcome.SELECTED:
+        candidate = selected_candidate(connection_plan)
+        if not isinstance(candidate, RankedDependencyCandidate):
+            raise ValueError("connection selected candidate type mismatch")
+        if candidate.candidate_id != connection.selected_event_id:
+            raise ValueError("connection evaluator selection mismatch")
 
 
 def _freeze_mapping(value: Mapping[str, object]) -> Mapping[str, object]:

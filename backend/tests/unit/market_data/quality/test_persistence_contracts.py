@@ -1,13 +1,22 @@
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+import json
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from app.core.hashing import stable_hash
-from app.market_data.quality.contracts import DependencyOutcome, EvaluationContext, ReceiptBasis, TargetKind
+from app.market_data.quality.contracts import (
+    AssessmentIdentity,
+    DependencyIdentity,
+    DependencyOutcome,
+    EvaluationContext,
+    QualityDisposition,
+    ReceiptBasis,
+    TargetKind,
+)
 from app.market_data.quality.dependency_resolution import RankedCandidate, TemporalCandidate
 from app.market_data.quality.evaluator import (
     ConnectionFact,
@@ -59,6 +68,7 @@ from app.market_data.quality.ports import (
     TemporalDependencyCandidate,
     TemporalRecordReceipt,
     TradingSessionCandidateReference,
+    VisibleTargetQueryResult,
     WriteFamily,
     data15_lock_stripe,
     derive_data15_lock_stripes,
@@ -93,67 +103,6 @@ def provenance(name: str, *, tick_size: Decimal | None = None, trading_status: s
         selected_record_id=record,
         tick_size=tick_size,
         trading_status=trading_status,
-    )
-
-
-def evaluation_dependencies(provider_timestamp: datetime) -> TargetDependencies:
-    return TargetDependencies(
-        subject_scope=SubjectScopeFact(
-            dependency_id=ident("subject-scope-dependency"),
-            search_scope_hash=ident("subject-scope-search"),
-            in_scope=True,
-            catalogue_profile="upstox-nse-nifty-index-derivatives-v1",
-            candidate_count=1,
-            membership_id=ident("catalogue-membership"),
-        ),
-        provider_mapping=provenance("mapping"),
-        instrument_version=provenance(
-            "instrument", tick_size=Decimal("0.05"), trading_status="active"
-        ),
-        catalogue_version=provenance("catalogue"),
-        trading_session=SessionFact(
-            dependency_id=ident("session-dependency"),
-            search_scope_hash=ident("session-search"),
-            outcome=DependencyOutcome.SELECTED,
-            candidate_count=1,
-            timezone="Asia/Kolkata",
-            status="scheduled",
-            open_at=M - timedelta(hours=1),
-            close_at=M + timedelta(hours=1),
-            selected_session_version_id=ident("session-version"),
-            selected_record_id=ident("session-record"),
-            exchange_date="2026-08-07",
-        ),
-        market_segment_status=MarketStatusFact(
-            dependency_id=ident("status-dependency"),
-            search_scope_hash=ident("status-search"),
-            outcome=DependencyOutcome.SELECTED,
-            candidate_count=1,
-            provider_timestamp=provider_timestamp - timedelta(microseconds=1),
-            status_is_known=True,
-            status_name="NORMAL_OPEN",
-            selected_event_id=ident("status-event"),
-        ),
-        connection=ConnectionFact(
-            dependency_id=ident("connection-dependency"),
-            search_scope_hash=ident("connection-search"),
-            outcome=DependencyOutcome.SELECTED,
-            candidate_count=1,
-            state="authorized",
-            occurred_at=M - timedelta(hours=1),
-            selected_event_id=ident("connection-event"),
-        ),
-        subscription=SubscriptionFact(
-            dependency_id=ident("subscription-dependency"),
-            search_scope_hash=ident("subscription-search"),
-            state=SubscriptionResolutionState.SELECTED,
-            candidate_count=1,
-            scope_id="scope-1",
-            effective_mode="full_d5",
-            occurred_at=M - timedelta(minutes=30),
-            selected_event_id=ident("subscription-event"),
-            instrument_set_digest=ident("subscription-set"),
-        ),
     )
 
 
@@ -204,7 +153,7 @@ def _temporal_dependency(
     target: QuoteTarget,
     kind: DependencyKind,
     subject_key: str,
-    scope_payload: dict[str, object],
+    scope,
     semantic_id: str,
     record_id: str,
     reference,
@@ -225,7 +174,7 @@ def _temporal_dependency(
     return DependencyCandidates(
         kind,
         subject_key,
-        scope_payload,
+        scope,
         context.dependency_market_as_of(target.provider_timestamp),
         context.evaluation_known_as_of,
         "temporal-successor-graph-with-receipt-v1",
@@ -248,7 +197,7 @@ def selected_mapping_candidates(
         target=value,
         kind=DependencyKind.PROVIDER_MAPPING,
         subject_key="provider_mapping",
-        scope_payload=scope.canonical_payload,
+        scope=scope,
         semantic_id=mapping_id,
         record_id=record_id,
         reference=ProviderMappingCandidateReference(record_id, mapping_id),
@@ -274,7 +223,7 @@ def selected_dependency_drafts(
         target=target,
         kind=DependencyKind.INSTRUMENT_VERSION,
         subject_key="instrument_version",
-        scope_payload=InstrumentScope(instrument_id).canonical_payload,
+        scope=InstrumentScope(instrument_id),
         semantic_id=instrument_version,
         record_id=instrument_record,
         reference=InstrumentVersionCandidateReference(
@@ -291,7 +240,7 @@ def selected_dependency_drafts(
         target=target,
         kind=DependencyKind.CATALOGUE_VERSION,
         subject_key="catalogue_version",
-        scope_payload=CatalogueScope("upstox").canonical_payload,
+        scope=CatalogueScope("upstox"),
         semantic_id=catalogue_version,
         record_id=catalogue_record,
         reference=CatalogueCandidateReference(
@@ -319,7 +268,7 @@ def selected_dependency_drafts(
     membership = DependencyCandidates(
         DependencyKind.CATALOGUE_MEMBERSHIP,
         "catalogue_membership",
-        membership_scope.canonical_payload,
+        membership_scope,
         market_cutoff,
         known_cutoff,
         "catalogue-membership-profile-v1",
@@ -336,7 +285,7 @@ def selected_dependency_drafts(
         target=target,
         kind=DependencyKind.TRADING_SESSION,
         subject_key="trading_session",
-        scope_payload=session_scope.canonical_payload,
+        scope=session_scope,
         semantic_id=session_version,
         record_id=session_record,
         reference=TradingSessionCandidateReference(session_record, session_version),
@@ -354,7 +303,7 @@ def selected_dependency_drafts(
     status = DependencyCandidates(
         DependencyKind.MARKET_SEGMENT_STATUS,
         "market_segment_status",
-        SegmentScope("upstox", "NSE_FO").canonical_payload,
+        SegmentScope("upstox", "NSE_FO"),
         market_cutoff,
         known_cutoff,
         "ranked-market-status-v1",
@@ -377,7 +326,7 @@ def selected_dependency_drafts(
     connection = DependencyCandidates(
         DependencyKind.CONNECTION_SESSION,
         "connection_session",
-        ConnectionScope("upstox", "connection-1").canonical_payload,
+        ConnectionScope("upstox", "connection-1"),
         market_cutoff,
         known_cutoff,
         "ranked-connection-lifecycle-v1",
@@ -413,7 +362,7 @@ def selected_dependency_drafts(
             "connection-1",
             target.provider_contract_key,
             target.request_mode,
-        ).canonical_payload,
+        ),
         market_cutoff,
         known_cutoff,
         "staged-subscription-scope-v1",
@@ -455,6 +404,145 @@ def selected_dependency_drafts(
         for candidate_set in candidate_sets
     )
 
+
+def evaluation_dependencies_for_drafts(
+    target: QuoteTarget | StatusTarget,
+    context: EvaluationContext,
+    drafts,
+) -> TargetDependencies:
+    assessment_id = AssessmentIdentity(
+        target.event_id,
+        POLICY.policy_version_id,
+        context,
+    ).assessment_id
+    by_kind = {candidate_set.dependency_kind: candidate_set for candidate_set, _, _ in drafts}
+
+    def dependency_id(kind: DependencyKind) -> str:
+        candidate_set = by_kind[kind]
+        return DependencyIdentity(
+            assessment_id,
+            kind.value,
+            candidate_set.subject_key,
+        ).assessment_dependency_id
+
+    session_set = by_kind[DependencyKind.TRADING_SESSION]
+    session_candidate = session_set.candidates[0]
+    session_reference = session_candidate.reference
+    session = SessionFact(
+        dependency_id=dependency_id(DependencyKind.TRADING_SESSION),
+        search_scope_hash=session_set.search_scope_hash,
+        outcome=DependencyOutcome.SELECTED,
+        candidate_count=1,
+        timezone="Asia/Kolkata",
+        status="scheduled",
+        open_at=session_set.market_cutoff - timedelta(hours=1),
+        close_at=session_set.market_cutoff + timedelta(hours=1),
+        selected_session_version_id=session_reference.session_version_id,
+        selected_record_id=session_reference.record_id,
+        exchange_date=session_set.market_cutoff.astimezone(
+            ZoneInfo("Asia/Kolkata")
+        ).date().isoformat(),
+    )
+
+    connection_set = by_kind[DependencyKind.CONNECTION_SESSION]
+    connection_candidate = connection_set.candidates[0]
+    connection = ConnectionFact(
+        dependency_id=dependency_id(DependencyKind.CONNECTION_SESSION),
+        search_scope_hash=connection_set.search_scope_hash,
+        outcome=DependencyOutcome.SELECTED,
+        candidate_count=1,
+        state="authorized",
+        occurred_at=connection_candidate.candidate.effective_at,
+        selected_event_id=connection_candidate.candidate_id,
+    )
+    if isinstance(target, StatusTarget):
+        return TargetDependencies(
+            trading_session=session,
+            connection=connection,
+        )
+
+    membership_set = by_kind[DependencyKind.CATALOGUE_MEMBERSHIP]
+    membership_candidate = membership_set.candidates[0]
+    subject_scope = SubjectScopeFact(
+        dependency_id=dependency_id(DependencyKind.CATALOGUE_MEMBERSHIP),
+        search_scope_hash=membership_set.search_scope_hash,
+        in_scope=True,
+        catalogue_profile="upstox-nse-nifty-index-derivatives-v1",
+        candidate_count=1,
+        membership_id=membership_candidate.membership_id,
+    )
+
+    def provenance_fact(
+        kind: DependencyKind,
+        *,
+        tick_size: Decimal | None = None,
+        trading_status: str | None = None,
+    ) -> ProvenanceDependencyFact:
+        candidate_set = by_kind[kind]
+        candidate = candidate_set.candidates[0]
+        reference = candidate.reference
+        if kind is DependencyKind.PROVIDER_MAPPING:
+            semantic_id = reference.mapping_id
+        elif kind is DependencyKind.INSTRUMENT_VERSION:
+            semantic_id = reference.version_id
+        else:
+            semantic_id = reference.catalogue_version_id
+        return ProvenanceDependencyFact(
+            dependency_id=dependency_id(kind),
+            search_scope_hash=candidate_set.search_scope_hash,
+            outcome=DependencyOutcome.SELECTED,
+            candidate_count=1,
+            has_visible_knowledge_leaf=True,
+            persisted_semantic_id=semantic_id,
+            persisted_record_id=reference.record_id,
+            selected_semantic_id=semantic_id,
+            selected_record_id=reference.record_id,
+            tick_size=tick_size,
+            trading_status=trading_status,
+        )
+
+    status_set = by_kind[DependencyKind.MARKET_SEGMENT_STATUS]
+    status_candidate = status_set.candidates[0]
+    status = MarketStatusFact(
+        dependency_id=dependency_id(DependencyKind.MARKET_SEGMENT_STATUS),
+        search_scope_hash=status_set.search_scope_hash,
+        outcome=DependencyOutcome.SELECTED,
+        candidate_count=1,
+        provider_timestamp=status_candidate.candidate.effective_at,
+        status_is_known=True,
+        status_name="NORMAL_OPEN",
+        selected_event_id=status_candidate.candidate_id,
+    )
+
+    subscription_set = by_kind[DependencyKind.SUBSCRIPTION_SCOPE]
+    subscription_candidate = subscription_set.candidates[0]
+    subscription_reference = subscription_candidate.reference
+    subscription = SubscriptionFact(
+        dependency_id=dependency_id(DependencyKind.SUBSCRIPTION_SCOPE),
+        search_scope_hash=subscription_set.search_scope_hash,
+        state=SubscriptionResolutionState.SELECTED,
+        candidate_count=1,
+        scope_id=subscription_candidate.candidate.source_order_scope_id,
+        effective_mode=target.request_mode,
+        occurred_at=subscription_candidate.candidate.effective_at,
+        selected_event_id=subscription_candidate.candidate_id,
+        instrument_set_digest=subscription_reference.instrument_keys_digest,
+    )
+    return TargetDependencies(
+        subject_scope=subject_scope,
+        provider_mapping=provenance_fact(DependencyKind.PROVIDER_MAPPING),
+        instrument_version=provenance_fact(
+            DependencyKind.INSTRUMENT_VERSION,
+            tick_size=Decimal("0.05"),
+            trading_status="active",
+        ),
+        catalogue_version=provenance_fact(DependencyKind.CATALOGUE_VERSION),
+        trading_session=session,
+        market_segment_status=status,
+        connection=connection,
+        subscription=subscription,
+    )
+
 def status_target_bundle(event_seed: str = "status-target") -> TargetBundle:
     provider_timestamp = M - timedelta(seconds=1)
     target = StatusTarget(
@@ -485,18 +573,6 @@ def status_target_bundle(event_seed: str = "status-target") -> TargetBundle:
 
 def status_assessment(event_seed: str = "status-target") -> AssessmentPlan:
     target = status_target_bundle(event_seed)
-    all_dependencies = evaluation_dependencies(target.target.provider_timestamp)
-    result = evaluate_quality(
-        QualityEvaluationInput(
-            POLICY,
-            CONTEXT,
-            target.target,
-            TargetDependencies(
-                trading_session=all_dependencies.trading_session,
-                connection=all_dependencies.connection,
-            ),
-        )
-    )
     quote_drafts = selected_dependency_drafts(event_seed, CONTEXT, quote(event_seed))
     status_drafts = tuple(
         item
@@ -504,10 +580,24 @@ def status_assessment(event_seed: str = "status-target") -> AssessmentPlan:
         if item[0].dependency_kind
         in {DependencyKind.TRADING_SESSION, DependencyKind.CONNECTION_SESSION}
     )
+    exact_dependencies = evaluation_dependencies_for_drafts(
+        target.target,
+        CONTEXT,
+        status_drafts,
+    )
+    result = evaluate_quality(
+        QualityEvaluationInput(
+            POLICY,
+            CONTEXT,
+            target.target,
+            exact_dependencies,
+        )
+    )
     return AssessmentPlan.build(
         policy=policy_bundle(),
         context=CONTEXT,
         target=target,
+        evaluation_dependencies=exact_dependencies,
         evaluation=result,
         dependency_candidates=status_drafts,
     )
@@ -524,22 +614,27 @@ def assessment(
     context: EvaluationContext = CONTEXT,
 ) -> AssessmentPlan:
     target = target_bundle(event_seed)
+    drafts = selected_dependency_drafts(event_seed, context, target.target)
+    exact_dependencies = evaluation_dependencies_for_drafts(
+        target.target,
+        context,
+        drafts,
+    )
     result = evaluate_quality(
         QualityEvaluationInput(
             POLICY,
             context,
             target.target,
-            evaluation_dependencies(target.target.provider_timestamp),
+            exact_dependencies,
         )
     )
     return AssessmentPlan.build(
         policy=policy_bundle(registered_at),
         context=context,
         target=target,
+        evaluation_dependencies=exact_dependencies,
         evaluation=result,
-        dependency_candidates=selected_dependency_drafts(
-            event_seed, context, target.target
-        ),
+        dependency_candidates=drafts,
     )
 
 
@@ -660,7 +755,7 @@ def test_ranked_candidates_reject_post_cutoff_market_or_knowledge_state():
     valid = DependencyCandidates(
         DependencyKind.MARKET_SEGMENT_STATUS,
         "market_segment_status",
-        scope.canonical_payload,
+        scope,
         M,
         K,
         "ranked-market-status-v1",
@@ -713,10 +808,10 @@ def test_dependency_contract_rejects_wrong_rule_subject_or_scope_kind():
         replace(selected, selection_rule_version="ranked-market-status-v1")
     with pytest.raises(ValueError, match="subject_key"):
         replace(selected, subject_key="instrument_version")
-    with pytest.raises(ValueError, match="search scope"):
+    with pytest.raises(ValueError, match="query scope"):
         replace(
             selected,
-            search_scope_payload=SegmentScope("upstox", "NSE_FO").canonical_payload,
+            scope=SegmentScope("upstox", "NSE_FO"),
         )
 
 
@@ -786,15 +881,20 @@ def test_status_assessment_has_only_session_and_connection_dependencies():
 
 def test_assessment_plan_rejects_non_applicable_or_mismatched_dependency_cutoffs():
     target = target_bundle("applicability")
+    drafts = selected_dependency_drafts("applicability", CONTEXT, target.target)
+    exact_dependencies = evaluation_dependencies_for_drafts(
+        target.target,
+        CONTEXT,
+        drafts,
+    )
     result = evaluate_quality(
         QualityEvaluationInput(
             POLICY,
             CONTEXT,
             target.target,
-            evaluation_dependencies(target.target.provider_timestamp),
+            exact_dependencies,
         )
     )
-    drafts = selected_dependency_drafts("applicability", CONTEXT, target.target)
     missing = tuple(
         item for item in drafts if item[0].dependency_kind is not DependencyKind.SUBSCRIPTION_SCOPE
     )
@@ -803,6 +903,7 @@ def test_assessment_plan_rejects_non_applicable_or_mismatched_dependency_cutoffs
             policy=policy_bundle(),
             context=CONTEXT,
             target=target,
+            evaluation_dependencies=exact_dependencies,
             evaluation=result,
             dependency_candidates=missing,
         )
@@ -817,6 +918,7 @@ def test_assessment_plan_rejects_non_applicable_or_mismatched_dependency_cutoffs
             policy=policy_bundle(),
             context=CONTEXT,
             target=target,
+            evaluation_dependencies=exact_dependencies,
             evaluation=result,
             dependency_candidates=((shifted, first[1], first[2]), *rest),
         )
@@ -906,3 +1008,160 @@ def test_connection_and_subscription_scope_hashes_bind_target_material():
     )
     assert connection.search_scope_hash != subscription.search_scope_hash
     assert replace(subscription, request_mode="ltpc").search_scope_hash != subscription.search_scope_hash
+
+
+def test_visible_target_query_result_binds_request_order_cutoff_and_hidden_set():
+    visible = target_bundle("visible-a")
+    hidden_id = ident("visible-b")
+    result = VisibleTargetQueryResult(
+        (hidden_id, visible.event_id),
+        K,
+        (visible,),
+    )
+    assert result.requested_event_ids == tuple(sorted((hidden_id, visible.event_id)))
+    assert result.hidden_event_ids == (hidden_id,)
+    assert result.is_complete is False
+
+    with pytest.raises(ValueError, match="unrequested"):
+        VisibleTargetQueryResult((visible.event_id,), K, (target_bundle("other"),))
+
+    late = replace(visible, result_persistence_recorded_at=K + timedelta(microseconds=1))
+    with pytest.raises(ValueError, match="result is after"):
+        VisibleTargetQueryResult((late.event_id,), K, (late,))
+
+
+def test_dependency_candidates_require_exact_typed_scope_and_scope_cutoffs():
+    selected = selected_mapping_candidates()
+    with pytest.raises(ValueError, match="query scope type"):
+        replace(selected, scope=SegmentScope("upstox", "NSE_FO"))
+
+    drafts = selected_dependency_drafts("scope-cutoff", CONTEXT, quote("scope-cutoff"))
+    membership = next(
+        item[0]
+        for item in drafts
+        if item[0].dependency_kind is DependencyKind.CATALOGUE_MEMBERSHIP
+    )
+    with pytest.raises(ValueError, match="membership scope cutoffs"):
+        replace(membership, knowledge_cutoff=K + timedelta(microseconds=1))
+
+
+def test_catalogue_membership_dependency_cannot_encode_ambiguity():
+    drafts = selected_dependency_drafts("membership-unique", CONTEXT, quote("membership-unique"))
+    membership = next(
+        item[0]
+        for item in drafts
+        if item[0].dependency_kind is DependencyKind.CATALOGUE_MEMBERSHIP
+    )
+    first = membership.candidates[0]
+    second_id = ident("membership-unique:second")
+    second = MembershipDependencyCandidate(
+        DependencyKind.CATALOGUE_MEMBERSHIP,
+        second_id,
+        first.receipt_at,
+        ident("membership-unique:second-content"),
+        {"profile": "upstox-nse-nifty-index-derivatives-v1"},
+        CatalogueMembershipCandidateReference(
+            second_id,
+            first.reference.ingestion_run_id,
+        ),
+    )
+    with pytest.raises(ValueError, match="at most one"):
+        replace(membership, candidates=(first, second))
+
+
+def test_candidate_payloads_are_deeply_thawed_for_jsonb_serialization():
+    selected = selected_mapping_candidates("deep-payload")
+    wrapped = selected.candidates[0]
+    nested_candidate = replace(
+        wrapped.candidate,
+        payload={"nested": {"values": [1, 2, 3]}},
+    )
+    nested = replace(wrapped, candidate=nested_candidate)
+    payload = nested.canonical_payload["candidate_payload"]
+    assert payload == {"nested": {"values": [1, 2, 3]}}
+    assert json.loads(json.dumps(payload)) == payload
+
+
+def test_assessment_plan_rejects_knowledge_hidden_target_or_result():
+    plan = assessment("hidden-target")
+    late_target = replace(
+        plan.target.target,
+        available_at=K + timedelta(microseconds=1),
+    )
+    late_bundle = replace(
+        plan.target,
+        target=late_target,
+        result_persistence_recorded_at=K + timedelta(microseconds=2),
+    )
+    with pytest.raises(ValueError, match="target is after"):
+        replace(plan, target=late_bundle)
+
+    late_result = replace(
+        plan.target,
+        result_persistence_recorded_at=K + timedelta(microseconds=1),
+    )
+    with pytest.raises(ValueError, match="target result is after"):
+        replace(plan, target=late_result)
+
+
+def test_assessment_plan_binds_evaluator_facts_to_persisted_dependency_closure():
+    plan = assessment("closure-binding")
+    mapping = plan.evaluation_dependencies.provider_mapping
+    assert mapping is not None
+    different_record = ident("closure-binding:different-record")
+    changed_mapping = replace(
+        mapping,
+        persisted_record_id=different_record,
+        selected_record_id=different_record,
+    )
+    changed_dependencies = replace(
+        plan.evaluation_dependencies,
+        provider_mapping=changed_mapping,
+    )
+    with pytest.raises(ValueError, match="selected record mismatch"):
+        replace(plan, evaluation_dependencies=changed_dependencies)
+
+
+def test_assessment_plan_recomputes_evaluation_and_registration_flag():
+    plan = assessment("recompute")
+    with pytest.raises(ValueError, match="exact inputs"):
+        replace(
+            plan,
+            evaluation=replace(
+                plan.evaluation,
+                disposition=QualityDisposition.WARNING,
+            ),
+        )
+    with pytest.raises(ValueError, match="registration cutoff flag"):
+        replace(
+            plan,
+            policy_registered_after_known_as_of=(
+                not plan.policy_registered_after_known_as_of
+            ),
+        )
+
+
+def test_subject_scope_and_subscription_state_shapes_fail_closed():
+    with pytest.raises(ValueError, match="zero exact memberships"):
+        SubjectScopeFact(
+            dependency_id=ident("subject-shape:dependency"),
+            search_scope_hash=ident("subject-shape:scope"),
+            in_scope=False,
+            catalogue_profile="upstox-nse-nifty-index-derivatives-v1",
+            candidate_count=1,
+        )
+
+    with pytest.raises(ValueError, match="zero final candidates"):
+        SubscriptionFact(
+            dependency_id=ident("subscription-shape:dependency"),
+            search_scope_hash=ident("subscription-shape:scope"),
+            state=SubscriptionResolutionState.MISSING,
+            candidate_count=1,
+        )
+    with pytest.raises(ValueError, match="candidate_set_hash"):
+        SubscriptionFact(
+            dependency_id=ident("subscription-ambiguous:dependency"),
+            search_scope_hash=ident("subscription-ambiguous:scope"),
+            state=SubscriptionResolutionState.AMBIGUOUS,
+            candidate_count=2,
+        )

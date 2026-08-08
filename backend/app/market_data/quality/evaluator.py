@@ -571,6 +571,8 @@ class SubscriptionFact:
         if self.candidate_set_hash is not None:
             _sha256(self.candidate_set_hash, "candidate_set_hash")
         if self.state is SubscriptionResolutionState.SELECTED:
+            if self.candidate_count != 1:
+                raise ValueError("selected subscription requires exactly one candidate")
             if (
                 self.scope_id is None
                 or self.effective_mode is None
@@ -586,6 +588,41 @@ class SubscriptionFact:
             _sha256(self.selected_event_id, "selected_event_id")
             _sha256(self.instrument_set_digest, "instrument_set_digest")
             object.__setattr__(self, "occurred_at", _utc(self.occurred_at, "occurred_at"))
+        elif self.state in {
+            SubscriptionResolutionState.AMBIGUOUS,
+            SubscriptionResolutionState.MULTIPLE_ACTIVE,
+        }:
+            if not 2 <= self.candidate_count <= 5000:
+                raise ValueError("ambiguous subscription state requires 2..5000 candidates")
+            if self.candidate_set_hash is None:
+                raise ValueError("ambiguous subscription state requires candidate_set_hash")
+            if any(
+                value is not None
+                for value in (
+                    self.scope_id,
+                    self.effective_mode,
+                    self.occurred_at,
+                    self.selected_event_id,
+                    self.instrument_set_digest,
+                )
+            ):
+                raise ValueError("ambiguous subscription state cannot carry selected evidence")
+        else:
+            if self.candidate_count != 0:
+                raise ValueError("non-selected subscription state requires zero final candidates")
+            if self.candidate_set_hash is not None:
+                raise ValueError("zero-candidate subscription state cannot carry candidate_set_hash")
+            if any(
+                value is not None
+                for value in (
+                    self.scope_id,
+                    self.effective_mode,
+                    self.occurred_at,
+                    self.selected_event_id,
+                    self.instrument_set_digest,
+                )
+            ):
+                raise ValueError("zero-candidate subscription state cannot carry selected evidence")
 
 
 @dataclass(frozen=True)
@@ -611,8 +648,11 @@ class SubjectScopeFact:
             if self.candidate_count != 1 or self.membership_id is None:
                 raise ValueError("in-scope subject requires one exact membership")
             _sha256(self.membership_id, "membership_id")
-        elif self.membership_id is not None:
-            raise ValueError("out-of-scope subject cannot carry membership_id")
+        else:
+            if self.candidate_count != 0:
+                raise ValueError("out-of-scope subject requires zero exact memberships")
+            if self.membership_id is not None:
+                raise ValueError("out-of-scope subject cannot carry membership_id")
 
 
 @dataclass(frozen=True)
