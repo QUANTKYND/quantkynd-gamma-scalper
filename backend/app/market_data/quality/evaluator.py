@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Iterable, Mapping
@@ -23,7 +23,9 @@ from app.market_data.quality.reason_registry import REASONS_BY_CODE, ReasonDefin
 
 _SHA256_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _CONTROLLED = re.compile(r"[A-Za-z0-9_.:/|+-]+\Z")
-LEASE_MS = Decimal("43200000")
+_CONTROLLED_PATH = re.compile(r"[A-Za-z0-9_.\[\]:*]+\Z")
+_INTEGER_TEXT = re.compile(r"(?:0|-?[1-9][0-9]*)\Z")
+_DECIMAL_TEXT = re.compile(r"(?:0|-?(?:[1-9][0-9]*)(?:\.[0-9]+)?|0\.[0-9]+)\Z")
 
 
 class SubscriptionResolutionState(StrEnum):
@@ -69,10 +71,55 @@ class EvidenceValue:
         if self.type == "boolean":
             if not isinstance(self.value, bool):
                 raise TypeError("boolean evidence must use a bool value")
-        elif not isinstance(self.value, str) or not self.value:
+            if self.unit != "none":
+                raise ValueError("boolean evidence must use unit none")
+            return
+        if not isinstance(self.value, str) or not self.value:
             raise ValueError("non-boolean evidence must use non-empty canonical text")
-        if self.type == "identifier" and isinstance(self.value, str):
+        if self.type == "identifier":
             _sha256(self.value, "identifier evidence")
+            if self.unit != "identifier":
+                raise ValueError("identifier evidence must use identifier unit")
+        elif self.type == "integer":
+            if _INTEGER_TEXT.fullmatch(self.value) is None or self.value == "-0":
+                raise ValueError("integer evidence must use canonical base-10 text")
+            if self.unit not in {"none", "milliseconds", "quantity", "count"}:
+                raise ValueError("integer evidence unit is incompatible")
+        elif self.type == "decimal":
+            if _DECIMAL_TEXT.fullmatch(self.value) is None:
+                raise ValueError("decimal evidence must use canonical non-exponent text")
+            try:
+                decimal_value = Decimal(self.value)
+            except InvalidOperation as exc:
+                raise ValueError("decimal evidence is invalid") from exc
+            if not decimal_value.is_finite() or _canonical_decimal(decimal_value) != self.value:
+                raise ValueError("decimal evidence must be finite and canonical")
+            if self.unit not in {
+                "none",
+                "milliseconds",
+                "ticks",
+                "basis_points",
+                "price",
+                "quantity",
+                "count",
+            }:
+                raise ValueError("decimal evidence unit is incompatible")
+        elif self.type == "timestamp":
+            try:
+                parsed = datetime.fromisoformat(self.value)
+            except ValueError as exc:
+                raise ValueError("timestamp evidence must be ISO-8601") from exc
+            if parsed.tzinfo is None or parsed.utcoffset() is None:
+                raise ValueError("timestamp evidence must be timezone-aware")
+            if parsed.astimezone(UTC).isoformat() != self.value:
+                raise ValueError("timestamp evidence must use canonical UTC text")
+            if self.unit != "none":
+                raise ValueError("timestamp evidence must use unit none")
+        elif self.type in {"state", "controlled_text"}:
+            _controlled(self.value, f"{self.type} evidence")
+            expected_unit = "state" if self.type == "state" else "none"
+            if self.unit != expected_unit:
+                raise ValueError(f"{self.type} evidence must use {expected_unit} unit")
 
     @property
     def canonical_payload(self) -> dict[str, object]:
@@ -86,6 +133,7 @@ class EvidenceValue:
 
 @dataclass(frozen=True)
 class ReasonEvidence:
+    subject_key: str
     observed: tuple[EvidenceValue, ...] = ()
     thresholds: tuple[EvidenceValue, ...] = ()
     dependency_ids: tuple[str, ...] = ()
@@ -93,6 +141,7 @@ class ReasonEvidence:
     schema_version: int = 1
 
     def __post_init__(self) -> None:
+        _controlled(self.subject_key, "reason evidence subject_key")
         if self.schema_version != 1:
             raise ValueError("reason evidence schema version must be 1")
         for name in ("observed", "thresholds", "details"):
@@ -113,6 +162,7 @@ class ReasonEvidence:
     def canonical_payload(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version,
+            "subject_key": self.subject_key,
             "observed": tuple(item.canonical_payload for item in self.observed),
             "thresholds": tuple(item.canonical_payload for item in self.thresholds),
             "dependency_ids": self.dependency_ids,
@@ -142,6 +192,9 @@ class QualityReasonOccurrence:
             raise ValueError("subject key is not permitted by reason definition")
         if not isinstance(self.evidence, ReasonEvidence):
             raise TypeError("evidence must be ReasonEvidence")
+        if self.evidence.subject_key != self.subject_key:
+            raise ValueError("reason evidence subject key mismatch")
+        _validate_evidence_profile(definition, self.evidence)
 
     @property
     def definition(self) -> ReasonDefinition:
@@ -162,9 +215,196 @@ class QualityReasonOccurrence:
         }
 
 
+def _validate_evidence_profile(
+    definition: ReasonDefinition,
+    evidence: ReasonEvidence,
+) -> None:
+    observed = {item.name for item in evidence.observed}
+    thresholds = {item.name for item in evidence.thresholds}
+    details = {item.name for item in evidence.details}
+
+    def require(
+        *,
+        observed_names: set[str] | None = None,
+        threshold_names: set[str] | None = None,
+        detail_names: set[str] | None = None,
+        dependencies: int = 0,
+    ) -> None:
+        observed_names = observed_names or set()
+        threshold_names = threshold_names or set()
+        detail_names = detail_names or set()
+        if not observed_names <= observed:
+            raise ValueError(
+                f"{definition.code} evidence is missing observed names: "
+                f"{sorted(observed_names - observed)}"
+            )
+        if not threshold_names <= thresholds:
+            raise ValueError(
+                f"{definition.code} evidence is missing threshold names: "
+                f"{sorted(threshold_names - thresholds)}"
+            )
+        if not detail_names <= details:
+            raise ValueError(
+                f"{definition.code} evidence is missing detail names: "
+                f"{sorted(detail_names - details)}"
+            )
+        if len(evidence.dependency_ids) < dependencies:
+            raise ValueError(
+                f"{definition.code} evidence requires at least {dependencies} dependency IDs"
+            )
+
+    profile = definition.evidence_profile
+    if profile == "identity":
+        require(
+            observed_names={"expected_provider", "observed_provider"},
+            dependencies=1,
+        )
+    elif profile == "schema":
+        require(
+            observed_names={"observed_schema", "observed_implementation"},
+            threshold_names={"expected_schema", "expected_implementation"},
+        )
+    elif profile == "scope":
+        require(
+            observed_names={"catalogue_profile", "subject_in_scope", "target_kind"},
+            detail_names={"candidate_count", "search_scope_hash"},
+            dependencies=1,
+        )
+    elif profile == "future_offset":
+        require(
+            observed_names={
+                "evaluation_market_as_of",
+                "future_offset_ms",
+                "provider_timestamp",
+            }
+        )
+    elif profile == "age":
+        require(
+            observed_names={"age_ms", "cutoff", "observed_timestamp"},
+            threshold_names={"error_ms", "warning_ms"},
+        )
+    elif profile == "availability":
+        require(observed_names={"availability_basis", "available_at"})
+    elif profile == "field_presence":
+        if not (
+            {"field_name", "presence"} <= observed
+            or {"ask_presence", "bid_presence"} <= observed
+        ):
+            raise ValueError(
+                f"{definition.code} evidence must describe field or side presence"
+            )
+    elif profile == "numeric":
+        require(observed_names={"field_name"})
+        if not ({"value", "violation"} & observed):
+            raise ValueError(
+                f"{definition.code} evidence must include value or violation"
+            )
+    elif profile == "quote_pair":
+        require(observed_names={"ask_price", "bid_price", "comparison"})
+    elif profile == "tick":
+        require(
+            observed_names={"field_name", "price", "remainder"},
+            threshold_names={"tick_size"},
+            dependencies=1,
+        )
+    elif profile == "spread":
+        require(
+            observed_names={"spread_bps", "spread_ticks"},
+            threshold_names={
+                "error_bps",
+                "error_ticks",
+                "warning_bps",
+                "warning_ticks",
+            },
+        )
+    elif profile == "cutoff":
+        require(
+            observed_names={"resolution_known_as_of", "resolution_market_as_of"},
+            threshold_names={"dependency_market_as_of", "evaluation_known_as_of"},
+        )
+    elif profile in {"dependency", "dependency_ambiguity"}:
+        require(
+            observed_names={"candidate_count"},
+            detail_names={"knowledge_cutoff", "market_cutoff", "search_scope_hash"},
+            dependencies=1,
+        )
+        if profile == "dependency_ambiguity":
+            require(observed_names={"candidate_set_hash"})
+    elif profile == "dependency_compare":
+        require(
+            observed_names={
+                "persisted_record_id",
+                "persisted_semantic_id",
+                "selected_record_id",
+                "selected_semantic_id",
+            },
+            dependencies=1,
+        )
+    elif profile == "state":
+        require(observed_names={"state"}, dependencies=1)
+    elif profile == "segment":
+        require(
+            observed_names={"observed_segment"},
+            threshold_names={"expected_segment"},
+        )
+    elif profile == "session":
+        require(
+            observed_names={"close_at", "dependency_market_as_of", "open_at"},
+            detail_names={"exchange_date", "search_scope_hash"},
+            dependencies=3,
+        )
+    elif profile == "lifecycle":
+        if "candidate_count" in observed:
+            require(
+                detail_names={"knowledge_cutoff", "market_cutoff", "search_scope_hash"},
+                dependencies=1,
+            )
+        else:
+            require(
+                observed_names={"occurred_at", "state"},
+                detail_names={"search_scope_hash"},
+                dependencies=2,
+            )
+    elif profile == "lifecycle_age":
+        require(
+            observed_names={"age_ms", "dependency_market_as_of", "occurred_at"},
+            threshold_names={"lease_ms"},
+            dependencies=2,
+        )
+    elif profile == "subscription":
+        if "candidate_count" in observed:
+            require(
+                detail_names={"knowledge_cutoff", "market_cutoff", "search_scope_hash"},
+                dependencies=1,
+            )
+        else:
+            require(
+                observed_names={
+                    "expected_mode",
+                    "instrument_set_digest",
+                    "observed_mode",
+                    "scope_id",
+                    "target_key_hash",
+                },
+                dependencies=2,
+            )
+    elif profile == "path_set":
+        require(
+            observed_names={"count", "path_set_hash"},
+            dependencies=1,
+        )
+    elif profile == "depth":
+        require(
+            observed_names={"normalized_depth", "provider_depth", "truncated_count"}
+        )
+    else:
+        raise ValueError(f"unsupported evidence profile: {profile}")
+
+
 @dataclass(frozen=True)
 class ProvenanceDependencyFact:
     dependency_id: str
+    search_scope_hash: str
     outcome: DependencyOutcome
     candidate_count: int
     has_visible_knowledge_leaf: bool
@@ -179,6 +419,7 @@ class ProvenanceDependencyFact:
 
     def __post_init__(self) -> None:
         _sha256(self.dependency_id, "dependency_id")
+        _sha256(self.search_scope_hash, "search_scope_hash")
         object.__setattr__(self, "outcome", DependencyOutcome(self.outcome))
         _candidate_count_shape(self.outcome, self.candidate_count)
         for field_name in (
@@ -203,6 +444,7 @@ class ProvenanceDependencyFact:
 @dataclass(frozen=True)
 class SessionFact:
     dependency_id: str
+    search_scope_hash: str
     outcome: DependencyOutcome
     candidate_count: int
     candidate_set_hash: str | None = None
@@ -210,16 +452,33 @@ class SessionFact:
     status: str | None = None
     open_at: datetime | None = None
     close_at: datetime | None = None
+    selected_session_version_id: str | None = None
+    selected_record_id: str | None = None
+    exchange_date: str | None = None
 
     def __post_init__(self) -> None:
         _sha256(self.dependency_id, "dependency_id")
+        _sha256(self.search_scope_hash, "search_scope_hash")
         object.__setattr__(self, "outcome", DependencyOutcome(self.outcome))
         _candidate_count_shape(self.outcome, self.candidate_count)
         if self.candidate_set_hash is not None:
             _sha256(self.candidate_set_hash, "candidate_set_hash")
         if self.outcome is DependencyOutcome.SELECTED:
-            if self.timezone is None or self.status is None or self.open_at is None or self.close_at is None:
-                raise ValueError("selected session requires timezone, status, open_at and close_at")
+            if (
+                self.timezone is None
+                or self.status is None
+                or self.open_at is None
+                or self.close_at is None
+                or self.selected_session_version_id is None
+                or self.selected_record_id is None
+                or self.exchange_date is None
+            ):
+                raise ValueError(
+                    "selected session requires exact version, record and schedule evidence"
+                )
+            _sha256(self.selected_session_version_id, "selected_session_version_id")
+            _sha256(self.selected_record_id, "selected_record_id")
+            _controlled(self.exchange_date, "exchange_date")
             object.__setattr__(self, "open_at", _utc(self.open_at, "open_at"))
             object.__setattr__(self, "close_at", _utc(self.close_at, "close_at"))
             if self.close_at <= self.open_at:
@@ -229,22 +488,31 @@ class SessionFact:
 @dataclass(frozen=True)
 class MarketStatusFact:
     dependency_id: str
+    search_scope_hash: str
     outcome: DependencyOutcome
     candidate_count: int
     candidate_set_hash: str | None = None
     provider_timestamp: datetime | None = None
     status_is_known: bool | None = None
     status_name: str | None = None
+    selected_event_id: str | None = None
 
     def __post_init__(self) -> None:
         _sha256(self.dependency_id, "dependency_id")
+        _sha256(self.search_scope_hash, "search_scope_hash")
         object.__setattr__(self, "outcome", DependencyOutcome(self.outcome))
         _candidate_count_shape(self.outcome, self.candidate_count)
         if self.candidate_set_hash is not None:
             _sha256(self.candidate_set_hash, "candidate_set_hash")
         if self.outcome is DependencyOutcome.SELECTED:
-            if self.provider_timestamp is None or self.status_is_known is None or self.status_name is None:
+            if (
+                self.provider_timestamp is None
+                or self.status_is_known is None
+                or self.status_name is None
+                or self.selected_event_id is None
+            ):
                 raise ValueError("selected status requires timestamp, known flag and status name")
+            _sha256(self.selected_event_id, "selected_event_id")
             object.__setattr__(
                 self,
                 "provider_timestamp",
@@ -255,50 +523,101 @@ class MarketStatusFact:
 @dataclass(frozen=True)
 class ConnectionFact:
     dependency_id: str
+    search_scope_hash: str
     outcome: DependencyOutcome
     candidate_count: int
     candidate_set_hash: str | None = None
     state: str | None = None
     occurred_at: datetime | None = None
+    selected_event_id: str | None = None
 
     def __post_init__(self) -> None:
         _sha256(self.dependency_id, "dependency_id")
+        _sha256(self.search_scope_hash, "search_scope_hash")
         object.__setattr__(self, "outcome", DependencyOutcome(self.outcome))
         _candidate_count_shape(self.outcome, self.candidate_count)
         if self.candidate_set_hash is not None:
             _sha256(self.candidate_set_hash, "candidate_set_hash")
         if self.outcome is DependencyOutcome.SELECTED:
-            if self.state is None or self.occurred_at is None:
+            if self.state is None or self.occurred_at is None or self.selected_event_id is None:
                 raise ValueError("selected connection requires state and occurred_at")
+            _sha256(self.selected_event_id, "selected_event_id")
             object.__setattr__(self, "occurred_at", _utc(self.occurred_at, "occurred_at"))
 
 
 @dataclass(frozen=True)
 class SubscriptionFact:
     dependency_id: str
+    search_scope_hash: str
     state: SubscriptionResolutionState
     candidate_count: int
     candidate_set_hash: str | None = None
     scope_id: str | None = None
     effective_mode: str | None = None
-    target_mode: str | None = None
     occurred_at: datetime | None = None
+    selected_event_id: str | None = None
+    instrument_set_digest: str | None = None
 
     def __post_init__(self) -> None:
         _sha256(self.dependency_id, "dependency_id")
+        _sha256(self.search_scope_hash, "search_scope_hash")
         object.__setattr__(self, "state", SubscriptionResolutionState(self.state))
-        if not isinstance(self.candidate_count, int) or isinstance(self.candidate_count, bool) or self.candidate_count < 0:
+        if (
+            not isinstance(self.candidate_count, int)
+            or isinstance(self.candidate_count, bool)
+            or self.candidate_count < 0
+        ):
             raise ValueError("candidate_count must be a non-negative integer")
         if self.candidate_set_hash is not None:
             _sha256(self.candidate_set_hash, "candidate_set_hash")
         if self.state is SubscriptionResolutionState.SELECTED:
-            if self.scope_id is None or self.effective_mode is None or self.target_mode is None or self.occurred_at is None:
-                raise ValueError("selected subscription requires scope, modes and occurred_at")
+            if (
+                self.scope_id is None
+                or self.effective_mode is None
+                or self.occurred_at is None
+                or self.selected_event_id is None
+                or self.instrument_set_digest is None
+            ):
+                raise ValueError(
+                    "selected subscription requires exact scope, event, mode and instrument set"
+                )
+            _controlled(self.scope_id, "scope_id")
+            _controlled(self.effective_mode, "effective_mode")
+            _sha256(self.selected_event_id, "selected_event_id")
+            _sha256(self.instrument_set_digest, "instrument_set_digest")
             object.__setattr__(self, "occurred_at", _utc(self.occurred_at, "occurred_at"))
 
 
 @dataclass(frozen=True)
+class SubjectScopeFact:
+    dependency_id: str
+    search_scope_hash: str
+    in_scope: bool
+    catalogue_profile: str
+    candidate_count: int
+    membership_id: str | None = None
+
+    def __post_init__(self) -> None:
+        _sha256(self.dependency_id, "dependency_id")
+        _sha256(self.search_scope_hash, "search_scope_hash")
+        _controlled(self.catalogue_profile, "catalogue_profile")
+        if not isinstance(self.in_scope, bool):
+            raise TypeError("in_scope must be boolean")
+        if not isinstance(self.candidate_count, int) or isinstance(self.candidate_count, bool):
+            raise TypeError("candidate_count must be an integer")
+        if not 0 <= self.candidate_count <= 1:
+            raise ValueError("subject scope candidate_count must be zero or one")
+        if self.in_scope:
+            if self.candidate_count != 1 or self.membership_id is None:
+                raise ValueError("in-scope subject requires one exact membership")
+            _sha256(self.membership_id, "membership_id")
+        elif self.membership_id is not None:
+            raise ValueError("out-of-scope subject cannot carry membership_id")
+
+
+@dataclass(frozen=True)
 class TargetDependencies:
+    subject_scope: SubjectScopeFact | None = None
     provider_mapping: ProvenanceDependencyFact | None = None
     instrument_version: ProvenanceDependencyFact | None = None
     catalogue_version: ProvenanceDependencyFact | None = None
@@ -321,7 +640,6 @@ class QuoteTarget:
     availability_basis: str
     feed_response_type: str
     request_mode: str
-    subject_in_scope: bool
     resolution_market_as_of: datetime
     resolution_known_as_of: datetime
     bid_price: object | None = None
@@ -353,13 +671,51 @@ class QuoteTarget:
             "resolution_known_as_of",
         ):
             object.__setattr__(self, field_name, _utc(getattr(self, field_name), field_name))
+        if self.last_trade_at is not None:
+            object.__setattr__(
+                self,
+                "last_trade_at",
+                _utc(self.last_trade_at, "last_trade_at"),
+            )
+        for field_name in (
+            "provider_depth_levels_present",
+            "normalized_depth_levels",
+            "unadopted_depth_level_count",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise InvalidQualityEvaluationCommandError(
+                    f"{field_name} must be a non-negative integer"
+                )
+        if self.provider_depth_levels_present > 30 or self.normalized_depth_levels > 1:
+            raise InvalidQualityEvaluationCommandError("depth metadata exceeds DATA-1.4 bounds")
+        if self.normalized_depth_levels > self.provider_depth_levels_present:
+            raise InvalidQualityEvaluationCommandError("normalized depth exceeds provider depth")
+        if (
+            self.unadopted_depth_level_count
+            != self.provider_depth_levels_present - self.normalized_depth_levels
+        ):
+            raise InvalidQualityEvaluationCommandError("depth metadata reconciliation failed")
         for field_name in (
             "unadopted_schema_paths",
             "present_unadopted_message_paths",
             "secondary_payload_paths_present",
         ):
-            values = tuple(sorted(set(getattr(self, field_name))))
-            object.__setattr__(self, field_name, values)
+            values = getattr(self, field_name)
+            if not isinstance(values, tuple) or tuple(sorted(set(values))) != values:
+                raise InvalidQualityEvaluationCommandError(
+                    f"{field_name} must already be sorted and unique"
+                )
+            for value in values:
+                if (
+                    not isinstance(value, str)
+                    or not value
+                    or len(value.encode("utf-8")) > 512
+                    or _CONTROLLED_PATH.fullmatch(value) is None
+                ):
+                    raise InvalidQualityEvaluationCommandError(
+                        f"{field_name} contains an invalid controlled path"
+                    )
 
 
 @dataclass(frozen=True)
@@ -374,7 +730,6 @@ class StatusTarget:
     availability_basis: str
     status_is_known: bool
     status_name: str
-    subject_in_scope: bool = True
     target_kind: TargetKind = TargetKind.MARKET_SEGMENT_STATUS
 
     def __post_init__(self) -> None:
@@ -442,14 +797,29 @@ def evaluate_quality(command: QualityEvaluationInput) -> QualityEvaluationResult
     if isinstance(target, QuoteTarget):
         _evaluate_quote(target, command.policy, context, command.dependencies, reasons)
     else:
-        _evaluate_status_target(target, context, reasons)
-    _evaluate_session(command.dependencies.trading_session, target_kind, dependency_market_as_of, reasons)
-    _evaluate_connection(command.dependencies.connection, target_kind, dependency_market_as_of, reasons)
+        _evaluate_status_target(target, command.policy, context, reasons)
+    _evaluate_session(
+        command.dependencies.trading_session,
+        target_kind,
+        dependency_market_as_of,
+        context.evaluation_known_as_of,
+        reasons,
+    )
+    lease_ms = Decimal(command.policy.semantic_projection["lifecycle"]["lease_ms"])
+    _evaluate_connection(
+        command.dependencies.connection,
+        target_kind,
+        dependency_market_as_of,
+        context.evaluation_known_as_of,
+        lease_ms,
+        reasons,
+    )
     if isinstance(target, QuoteTarget):
         _evaluate_status_dependency(
             command.dependencies.market_segment_status,
             target_kind,
             dependency_market_as_of,
+            context.evaluation_known_as_of,
             command.policy,
             reasons,
         )
@@ -457,6 +827,8 @@ def evaluate_quality(command: QualityEvaluationInput) -> QualityEvaluationResult
             command.dependencies.subscription,
             target,
             dependency_market_as_of,
+            context.evaluation_known_as_of,
+            lease_ms,
             reasons,
         )
 
@@ -515,25 +887,13 @@ def _evaluate_common(
             "unsupported_normalization_schema",
             "observation",
             observed=(
-                _integer("observed_schema", target.normalization_schema_version),
+                _integer("observed_schema", target.normalization_schema_version, "none"),
                 _text("observed_implementation", target.normalizer_implementation_version),
             ),
             thresholds=(
-                _integer("expected_schema", 1),
+                _integer("expected_schema", 1, "none"),
                 _text("expected_implementation", "upstox-v3-normalizer-1"),
             ),
-        )
-    if not target.subject_in_scope:
-        _append(
-            reasons,
-            target.target_kind,
-            "unsupported_subject_scope",
-            "observation",
-            observed=(
-                _state("target_kind", target.target_kind.value),
-                _boolean("subject_in_scope", False),
-            ),
-            dependency_ids=(target.event_id,),
         )
     future_offset = _milliseconds(target.provider_timestamp - context.evaluation_market_as_of)
     if future_offset > 0:
@@ -579,6 +939,7 @@ def _evaluate_quote(
     dependencies: TargetDependencies,
     reasons: list[QualityReasonOccurrence],
 ) -> None:
+    _evaluate_subject_scope(target, policy, dependencies.subject_scope, reasons)
     if target.provider_timestamp <= context.evaluation_market_as_of:
         threshold = _quote_freshness(policy, target)
         _evaluate_age(
@@ -602,23 +963,34 @@ def _evaluate_quote(
         "instrument_version",
         dependencies.instrument_version,
         target.target_kind,
+        context.dependency_market_as_of(target.provider_timestamp),
+        context.evaluation_known_as_of,
         reasons,
     )
     _evaluate_provenance_family(
         "provider_mapping",
         dependencies.provider_mapping,
         target.target_kind,
+        context.dependency_market_as_of(target.provider_timestamp),
+        context.evaluation_known_as_of,
         reasons,
     )
     _evaluate_provenance_family(
         "catalogue_provenance",
         dependencies.catalogue_version,
         target.target_kind,
+        context.dependency_market_as_of(target.provider_timestamp),
+        context.evaluation_known_as_of,
         reasons,
     )
 
     instrument = dependencies.instrument_version
-    tick_size = instrument.tick_size if instrument is not None and instrument.outcome is DependencyOutcome.SELECTED else None
+    tick_size = (
+        instrument.tick_size
+        if instrument is not None
+        and instrument.outcome is DependencyOutcome.SELECTED
+        else None
+    )
     if instrument is not None and instrument.outcome is DependencyOutcome.SELECTED:
         if instrument.trading_status != "active":
             _append(
@@ -635,12 +1007,15 @@ def _evaluate_quote(
         tick_size,
         instrument,
         _provenance_usable(instrument),
+        context.dependency_market_as_of(target.provider_timestamp),
+        context.evaluation_known_as_of,
         reasons,
     )
 
 
 def _evaluate_status_target(
     target: StatusTarget,
+    policy: ParsedQualityPolicy,
     context: EvaluationContext,
     reasons: list[QualityReasonOccurrence],
 ) -> None:
@@ -649,7 +1024,7 @@ def _evaluate_status_target(
             target.target_kind,
             target.provider_timestamp,
             context.evaluation_market_as_of,
-            {"warning_ms": 60000, "error_ms": 300000},
+            policy.semantic_projection["freshness"]["segment_status"],
             "status_age_warning",
             "status_stale",
             "market_segment_status",
@@ -663,8 +1038,8 @@ def _evaluate_status_target(
             "provider_segment",
             observed=(
                 _state("observed_segment", _safe_state(target.segment)),
-                _state("expected_segment", "NSE_INDEX_OR_NSE_FO"),
             ),
+            thresholds=(_state("expected_segment", "NSE_INDEX_OR_NSE_FO"),),
         )
     if not target.status_is_known:
         _append(
@@ -710,6 +1085,41 @@ def _evaluate_resolution_cutoffs(
                 _timestamp("evaluation_known_as_of", context.evaluation_known_as_of),
             ),
         )
+
+
+def _evaluate_subject_scope(
+    target: QuoteTarget,
+    policy: ParsedQualityPolicy,
+    fact: SubjectScopeFact | None,
+    reasons: list[QualityReasonOccurrence],
+) -> None:
+    if fact is None:
+        raise InvalidQualityEvaluationCommandError(
+            "explicit catalogue membership scope fact is required"
+        )
+    expected_profile = str(policy.semantic_projection["scope"]["catalogue_profile"])
+    if fact.catalogue_profile != expected_profile:
+        raise InvalidQualityEvaluationCommandError(
+            "scope fact catalogue profile does not match policy"
+        )
+    if fact.in_scope:
+        return
+    _append(
+        reasons,
+        target.target_kind,
+        "unsupported_subject_scope",
+        "observation",
+        observed=(
+            _state("target_kind", target.target_kind.value),
+            _boolean("subject_in_scope", False),
+            _text("catalogue_profile", fact.catalogue_profile),
+        ),
+        details=(
+            _integer("candidate_count", fact.candidate_count),
+            _identifier("search_scope_hash", fact.search_scope_hash),
+        ),
+        dependency_ids=(fact.dependency_id,),
+    )
 
 
 def _evaluate_provider_segment(
@@ -922,6 +1332,8 @@ def _evaluate_provenance_family(
     family: str,
     fact: ProvenanceDependencyFact | None,
     target_kind: TargetKind,
+    market_cutoff: datetime,
+    knowledge_cutoff: datetime,
     reasons: list[QualityReasonOccurrence],
 ) -> None:
     if fact is None:
@@ -940,7 +1352,15 @@ def _evaluate_provenance_family(
             if fact.has_visible_knowledge_leaf
             else f"{code_prefix}_missing"
         )
-        _append_dependency_reason(reasons, target_kind, code, subject_key, fact)
+        _append_dependency_reason(
+            reasons,
+            target_kind,
+            code,
+            subject_key,
+            fact,
+            market_cutoff,
+            knowledge_cutoff,
+        )
         return
     if fact.outcome is DependencyOutcome.AMBIGUOUS:
         _append_dependency_reason(
@@ -949,6 +1369,8 @@ def _evaluate_provenance_family(
             f"{code_prefix}_ambiguous",
             subject_key,
             fact,
+            market_cutoff,
+            knowledge_cutoff,
         )
         return
     if not fact.selected_effective:
@@ -958,6 +1380,8 @@ def _evaluate_provenance_family(
             f"{code_prefix}_not_effective",
             subject_key,
             fact,
+            market_cutoff,
+            knowledge_cutoff,
         )
         return
     if (
@@ -997,6 +1421,8 @@ def _evaluate_tick_and_market(
     tick_size: Decimal | None,
     instrument: ProvenanceDependencyFact | None,
     allow_tick_evaluation: bool,
+    dependency_market_as_of: datetime,
+    evaluation_known_as_of: datetime,
     reasons: list[QualityReasonOccurrence],
 ) -> None:
     dependency_ids = () if instrument is None else (instrument.dependency_id,)
@@ -1012,8 +1438,21 @@ def _evaluate_tick_and_market(
             target.target_kind,
             "tick_size_missing_or_invalid",
             "instrument_version",
-            observed=(_state("tick_size_state", "missing_or_invalid"),),
+            observed=(
+                _integer("candidate_count", 1),
+                _state("tick_size_state", "missing_or_invalid"),
+            ),
             dependency_ids=dependency_ids,
+            details=(
+                _timestamp("market_cutoff", dependency_market_as_of),
+                _timestamp("knowledge_cutoff", evaluation_known_as_of),
+                _identifier(
+                    "search_scope_hash",
+                    instrument.search_scope_hash
+                    if instrument is not None
+                    else stable_hash("missing"),
+                ),
+            ),
         )
     valid_prices: dict[str, Decimal] = {}
     for field_name in ("bid_price", "ask_price", "last_price"):
@@ -1105,6 +1544,7 @@ def _evaluate_session(
     fact: SessionFact | None,
     target_kind: TargetKind,
     dependency_market_as_of: datetime,
+    evaluation_known_as_of: datetime,
     reasons: list[QualityReasonOccurrence],
 ) -> None:
     if fact is None:
@@ -1118,6 +1558,8 @@ def _evaluate_session(
             "trading_session_missing",
             "trading_session",
             fact,
+            dependency_market_as_of,
+            evaluation_known_as_of,
         )
         return
     if fact.outcome is DependencyOutcome.AMBIGUOUS:
@@ -1127,9 +1569,23 @@ def _evaluate_session(
             "trading_session_ambiguous",
             "trading_session",
             fact,
+            dependency_market_as_of,
+            evaluation_known_as_of,
         )
         return
     assert fact.open_at is not None and fact.close_at is not None
+    assert fact.selected_session_version_id is not None
+    assert fact.selected_record_id is not None
+    assert fact.exchange_date is not None
+    selected_ids = (
+        fact.dependency_id,
+        fact.selected_session_version_id,
+        fact.selected_record_id,
+    )
+    details = (
+        _text("exchange_date", fact.exchange_date),
+        _identifier("search_scope_hash", fact.search_scope_hash),
+    )
     if fact.timezone != "Asia/Kolkata":
         _append(
             reasons,
@@ -1142,7 +1598,8 @@ def _evaluate_session(
                 _timestamp("close_at", fact.close_at),
                 _timestamp("dependency_market_as_of", dependency_market_as_of),
             ),
-            dependency_ids=(fact.dependency_id,),
+            dependency_ids=selected_ids,
+            details=details,
         )
     if fact.status != "scheduled":
         _append(
@@ -1156,7 +1613,8 @@ def _evaluate_session(
                 _timestamp("close_at", fact.close_at),
                 _timestamp("dependency_market_as_of", dependency_market_as_of),
             ),
-            dependency_ids=(fact.dependency_id,),
+            dependency_ids=selected_ids,
+            details=details,
         )
     if not (fact.open_at <= dependency_market_as_of < fact.close_at):
         _append(
@@ -1169,7 +1627,8 @@ def _evaluate_session(
                 _timestamp("close_at", fact.close_at),
                 _timestamp("dependency_market_as_of", dependency_market_as_of),
             ),
-            dependency_ids=(fact.dependency_id,),
+            dependency_ids=selected_ids,
+            details=details,
         )
 
 
@@ -1177,6 +1636,7 @@ def _evaluate_status_dependency(
     fact: MarketStatusFact | None,
     target_kind: TargetKind,
     dependency_market_as_of: datetime,
+    evaluation_known_as_of: datetime,
     policy: ParsedQualityPolicy,
     reasons: list[QualityReasonOccurrence],
 ) -> None:
@@ -1191,6 +1651,8 @@ def _evaluate_status_dependency(
             "segment_status_missing",
             "market_segment_status",
             fact,
+            dependency_market_as_of,
+            evaluation_known_as_of,
         )
         return
     if fact.outcome is DependencyOutcome.AMBIGUOUS:
@@ -1200,9 +1662,17 @@ def _evaluate_status_dependency(
             "segment_status_ambiguous",
             "market_segment_status",
             fact,
+            dependency_market_as_of,
+            evaluation_known_as_of,
         )
         return
     assert fact.provider_timestamp is not None
+    assert fact.selected_event_id is not None
+    if fact.provider_timestamp > dependency_market_as_of:
+        raise InvalidQualityEvaluationCommandError(
+            "selected market status is after dependency market cutoff"
+        )
+    selected_ids = (fact.dependency_id, fact.selected_event_id)
     _evaluate_age(
         target_kind,
         fact.provider_timestamp,
@@ -1212,7 +1682,7 @@ def _evaluate_status_dependency(
         "status_stale",
         "market_segment_status",
         reasons,
-        dependency_ids=(fact.dependency_id,),
+        dependency_ids=selected_ids,
     )
     if not fact.status_is_known:
         _append(
@@ -1221,7 +1691,7 @@ def _evaluate_status_dependency(
             "segment_status_unknown",
             "market_segment_status",
             observed=(_state("state", _safe_state(fact.status_name)),),
-            dependency_ids=(fact.dependency_id,),
+            dependency_ids=selected_ids,
         )
     elif fact.status_name != "NORMAL_OPEN":
         _append(
@@ -1230,7 +1700,7 @@ def _evaluate_status_dependency(
             "segment_not_normal_open",
             "market_segment_status",
             observed=(_state("state", _safe_state(fact.status_name)),),
-            dependency_ids=(fact.dependency_id,),
+            dependency_ids=selected_ids,
         )
 
 
@@ -1238,6 +1708,8 @@ def _evaluate_connection(
     fact: ConnectionFact | None,
     target_kind: TargetKind,
     dependency_market_as_of: datetime,
+    evaluation_known_as_of: datetime,
+    lease_ms: Decimal,
     reasons: list[QualityReasonOccurrence],
 ) -> None:
     if fact is None:
@@ -1251,6 +1723,8 @@ def _evaluate_connection(
             "connection_state_missing",
             "connection_session",
             fact,
+            dependency_market_as_of,
+            evaluation_known_as_of,
         )
         return
     if fact.outcome is DependencyOutcome.AMBIGUOUS:
@@ -1260,9 +1734,17 @@ def _evaluate_connection(
             "connection_state_ambiguous",
             "connection_session",
             fact,
+            dependency_market_as_of,
+            evaluation_known_as_of,
         )
         return
     assert fact.occurred_at is not None
+    assert fact.selected_event_id is not None
+    if fact.occurred_at > dependency_market_as_of:
+        raise InvalidQualityEvaluationCommandError(
+            "selected connection state is after dependency market cutoff"
+        )
+    selected_ids = (fact.dependency_id, fact.selected_event_id)
     if fact.state != "authorized":
         _append(
             reasons,
@@ -1273,10 +1755,11 @@ def _evaluate_connection(
                 _state("state", _safe_state(fact.state)),
                 _timestamp("occurred_at", fact.occurred_at),
             ),
-            dependency_ids=(fact.dependency_id,),
+            dependency_ids=selected_ids,
+            details=(_identifier("search_scope_hash", fact.search_scope_hash),),
         )
     age = _milliseconds(dependency_market_as_of - fact.occurred_at)
-    if age > LEASE_MS:
+    if age > lease_ms:
         _append(
             reasons,
             target_kind,
@@ -1287,8 +1770,9 @@ def _evaluate_connection(
                 _timestamp("dependency_market_as_of", dependency_market_as_of),
                 _decimal("age_ms", age, "milliseconds"),
             ),
-            thresholds=(_decimal("lease_ms", LEASE_MS, "milliseconds"),),
-            dependency_ids=(fact.dependency_id,),
+            thresholds=(_decimal("lease_ms", lease_ms, "milliseconds"),),
+            dependency_ids=selected_ids,
+            details=(_identifier("search_scope_hash", fact.search_scope_hash),),
         )
 
 
@@ -1296,6 +1780,8 @@ def _evaluate_subscription(
     fact: SubscriptionFact | None,
     target: QuoteTarget,
     dependency_market_as_of: datetime,
+    evaluation_known_as_of: datetime,
+    lease_ms: Decimal,
     reasons: list[QualityReasonOccurrence],
 ) -> None:
     if fact is None:
@@ -1325,10 +1811,23 @@ def _evaluate_subscription(
                 ),
             ),
             dependency_ids=(fact.dependency_id,),
+            details=(
+                _timestamp("market_cutoff", dependency_market_as_of),
+                _timestamp("knowledge_cutoff", evaluation_known_as_of),
+                _identifier("search_scope_hash", fact.search_scope_hash),
+            ),
         )
         return
     assert fact.occurred_at is not None
-    if fact.effective_mode != fact.target_mode:
+    assert fact.selected_event_id is not None
+    assert fact.scope_id is not None
+    assert fact.instrument_set_digest is not None
+    if fact.occurred_at > dependency_market_as_of:
+        raise InvalidQualityEvaluationCommandError(
+            "selected subscription state is after dependency market cutoff"
+        )
+    selected_ids = (fact.dependency_id, fact.selected_event_id)
+    if fact.effective_mode != target.request_mode:
         _append(
             reasons,
             target.target_kind,
@@ -1336,13 +1835,15 @@ def _evaluate_subscription(
             "subscription_scope",
             observed=(
                 _state("observed_mode", _safe_state(fact.effective_mode)),
-                _state("expected_mode", _safe_state(fact.target_mode)),
+                _state("expected_mode", _safe_state(target.request_mode)),
                 _identifier("target_key_hash", stable_hash(target.provider_contract_key)),
+                _text("scope_id", fact.scope_id),
+                _identifier("instrument_set_digest", fact.instrument_set_digest),
             ),
-            dependency_ids=(fact.dependency_id,),
+            dependency_ids=selected_ids,
         )
     age = _milliseconds(dependency_market_as_of - fact.occurred_at)
-    if age > LEASE_MS:
+    if age > lease_ms:
         _append(
             reasons,
             target.target_kind,
@@ -1353,8 +1854,13 @@ def _evaluate_subscription(
                 _timestamp("dependency_market_as_of", dependency_market_as_of),
                 _decimal("age_ms", age, "milliseconds"),
             ),
-            thresholds=(_decimal("lease_ms", LEASE_MS, "milliseconds"),),
-            dependency_ids=(fact.dependency_id,),
+            thresholds=(_decimal("lease_ms", lease_ms, "milliseconds"),),
+            dependency_ids=selected_ids,
+            details=(
+                _text("scope_id", fact.scope_id),
+                _identifier("instrument_set_digest", fact.instrument_set_digest),
+                _identifier("search_scope_hash", fact.search_scope_hash),
+            ),
         )
 
 
@@ -1401,6 +1907,8 @@ def _append_dependency_reason(
     reason_code: str,
     subject_key: str,
     fact: object,
+    market_cutoff: datetime,
+    knowledge_cutoff: datetime,
 ) -> None:
     candidate_count = getattr(fact, "candidate_count")
     dependency_id = getattr(fact, "dependency_id")
@@ -1415,6 +1923,11 @@ def _append_dependency_reason(
         subject_key,
         observed=tuple(observed),
         dependency_ids=(dependency_id,),
+        details=(
+            _timestamp("market_cutoff", market_cutoff),
+            _timestamp("knowledge_cutoff", knowledge_cutoff),
+            _identifier("search_scope_hash", getattr(fact, "search_scope_hash")),
+        ),
     )
 
 
@@ -1434,7 +1947,7 @@ def _append(
             reason_code,
             subject_key,
             target_kind,
-            ReasonEvidence(observed, thresholds, dependency_ids, details),
+            ReasonEvidence(subject_key, observed, thresholds, dependency_ids, details),
         )
     )
 
@@ -1447,6 +1960,7 @@ def _require_dependency_shape(
     if target_kind.is_quote:
         required.extend(
             [
+                dependencies.subject_scope,
                 dependencies.provider_mapping,
                 dependencies.instrument_version,
                 dependencies.catalogue_version,
@@ -1454,6 +1968,19 @@ def _require_dependency_shape(
                 dependencies.subscription,
             ]
         )
+    else:
+        non_applicable = (
+            dependencies.subject_scope,
+            dependencies.provider_mapping,
+            dependencies.instrument_version,
+            dependencies.catalogue_version,
+            dependencies.market_segment_status,
+            dependencies.subscription,
+        )
+        if any(item is not None for item in non_applicable):
+            raise InvalidQualityEvaluationCommandError(
+                "status targets cannot carry quote-only or self-status dependencies"
+            )
     if any(item is None for item in required):
         raise InvalidQualityEvaluationCommandError(
             "all applicable dependency facts must be explicit"
@@ -1540,8 +2067,8 @@ def _state(name: str, value: object | None) -> EvidenceValue:
     return EvidenceValue(name, "state", _safe_state(value), "state")
 
 
-def _integer(name: str, value: int) -> EvidenceValue:
-    return EvidenceValue(name, "integer", str(int(value)), "count")
+def _integer(name: str, value: int, unit: str = "count") -> EvidenceValue:
+    return EvidenceValue(name, "integer", str(int(value)), unit)
 
 
 def _boolean(name: str, value: bool) -> EvidenceValue:

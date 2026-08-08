@@ -2,8 +2,15 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from app.core.hashing import stable_hash
-from app.market_data.quality.contracts import DependencyOutcome, EvaluationContext, QualityDisposition
+from app.market_data.quality.contracts import (
+    DependencyOutcome,
+    EvaluationContext,
+    QualityDisposition,
+)
+from app.market_data.quality.errors import InvalidQualityEvaluationCommandError
 from app.market_data.quality.evaluator import (
     ConnectionFact,
     QualityEvaluationInput,
@@ -18,9 +25,10 @@ M = datetime(2026, 8, 7, 10, tzinfo=UTC)
 K = datetime(2026, 8, 7, 11, tzinfo=UTC)
 CONTEXT = EvaluationContext(M, K)
 ROOT = Path(__file__).resolve().parents[5]
-POLICY = parse_quality_policy(
-    (ROOT / "config/data_quality/upstox-nse-market-observation-quality-v1.yaml").read_bytes()
-)
+POLICY_BYTES = (
+    ROOT / "config/data_quality/upstox-nse-market-observation-quality-v1.yaml"
+).read_bytes()
+POLICY = parse_quality_policy(POLICY_BYTES)
 
 
 def ident(seed: str) -> str:
@@ -30,20 +38,26 @@ def ident(seed: str) -> str:
 def deps():
     return TargetDependencies(
         trading_session=SessionFact(
-            ident("session"),
-            DependencyOutcome.SELECTED,
-            1,
+            dependency_id=ident("session"),
+            search_scope_hash=ident("session-search"),
+            outcome=DependencyOutcome.SELECTED,
+            candidate_count=1,
             timezone="Asia/Kolkata",
             status="scheduled",
             open_at=M - timedelta(hours=1),
             close_at=M + timedelta(hours=1),
+            selected_session_version_id=ident("session-version"),
+            selected_record_id=ident("session-record"),
+            exchange_date="2026-08-07",
         ),
         connection=ConnectionFact(
-            ident("connection"),
-            DependencyOutcome.SELECTED,
-            1,
+            dependency_id=ident("connection"),
+            search_scope_hash=ident("connection-search"),
+            outcome=DependencyOutcome.SELECTED,
+            candidate_count=1,
             state="authorized",
             occurred_at=M - timedelta(hours=1),
+            selected_event_id=ident("connection-event"),
         ),
     )
 
@@ -65,9 +79,9 @@ def target(**overrides):
     return StatusTarget(**values)
 
 
-def evaluate(value=None, dependencies=None):
+def evaluate(value=None, dependencies=None, policy=POLICY):
     return evaluate_quality(
-        QualityEvaluationInput(POLICY, CONTEXT, value or target(), dependencies or deps())
+        QualityEvaluationInput(policy, CONTEXT, value or target(), dependencies or deps())
     )
 
 
@@ -114,3 +128,25 @@ def test_status_target_requires_valid_segment_session_and_connection():
         "trading_session_timezone_mismatch",
         "connection_not_authorized",
     }
+
+
+def test_status_freshness_is_read_from_policy_semantics():
+    fast_warning = parse_quality_policy(
+        POLICY_BYTES.replace(
+            b'warning_ms: "60000"\n    error_ms: "300000"',
+            b'warning_ms: "1000"\n    error_ms: "300000"',
+            1,
+        )
+    )
+    value = target(provider_timestamp=M - timedelta(seconds=2))
+    assert "status_age_warning" not in codes(evaluate(value))
+    assert "status_age_warning" in codes(evaluate(value, policy=fast_warning))
+
+
+def test_status_target_rejects_non_applicable_dependencies():
+    broken = replace(deps(), market_segment_status=object())
+    with pytest.raises(
+        InvalidQualityEvaluationCommandError,
+        match="cannot carry quote-only or self-status dependencies",
+    ):
+        evaluate(dependencies=broken)
